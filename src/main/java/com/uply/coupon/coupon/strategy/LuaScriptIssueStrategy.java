@@ -3,8 +3,7 @@ package com.uply.coupon.coupon.strategy;
 import org.springframework.stereotype.Component;
 
 /**
- * Redis + Lua Script 기반 발급 전략 (최종 채택 후보).
- * 담당: 1-B (이승지)
+ * Redis + Lua Script 기반 발급 전략
  */
 @Component("luaScriptIssueStrategy")
 public class LuaScriptIssueStrategy implements CouponIssueStrategy {
