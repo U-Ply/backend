@@ -2,7 +2,6 @@ package com.uply.coupon.common.idempotency;
 
 /**
  * 발급/사용/취소 API 공통 멱등성 처리 인터페이스.
- * 시그니처는 팀 확정, 구현은 1-B(이승지) 담당 예정.
  */
 public interface IdempotencyChecker {
 
