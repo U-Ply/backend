@@ -3,8 +3,7 @@ package com.uply.coupon.coupon.strategy;
 import org.springframework.stereotype.Component;
 
 /**
- * DB 비관적 락(SELECT ... FOR UPDATE) 기반 발급 전략.
- * 담당: 1-A (김윤기)
+ * DB 비관적 락(SELECT ... FOR UPDATE) 기반 발급 전략
  */
 @Component("pessimisticLockIssueStrategy")
 public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
