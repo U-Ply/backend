@@ -1,5 +1,7 @@
 package com.uply.coupon.messaging.config;
 
+import java.util.HashMap;
+import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,14 +11,9 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 
-import java.util.HashMap;
-import java.util.Map;
-
 /**
- * Kafka Producer 신뢰성 설정.
- * - acks=all: 모든 replica가 메시지를 받았는지 확인 후 성공 처리
- * - enable.idempotence: Producer 레벨에서 중복 전송 자체를 방지 (재시도 시 중복 발행 안 됨)
- * - retries: 일시적 오류에 대한 재시도
+ * Kafka Producer 신뢰성 설정. - acks=all: 모든 replica가 메시지를 받았는지 확인 후 성공 처리 - enable.idempotence:
+ * Producer 레벨에서 중복 전송 자체를 방지 (재시도 시 중복 발행 안 됨) - retries: 일시적 오류에 대한 재시도
  */
 @Configuration
 public class KafkaProducerConfig {
