@@ -27,7 +27,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Spotless check
+        run: ./gradlew spotlessCheck
+
       # 지금은 컴파일 검증만.
-      # 실제 테스트가 생기면 -x test 를 빼고 아래 services 블록을 살린다.
+      # 실제 테스트가 생기면 -x test 를 빼고 services 로 mysql/redis 를 추가한다.
       - name: Build
         run: ./gradlew build -x test
