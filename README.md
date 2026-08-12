@@ -2,8 +2,6 @@
 
 # 항공사 특가 이벤트, 대규모 트래픽 선착순 쿠폰 발급 시스템
 
-<img src="docs/images/banner.png" alt="U-Ply Banner" width="100%" />
-
 </div>
 
 ## 📌 프로젝트 개요
@@ -37,9 +35,6 @@ Kafka 이벤트 발행 · 쿠폰과 이력 적재
     ↓
 정합성 검증 배치
 ```
-
-<img src="docs/images/architecture.png" alt="시스템 아키텍처" width="100%" />
-
 <br>
 
 ## 🚀 실행 방법
