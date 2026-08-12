@@ -12,6 +12,7 @@
 
 # Package Files #
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.nar
 *.ear
@@ -27,3 +28,4 @@ replay_pid*
 .settings/
 bin/
 .gradle/
+build/
