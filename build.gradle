@@ -2,6 +2,7 @@ plugins {
     id 'java'
     id 'org.springframework.boot' version '3.3.2'
     id 'io.spring.dependency-management' version '1.1.5'
+    id 'com.diffplug.spotless' version '6.25.0'
 }
 
 group = 'com.uply'
@@ -10,6 +11,23 @@ version = '0.0.1-SNAPSHOT'
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+spotless {
+    java {
+        target 'src/*/java/**/*.java'
+        googleJavaFormat().aosp()      // .aosp() = 들여쓰기 4칸
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    format 'misc', {
+        target '*.gradle', '*.md', '.gitignore', 'src/**/*.yml', 'src/**/*.yaml'
+        targetExclude 'bin/**', 'build/**', '.gradle/**'
+        trimTrailingWhitespace()
+        indentWithSpaces(2)
+        endWithNewline()
     }
 }
 
