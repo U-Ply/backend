@@ -69,8 +69,9 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     
-    // TSID Creator 라이브러리 추가
-	implementation 'com.github.f4b6a3:tsid-creator:5.2.6'
+
+    // ID 생성 (TSID)
+    implementation 'io.hypersistence:hypersistence-tsid:2.1.4'
 }
 
 tasks.named('test') {

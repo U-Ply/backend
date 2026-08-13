@@ -1,22 +1,26 @@
 package com.uply.coupon.campaign.domain;
 
-import jakarta.persistence.*;
+
 import java.time.LocalDateTime;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 @Entity
-@Table(
-        name = "campaign_stocks",
-        uniqueConstraints = {
-            @UniqueConstraint(
-                    name = "uk_campaign_route_fare",
-                    columnNames = {"campaign_id", "route_id", "fare_class"})
-        })
+@Table(name = "campaign_stocks")
 @Getter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
+@NoArgsConstructor(access = AccessLevel.PROTECTED) // 외부에서 CampaignStock을 생성못하도록 설정
 public class CampaignStock {
 
     @Id
@@ -66,5 +70,15 @@ public class CampaignStock {
             throw new IllegalStateException("총 재고 수량을 초과할 수 없습니다.");
         }
         this.remainingStock += quantity;
+    }
+
+    // 재고 차감
+    // Setter를 하지 않고 이 메서드로 값을 변경하기 때문에 재고를 바꾼 이유를 알 수 있음.
+    public void decrease() {
+        this.remainingStock -= 1;
+    }
+    
+    public void increase() {
+    	this.remainingStock += 1;
     }
 }
