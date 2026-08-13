@@ -2,8 +2,9 @@ package com.uply.coupon.coupon.strategy;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.f4b6a3.tsid.TsidCreator;
 import com.uply.coupon.coupon.dto.IdempotencyCache;
+
+import io.hypersistence.tsid.TSID;
 import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.List;
@@ -66,7 +67,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
 
         // #1. 번호표(couponId) 사전 생성 (TSID)
-        Long couponId = TsidCreator.getTsid().toLong();
+        Long couponId = TSID.fast().toLong();
 
         // #2. Redis Key 생성
         // Mapping Key: coupon:stock-map:{campaignId}:{routeId}:{fareClassId}
