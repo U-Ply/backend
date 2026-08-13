@@ -98,7 +98,7 @@ CREATE TABLE campaign_stocks (
 --     idx_expire       : 만료 배치 스캔
 -- =====================================================================
 CREATE TABLE coupons (
-    coupon_id    BIGINT      NOT NULL AUTO_INCREMENT,
+    coupon_id    BIGINT      NOT NULL,
     user_id      BIGINT      NOT NULL COMMENT '이 쿠폰을 받은 회원',
     campaign_id  BIGINT      NOT NULL COMMENT '어느 캠페인에서 발급됐는지',
     stock_id     BIGINT      NOT NULL COMMENT '어느 재고 풀에서 차감됐는지',
