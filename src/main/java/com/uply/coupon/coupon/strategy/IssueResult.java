@@ -3,7 +3,7 @@ package com.uply.coupon.coupon.strategy;
 public record IssueResult(
         boolean success,
         Long couponId, // 성공 시에만 값 존재
-        Long stockId,  // 성공 시에만 값 존재
+        Long stockId, // 성공 시에만 값 존재
         IssueFailReason reason // 실패 시에만 값 존재
         ) {
     public static IssueResult success(Long couponId, Long stockId) {

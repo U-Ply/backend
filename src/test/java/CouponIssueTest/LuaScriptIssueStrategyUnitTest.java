@@ -1,25 +1,22 @@
 package CouponIssueTest;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.coupon.dto.IdempotencyCache;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.coupon.strategy.IssueResult;
 import com.uply.coupon.coupon.strategy.LuaScriptIssueStrategy;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
 
 class LuaScriptIssueStrategyUnitTest {
 
@@ -67,7 +64,8 @@ class LuaScriptIssueStrategyUnitTest {
         objectMapper = new ObjectMapper();
 
         // Strategy 수동 생성 및 스크립트 초기화
-        luaScriptIssueStrategy = new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate, objectMapper);
+        luaScriptIssueStrategy =
+                new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate, objectMapper);
         luaScriptIssueStrategy.init();
 
         // Redis Key 구성
@@ -87,7 +85,8 @@ class LuaScriptIssueStrategyUnitTest {
         Long userId = 10L;
 
         // when (idempotencyKey 파라미터에 빈 문자열 "" 전달)
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, "");
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, "");
 
         // then
         assertThat(result.success()).isTrue();
@@ -99,7 +98,7 @@ class LuaScriptIssueStrategyUnitTest {
         Boolean isMember = redisTemplate.opsForSet().isMember(issuedKey, String.valueOf(userId));
 
         assertThat(remainingStock).isEqualTo("1"); // 2 -> 1 차감
-        assertThat(isMember).isTrue();            // 발급 목록 유저 존재
+        assertThat(isMember).isTrue(); // 발급 목록 유저 존재
     }
 
     @Test
@@ -110,7 +109,8 @@ class LuaScriptIssueStrategyUnitTest {
         luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, ""); // 1차 발급 성공
 
         // when (동일 유저 재요청)
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, "");
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, "");
 
         // then
         assertThat(result.success()).isFalse();
@@ -132,14 +132,15 @@ class LuaScriptIssueStrategyUnitTest {
         luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, user2, ""); // 재고 0 남음
 
         // when (재고 0 상태에서 요청)
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, user3, "");
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, user3, "");
 
         // then
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
         assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("0");
     }
-    
+
     @Test
     @DisplayName("정상 발급 시 멱등성 캐시가 idempotency:issue:{key} 포맷으로 저장되고 TTL은 10분이다")
     void issue_Success_SaveIdempotencyCache() throws Exception {
@@ -149,7 +150,9 @@ class LuaScriptIssueStrategyUnitTest {
         String expectedRedisKey = "idempotency:issue:" + idempotencyKey;
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(
+                        campaignId, routeId, fareClassId, userId, idempotencyKey);
 
         // then
         assertThat(result.success()).isTrue();
@@ -181,7 +184,9 @@ class LuaScriptIssueStrategyUnitTest {
         luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, idempotencyKey);
 
         // when (동일한 idempotencyKey로 2차 요청)
-        IssueResult duplicateResult = luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, idempotencyKey);
+        IssueResult duplicateResult =
+                luaScriptIssueStrategy.issue(
+                        campaignId, routeId, fareClassId, userId, idempotencyKey);
 
         // then
         assertThat(duplicateResult.success()).isFalse();

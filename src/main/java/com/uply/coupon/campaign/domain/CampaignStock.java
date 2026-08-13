@@ -1,8 +1,5 @@
 package com.uply.coupon.campaign.domain;
 
-
-import java.time.LocalDateTime;
-
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -12,6 +9,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -77,8 +75,8 @@ public class CampaignStock {
     public void decrease() {
         this.remainingStock -= 1;
     }
-    
+
     public void increase() {
-    	this.remainingStock += 1;
+        this.remainingStock += 1;
     }
 }
