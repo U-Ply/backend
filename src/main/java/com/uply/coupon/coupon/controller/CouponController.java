@@ -18,8 +18,7 @@ public class CouponController {
     @PostMapping("/issue")
     public ResponseEntity<CouponIssueResponse> issueCoupon(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @Valid @RequestBody CouponIssueRequest request
-    ) {
+            @Valid @RequestBody CouponIssueRequest request) {
         CouponIssueResponse response = couponService.issue(idempotencyKey, request);
         return ResponseEntity.ok(response);
     }

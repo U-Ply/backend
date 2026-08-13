@@ -5,5 +5,5 @@ import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 
 public interface CouponService {
 
-	CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request);
+    CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request);
 }

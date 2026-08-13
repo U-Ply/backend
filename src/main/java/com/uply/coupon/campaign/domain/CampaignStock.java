@@ -1,23 +1,20 @@
 package com.uply.coupon.campaign.domain;
 
 import jakarta.persistence.*;
+import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
-
 @Entity
 @Table(
-    name = "campaign_stocks",
-    uniqueConstraints = {
-        @UniqueConstraint(
-            name = "uk_campaign_route_fare",
-            columnNames = {"campaign_id", "route_id", "fare_class"}
-        )
-    }
-)
+        name = "campaign_stocks",
+        uniqueConstraints = {
+            @UniqueConstraint(
+                    name = "uk_campaign_route_fare",
+                    columnNames = {"campaign_id", "route_id", "fare_class"})
+        })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class CampaignStock {
