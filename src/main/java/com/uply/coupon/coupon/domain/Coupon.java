@@ -1,9 +1,11 @@
 package com.uply.coupon.coupon.domain;
 
+import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.PostPersist;
 import jakarta.persistence.Table;
@@ -13,13 +15,19 @@ import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.CreationTimestamp;
 import org.springframework.data.domain.Persistable;
 
 @Entity
 // 같은 campaign에 같은 user가 두번 발급 차단
 @Table(
         name = "coupons",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"campaign_id", "user_id"}))
+        uniqueConstraints = @UniqueConstraint(columnNames = {"campaign_id", "user_id"}),
+        indexes = {
+            @Index(name = "idx_coupon_stock_status", columnList = "stock_id, status"),
+            @Index(name = "idx_coupon_user", columnList = "user_id"),
+            @Index(name = "idx_coupon_expire", columnList = "status, expire_at")
+        })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Coupon implements Persistable<Long> {
@@ -30,12 +38,16 @@ public class Coupon implements Persistable<Long> {
     private Long campaignId;
     private Long stockId;
 
-    @Enumerated(EnumType.STRING) // DB에 숫자(0, 1, 2)로 상태 저장이 아닌 문자열(ISSUED, USED)등 으로 저장
+    @Enumerated(EnumType.STRING)
     private CouponStatus status;
 
     private LocalDateTime issuedAt;
-    private LocalDateTime expireAt;
+    private LocalDateTime usedAt;
     private LocalDateTime cancelledAt;
+    private LocalDateTime expiredAt;
+    private LocalDateTime expireAt;
+
+    @CreationTimestamp private LocalDateTime createdAt;
 
     @Transient private boolean newEntity = true;
 
@@ -51,6 +63,30 @@ public class Coupon implements Persistable<Long> {
         coupon.expireAt = expireAt;
 
         return coupon;
+    }
+
+    public void use(LocalDateTime usedAt) {
+        validateTransition(CouponStatus.USED);
+        this.status = CouponStatus.USED;
+        this.usedAt = usedAt;
+    }
+
+    public void cancel(LocalDateTime cancelledAt) {
+        validateTransition(CouponStatus.CANCELLED);
+        this.status = CouponStatus.CANCELLED;
+        this.cancelledAt = cancelledAt;
+    }
+
+    public void expire(LocalDateTime expiredAt) {
+        validateTransition(CouponStatus.EXPIRED);
+        this.status = CouponStatus.EXPIRED;
+        this.expiredAt = expiredAt;
+    }
+
+    private void validateTransition(CouponStatus targetStatus) {
+        if (status != CouponStatus.ISSUED) {
+            throw new InvalidStateTransitionException(status, targetStatus);
+        }
     }
 
     @Override
