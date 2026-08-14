@@ -1,42 +1,120 @@
 package com.uply.coupon.coupon.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
+import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
+import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
+import com.uply.coupon.coupon.strategy.IssueResult;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CouponServiceImpl implements CouponService {
 
+    private final CouponIssueStrategy couponIssueStrategy;
+    private final IdempotencyChecker idempotencyChecker;
+    private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
     private final StockIdLookup stockIdLookup; // campaign 도메인 기능 활용
 
-    /**
-     * stockId 찾기 -> LuaScriptIssueStrategy 쿠폰 발급 시도 -> IssueResult 반환 -> 실패 -> 예외처리 / 성공 ->
-     * CouponIssueResponse 반환
-     */
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
 
-        // #1. stockId 구하기
-        Long stockId =
-                stockIdLookup.lookupStockId(
-                        request.campaignId(), request.routeId(), request.fareClass());
+        // #1. 멱등성 검사 (Cache Hit 시 DTO 역직렬화 후 즉시 리턴)
+        /*
+         * Cache Hit 에도 두가지 경우가 있다.
+         * 	1.PROCESSING
+         * 	2.COMPLETED
+         * getCachedResponse() 수행 도중 PROCESSING 일 경우 throw 에러
+         * 그게 아니면 캐시된 성공 응답 데이터 반환
+         */
+        if (hasIdempotencyKey(idempotencyKey)) {
+            // 1.PROCESSING 일 경우 여기서 먼저 에러 발생
+            Optional<String> cachedBody = idempotencyChecker.getCachedResponse(idempotencyKey);
+            // 2.에러 없이 캐시된 데이터가 존재한다 = COMPLETED 상태이다. -> 이전의 응답 데이터를 그대로 사용자에게 반환
+            if (cachedBody.isPresent()) {
+                log.info("[멱등성 처리] 이전 성공 응답 재반환 - key: {}", idempotencyKey);
+                return parseCachedResponse(cachedBody.get());
+            }
+        }
 
-        // #2. LuaScriptIssueStrategy 쿠폰 발급
-        //		IssueResult result = couponIssueStrategy
-        //				.issue();
+        // #2. 최초 요청 처리 (예외 발생 시 PROCESSING 락 해제를 위한 try-catch)
+        try {
+            // stockId 조회
+            Long stockId =
+                    stockIdLookup.lookupStockId(
+                            request.campaignId(), request.routeId(), request.fareClass());
 
-        // #3-1 실패
-        //		if(!success) {
-        //			throw new CouponIssueException(result.reason());
-        //		}
+            // Lua Script 기반 원자적 발급 실행
+            IssueResult result =
+                    couponIssueStrategy.issue(
+                            request.campaignId(), request.userId(), stockId, idempotencyKey);
 
-        // #4-2 성공
-        //		return CouponIssueResponse.from(result, expireAt);
-        return null;
+            if (!result.success()) {
+                // 예외 필요
+                // throw new CouponIssueException(result.reason());
+            }
+
+            // 응답 DTO 생성
+            // Instant 기준 현재 시각 및 만료 시각 생성
+            Instant now = Instant.now();
+            Instant expireAt = now.plus(7, ChronoUnit.DAYS);
+            CouponIssueResponse response =
+                    CouponIssueResponse.builder()
+                            .couponId(String.valueOf(result.couponId()))
+                            .status(CouponStatus.ISSUED)
+                            .issuedAt(now)
+                            .expireAt(expireAt)
+                            .build();
+
+            // #3. 성공 응답 JSON 직렬화 후 Redis 캐싱 (COMPLETED, TTL 10분)
+            if (hasIdempotencyKey(idempotencyKey)) {
+                String responseJson = toJson(response);
+                idempotencyChecker.cacheResponse(idempotencyKey, responseJson, 200);
+            }
+
+            return response;
+
+        } catch (Exception e) {
+            // 비즈니스 로직 / 인프라 예외 발생 시 PROCESSING 키 삭제 (재시도 허용)
+            if (hasIdempotencyKey(idempotencyKey)) {
+                idempotencyChecker.clearProgress(idempotencyKey);
+            }
+            throw e;
+        }
+    }
+
+    private boolean hasIdempotencyKey(String idempotencyKey) {
+        return idempotencyKey != null && !idempotencyKey.isBlank();
+    }
+
+    private String toJson(Object object) {
+        try {
+            return objectMapper.writeValueAsString(object);
+        } catch (JsonProcessingException e) {
+            log.error("[JSON 직렬화 실패]", e);
+            throw new IllegalStateException("응답 데이터 직렬화에 실패했습니다.", e);
+        }
+    }
+
+    /** Redis에 저장되어 있던 JSON 문자열을 DTO 객체로 변환 */
+    private CouponIssueResponse parseCachedResponse(String json) {
+        try {
+            return objectMapper.readValue(json, CouponIssueResponse.class);
+        } catch (JsonProcessingException e) {
+            log.error("[멱등성 응답 복원 실패] JSON 역직렬화 오류 - body: {}", json, e);
+            throw new IllegalStateException("캐시된 응답 데이터 복원 중 오류가 발생했습니다.", e);
+        }
     }
 }

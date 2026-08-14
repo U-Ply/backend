@@ -4,8 +4,10 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.strategy.IssueResult;
 import java.time.Instant;
+import lombok.Builder;
 
 /** 쿠폰 발행 응답 DTO */
+@Builder
 public record CouponIssueResponse(
 
         /** Redis 에서 재고 차감 후 직접 발급하는 TSID */
@@ -25,7 +27,7 @@ public record CouponIssueResponse(
                 Instant expireAt) {
 
     /**
-     * IssueResult의 Long 타입 couponId를 String으로 변환하여 성공 응답 DTO를 생성하는 팩토리 메서드 expireAt 은 캠페인의 쿠폰 정책에서
+     * IssueResult의 Long 타입 couponId를 String 으로 변환하여 성공 응답 DTO를 생성하는 팩토리 메서드 expireAt 은 캠페인의 쿠폰 정책에서
      * 가져올 것으로 예상
      */
     public static CouponIssueResponse from(IssueResult result, Instant expireAt) {
