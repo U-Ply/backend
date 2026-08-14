@@ -50,10 +50,19 @@ public class DummyDataGenerator implements CommandLineRunner {
         "coupon_history", "coupons", "campaign_stocks", "campaigns", "users"
     };
 
+    /** 재고 풀 = 캠페인 × 노선 × 좌석등급. uk_stock_pool(campaign_id, route_id, fare_class) 와 대응. */
+    private static final String[] ROUTES = {"JEJU", "BUSAN", "FUKUOKA", "BANGKOK", "DANANG"};
+
+    private static final String[] FARE_CLASSES = {"ECONOMY", "BUSINESS"};
+
     private final DataSource dataSource;
     private final ApplicationArguments appArgs;
 
     private long userCount;
+    private long campaignCount;
+    private int routeCount;
+    private int fareClassCount;
+    private int totalStock;
     private long seed;
     private LocalDateTime baseTime;
     private boolean truncate;
@@ -70,13 +79,12 @@ public class DummyDataGenerator implements CommandLineRunner {
                 truncateAll(conn);
             }
 
-            long t0 = System.currentTimeMillis();
-            int inserted = insertUsers(conn);
-            report("users", inserted, System.currentTimeMillis() - t0);
+            timed("users", () -> insertUsers(conn));
+            timed("campaigns", () -> insertCampaigns(conn));
+            timed("campaign_stocks", () -> insertCampaignStocks(conn));
 
             // 다음 단계가 여기에 붙는다
-            //   insertCampaigns(conn);
-            //   insertCoupons(conn);       ← 상태 머신 시뮬레이션
+            //   timed("coupons", () -> insertCoupons(conn));   ← 상태 머신 시뮬레이션
             //   updateRemainingStock(conn);
             //   corrupt(conn);
         }
@@ -86,9 +94,24 @@ public class DummyDataGenerator implements CommandLineRunner {
 
     private void parseArgs() {
         userCount = argLong("users", 1000);
+        campaignCount = argLong("campaigns", 30);
+        routeCount = (int) argLong("routes", ROUTES.length);
+        fareClassCount = (int) argLong("fare-classes", FARE_CLASSES.length);
+        totalStock = (int) argLong("stock", 12_500);
         seed = argLong("seed", 42);
         baseTime = LocalDateTime.parse(arg("base-time", "2026-08-01T00:00:00"));
         truncate = appArgs.containsOption("truncate");
+
+        if (routeCount < 1 || routeCount > ROUTES.length) {
+            throw new IllegalArgumentException("--routes 는 1~" + ROUTES.length + " 범위여야 합니다");
+        }
+        if (fareClassCount < 1 || fareClassCount > FARE_CLASSES.length) {
+            throw new IllegalArgumentException(
+                    "--fare-classes 는 1~" + FARE_CLASSES.length + " 범위여야 합니다");
+        }
+        if (totalStock < 1) {
+            throw new IllegalArgumentException("--stock 은 1 이상이어야 합니다 (ck_stock_total)");
+        }
     }
 
     private String arg(String name, String defaultValue) {
@@ -178,6 +201,80 @@ public class DummyDataGenerator implements CommandLineRunner {
         return inserted;
     }
 
+    // ────────────────────────── campaigns ──────────────────────────
+
+    /**
+     * 캠페인은 많아야 수십 개라 청크가 필요 없다. 한 번에 배치하고 커밋한다.
+     *
+     * <p>ck_campaign_period CHECK (expire_at > open_at) 이 걸려 있으므로 순서에 주의.
+     */
+    private int insertCampaigns(Connection conn) throws SQLException {
+        final String sql =
+                "INSERT INTO campaigns (campaign_id, name, open_at, expire_at, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?)";
+
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (long c = 1; c <= campaignCount; c++) {
+                ps.setLong(1, c);
+                ps.setString(2, "특가 캠페인 " + c + "회차");
+                ps.setObject(3, baseTime); // open_at
+                ps.setObject(4, baseTime.plusDays(30)); // expire_at — 반드시 open_at 이후
+                ps.setObject(5, baseTime);
+                ps.addBatch();
+            }
+            int inserted = ps.executeBatch().length;
+            conn.commit();
+            return inserted;
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        }
+    }
+
+    // ────────────────────── campaign_stocks ──────────────────────
+
+    /**
+     * 재고 풀 = 캠페인 × 노선 × 좌석등급.
+     *
+     * <p>total_stock 을 나중에 배정할 쿠폰 수보다 크게 잡는다. 그러면 INV-01(발급 수 ≤ total_stock)이 구조적으로 위반 불가능해지고,
+     * remaining_stock 계산 후에도 ck_stock_nonneg 를 만족한다.
+     *
+     * <p>쿠폰을 아직 넣기 전이므로 remaining_stock = total_stock 으로 둔다. 쿠폰 적재가 끝난 뒤 updateRemainingStock() 에서
+     * 실제 발급 수를 빼서 확정한다.
+     */
+    private int insertCampaignStocks(Connection conn) throws SQLException {
+        final String sql =
+                "INSERT INTO campaign_stocks "
+                        + "(stock_id, campaign_id, route_id, fare_class, total_stock, remaining_stock, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+        long stockId = 0;
+
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (long c = 1; c <= campaignCount; c++) {
+                for (int r = 0; r < routeCount; r++) {
+                    for (int f = 0; f < fareClassCount; f++) {
+                        stockId++;
+                        ps.setLong(1, stockId);
+                        ps.setLong(2, c);
+                        ps.setString(3, ROUTES[r]);
+                        ps.setString(4, FARE_CLASSES[f]);
+                        ps.setInt(5, totalStock);
+                        ps.setInt(6, totalStock);
+                        ps.setObject(7, baseTime);
+                        ps.addBatch();
+                    }
+                }
+            }
+            int inserted = ps.executeBatch().length;
+            conn.commit();
+            return inserted;
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        }
+    }
+
     // ────────────────────────────── 공통 ──────────────────────────────
 
     /** rewriteBatchedStatements 가 켜져 있으면 반환값이 SUCCESS_NO_INFO(-2) 일 수 있어 길이로 센다. */
@@ -187,17 +284,30 @@ public class DummyDataGenerator implements CommandLineRunner {
         return count;
     }
 
-    private void printHeader() {
-        System.out.println("──────────────────────────────────────");
-        System.out.printf("  users     : %,d%n", userCount);
-        System.out.printf("  seed      : %d%n", seed);
-        System.out.printf("  base-time : %s%n", baseTime);
-        System.out.printf("  truncate  : %s%n", truncate);
-        System.out.println("──────────────────────────────────────");
+    @FunctionalInterface
+    private interface SqlStep {
+        int run() throws SQLException;
     }
 
-    private void report(String label, int rows, long elapsedMs) {
-        double rowsPerSec = rows * 1000.0 / Math.max(elapsedMs, 1);
-        System.out.printf("[%s] %,d건 / %,dms (%,.0f rows/s)%n", label, rows, elapsedMs, rowsPerSec);
+    private void timed(String label, SqlStep step) throws SQLException {
+        long t0 = System.currentTimeMillis();
+        int rows = step.run();
+        long elapsed = System.currentTimeMillis() - t0;
+        double rowsPerSec = rows * 1000.0 / Math.max(elapsed, 1);
+        System.out.printf("[%s] %,d건 / %,dms (%,.0f rows/s)%n", label, rows, elapsed, rowsPerSec);
+    }
+
+    private void printHeader() {
+        System.out.println("──────────────────────────────────────");
+        System.out.printf("  users        : %,d%n", userCount);
+        System.out.printf("  campaigns    : %,d%n", campaignCount);
+        System.out.printf("  routes       : %d%n", routeCount);
+        System.out.printf("  fare-classes : %d%n", fareClassCount);
+        System.out.printf("  stock pools  : %,d%n", campaignCount * routeCount * fareClassCount);
+        System.out.printf("  total_stock  : %,d%n", totalStock);
+        System.out.printf("  seed         : %d%n", seed);
+        System.out.printf("  base-time    : %s%n", baseTime);
+        System.out.printf("  truncate     : %s%n", truncate);
+        System.out.println("──────────────────────────────────────");
     }
 }
