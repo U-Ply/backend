@@ -70,12 +70,67 @@ class NoLockIssueStrategyTest {
     }
 
     @Test
-    @DisplayName("락이 없으면 재고보다 많은 쿠폰이 발급된다 (동시성 제어 부재 증명)")
-    void 락이_없으면_초과발급이_발생한다() throws InterruptedException {
+    @DisplayName("정상 발급되면 쿠폰이 생성되고 재고가 1 줄어든다")
+    void 정상_발급() {
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "key-1");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.couponId()).isNotNull();
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
+    }
+
+    @Test
+    @DisplayName("재고가 모두 소진되면 OUT_OF_STOCK을 반환하고 재고는 0 아래로 내려가지 않는다")
+    void 재고_소진() {
+        // 유저 1~10이 재고를 전부 가져 감
+        for (int i = 1; i <= TOTAL_STOCK; i++) {
+            strategy.issue(CAMPAIGN_ID, (long) i, STOCK_ID, "key-" + i);
+        }
+
+        // 11번째 유저는 실패해야 함
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 11L, STOCK_ID, "key-11");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
+        assertThat(remainingStock()).isZero();
+        assertThat(couponCount()).isEqualTo(TOTAL_STOCK);
+    }
+
+    @Test
+    @DisplayName("같은 유저가 다른 키로 다시 요청하면 ALREADY_ISSUED이고 재고는 1만 줄어든다")
+    void 중복_발급_차단() {
+        strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "key-a");
+
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "key-b");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.ALREADY_ISSUED);
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1); // 재고가 추가로 깎이면 안 된다
+        assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("같은 idempotencyKey로 재시도하면 같은 쿠폰을 돌려주고 재고를 두 번 깎지 않는다")
+    void 멱등성_보장() {
+        IssueResult first = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "same-key");
+        IssueResult retry = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "same-key");
+
+        assertThat(first.success()).isTrue();
+        assertThat(retry.success()).isTrue();
+        assertThat(retry.couponId()).isEqualTo(first.couponId()); // 같은 쿠폰이어야 한다
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1); // 재고는 1만 차감
+        assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("락이 없으면 재고 차감이 유실되어 쿠폰 수와 재고가 어긋난다")
+    void 락이_없으면_재고차감이_유실된다() throws InterruptedException {
         ExecutorService executor = Executors.newFixedThreadPool(USER_COUNT);
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(USER_COUNT);
 
+        AtomicInteger outOfStock = new AtomicInteger();
+        AtomicInteger alreadyIssued = new AtomicInteger();
         AtomicInteger success = new AtomicInteger();
         AtomicInteger deadlock = new AtomicInteger();
         AtomicInteger error = new AtomicInteger();
@@ -91,6 +146,10 @@ class NoLockIssueStrategyTest {
                                             CAMPAIGN_ID, userId, STOCK_ID, "nolock-" + userId);
                             if (result.success()) {
                                 success.incrementAndGet();
+                            } else if (result.reason() == IssueFailReason.OUT_OF_STOCK) {
+                                outOfStock.incrementAndGet();
+                            } else if (result.reason() == IssueFailReason.ALREADY_ISSUED) {
+                                alreadyIssued.incrementAndGet();
                             }
                         } catch (org.springframework.dao.PessimisticLockingFailureException e) {
                             deadlock.incrementAndGet();
@@ -103,15 +162,32 @@ class NoLockIssueStrategyTest {
         }
 
         start.countDown();
-        done.await(30, TimeUnit.SECONDS);
+        boolean finished = done.await(30, TimeUnit.SECONDS);
         executor.shutdown();
+
+        assertThat(finished).isTrue(); // 제한 시간 안에 모든 요청이 끝나야 한다
 
         int issued = couponCount(); // 실제 발급된 쿠폰 수
         int consumed = TOTAL_STOCK - remainingStock(); // 재고가 줄어든 양
 
         System.out.printf(
-                "발급 %d건 / 재고 차감 %d건 → 유실 %d건 (락 경합 실패 %d건, 기타 예외 %d건)%n",
-                issued, consumed, issued - consumed, deadlock.get(), error.get());
+                "발급 %d건 / 재고 차감 %d건 → 유실 %d건" + " (재고소진 %d건, 중복 %d건, 락 경합 실패 %d건, 기타 예외 %d건)%n",
+                issued,
+                consumed,
+                issued - consumed,
+                outOfStock.get(),
+                alreadyIssued.get(),
+                deadlock.get(),
+                error.get());
+
+        // 요청이 어디로도 새지 않았는지 확인 (합이 안 맞으면 집계되지 않은 결과가 있다는 뜻)
+        assertThat(
+                        success.get()
+                                + outOfStock.get()
+                                + alreadyIssued.get()
+                                + deadlock.get()
+                                + error.get())
+                .isEqualTo(USER_COUNT);
 
         // 락이 없으므로 차감이 유실되어, 발급 수가 재고 차감량보다 많아진다
         assertThat(issued).isGreaterThan(consumed);
