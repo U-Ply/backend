@@ -7,7 +7,6 @@ public enum IssueFailReason {
     CAMPAIGN_NOT_OPEN, // 오픈 시각 이전 요청
 
     // 추가
-    STOCK_NOT_FOUND, // stock-map:{campaignId}:{routeId}:{fareClassId} 정보가 ㅇ벗다
     DUPLICATE_REQUEST, // 동일 HTTP Request 중복 진입 (idempotencyKey 기준)
     SYSTEM_ERROR // 나머지 모든 에러 상황
 }

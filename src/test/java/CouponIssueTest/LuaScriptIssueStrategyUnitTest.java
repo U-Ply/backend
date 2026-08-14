@@ -28,11 +28,8 @@ class LuaScriptIssueStrategyUnitTest {
     private ObjectMapper objectMapper;
 
     private final Long campaignId = 1L;
-    private final Long routeId = 100L;
-    private final Long fareClassId = 2L;
     private final Long stockId = 5001L;
 
-    private String mapKey;
     private String issuedKey;
     private String stockKey;
 
@@ -69,12 +66,10 @@ class LuaScriptIssueStrategyUnitTest {
         luaScriptIssueStrategy.init();
 
         // Redis Key 구성
-        mapKey = String.format("stock-map:%d:%d:%d", campaignId, routeId, fareClassId);
         issuedKey = String.format("issued:%d", campaignId);
         stockKey = "stock:" + stockId;
 
         // 사전 캐시 워밍 (Cache Warm-up)
-        redisTemplate.opsForValue().set(mapKey, String.valueOf(stockId));
         redisTemplate.opsForValue().set(stockKey, "2"); // 초기 재고 2개
     }
 
@@ -86,12 +81,11 @@ class LuaScriptIssueStrategyUnitTest {
 
         // when (idempotencyKey 파라미터에 빈 문자열 "" 전달)
         IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, "");
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
 
         // then
         assertThat(result.success()).isTrue();
         assertThat(result.couponId()).isNotNull();
-        assertThat(result.stockId()).isEqualTo(stockId); // stockId 검증 추가 (5001L)
 
         // Redis 상태 검증
         String remainingStock = redisTemplate.opsForValue().get(stockKey);
@@ -106,11 +100,11 @@ class LuaScriptIssueStrategyUnitTest {
     void issue_Fail_AlreadyIssued() {
         // given
         Long userId = 10L;
-        luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, ""); // 1차 발급 성공
+        luaScriptIssueStrategy.issue(campaignId, userId, stockId, ""); // 1차 발급 성공
 
         // when (동일 유저 재요청)
         IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, "");
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
 
         // then
         assertThat(result.success()).isFalse();
@@ -128,12 +122,12 @@ class LuaScriptIssueStrategyUnitTest {
         Long user2 = 20L;
         Long user3 = 30L;
 
-        luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, user1, ""); // 재고 1 남음
-        luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, user2, ""); // 재고 0 남음
+        luaScriptIssueStrategy.issue(campaignId, user1, stockId, ""); // 재고 1 남음
+        luaScriptIssueStrategy.issue(campaignId, user2, stockId, ""); // 재고 0 남음
 
         // when (재고 0 상태에서 요청)
         IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, user3, "");
+                luaScriptIssueStrategy.issue(campaignId, user3, stockId, "");
 
         // then
         assertThat(result.success()).isFalse();
@@ -147,16 +141,15 @@ class LuaScriptIssueStrategyUnitTest {
         // given
         Long userId = 10L;
         String idempotencyKey = "tx-uuid-1234";
-        String expectedRedisKey = "idempotency:issue:" + idempotencyKey;
+        String expectedRedisKey = "idempotency:" + idempotencyKey;
 
         // when
         IssueResult result =
                 luaScriptIssueStrategy.issue(
-                        campaignId, routeId, fareClassId, userId, idempotencyKey);
+                		campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isTrue();
-        assertThat(result.stockId()).isEqualTo(stockId);
 
         // 1. Redis에 멱등성 키 존재 여부 검증
         String cachedJson = redisTemplate.opsForValue().get(expectedRedisKey);
@@ -181,12 +174,12 @@ class LuaScriptIssueStrategyUnitTest {
         String idempotencyKey = "tx-uuid-dup-test";
 
         // 1차 요청 수행 (성공)
-        luaScriptIssueStrategy.issue(campaignId, routeId, fareClassId, userId, idempotencyKey);
+        luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // when (동일한 idempotencyKey로 2차 요청)
         IssueResult duplicateResult =
                 luaScriptIssueStrategy.issue(
-                        campaignId, routeId, fareClassId, userId, idempotencyKey);
+                		campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(duplicateResult.success()).isFalse();

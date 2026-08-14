@@ -27,8 +27,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     private final ObjectMapper objectMapper; // JSON 변환용
 
     private DefaultRedisScript<List> issueScript;
-
-    private static final String API_TYPE = "issue";
+    
     private static final Duration IDEMPOTENCY_TTL = Duration.ofMinutes(10); // 규약: TTL 10분
 
     @PostConstruct
@@ -43,11 +42,10 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
      * Redis 캐시에 CampaignStock 데이터가 이미 적재되어 있는 상태. stockId, remainingStock 만 사용 쿠폰 발급 성공 시 stockId 를
      * IssueResult 에 포함해야 Kafka 메시지로 전달 가능.
      *
-     * <p>Redis Key 추가 필요 stock:{campaignId}:{routeId}:{fareClassId} -> stockId
      */
     @Override
     public IssueResult issue(
-            Long campaignId, Long routeId, Long fareClassId, Long userId, String idempotencyKey) {
+    		Long campaignId, Long userId, Long stockId, String idempotencyKey) {
         // TODO: Lua Script로 재고 확인 + 중복 체크 + 차감을 원자적으로 처리 후 Kafka 이벤트 발행
 
         String idempotencyRedisKey = null;
@@ -55,7 +53,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         // 1. [Idempotency Key 검증 및 조회]
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             // 규약 키 패턴: idempotency:{apiType}:{key}
-            idempotencyRedisKey = String.format("idempotency:%s:%s", API_TYPE, idempotencyKey);
+            idempotencyRedisKey = String.format("idempotency:%s", idempotencyKey);
 
             String cachedData = redisTemplate.opsForValue().get(idempotencyRedisKey);
             if (cachedData != null) {
@@ -69,8 +67,8 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         Long couponId = TSID.fast().toLong();
 
         // #2. Redis Key 생성
-        // Mapping Key: coupon:stock-map:{campaignId}:{routeId}:{fareClassId}
-        String mapKey = String.format("stock-map:%d:%d:%d", campaignId, routeId, fareClassId);
+        // stockId key
+        String stockIdKey = String.format("stock:%d", stockId);
         // 캠페인 중복 검사 Key: coupon:issued:{campaignId}
         String issuedCampaignKey = String.format("issued:%d", campaignId);
 
@@ -79,7 +77,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         // -> 무시해도 된다.
         List<Object> result =
                 redisTemplate.execute(
-                        issueScript, List.of(mapKey, issuedCampaignKey), String.valueOf(userId));
+                        issueScript, List.of(stockIdKey, issuedCampaignKey), String.valueOf(userId));
 
         if (result == null || result.isEmpty()) {
             return IssueResult.fail(IssueFailReason.SYSTEM_ERROR);
@@ -92,9 +90,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             IssueFailReason failReason = matchFailReason(resultCode);
             return IssueResult.fail(failReason);
         }
-
-        // #6. 성공 시 Lua Script가 찾아준 stockId 추출 -> 메시지로 전달
-        Long stockId = Long.parseLong((String) result.get(1));
 
         //        // #7. Kafka 비동기 이벤트 발행 (DB Insert용)
         //        CouponIssuedEvent event = new CouponIssuedEvent(
@@ -113,7 +108,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
 
         // #9. 성공 결과 반환 (IssueResult)
-        return IssueResult.success(couponId, stockId);
+        return IssueResult.success(couponId);
     }
 
     @Override
@@ -145,7 +140,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         return switch ((int) resultCode) {
             case -1 -> IssueFailReason.ALREADY_ISSUED;
             case -2 -> IssueFailReason.OUT_OF_STOCK;
-            case -3 -> IssueFailReason.STOCK_NOT_FOUND;
             default -> IssueFailReason.SYSTEM_ERROR;
         };
     }
