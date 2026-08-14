@@ -23,7 +23,7 @@ class LuaScriptIssueStrategyUnitTest {
     private static LettuceConnectionFactory connectionFactory;
     private static StringRedisTemplate redisTemplate;
 
-    private KafkaTemplate<String, Object> kafkaTemplate;
+    private KafkaTemplate<String, String> kafkaTemplate;
     private LuaScriptIssueStrategy luaScriptIssueStrategy;
     private ObjectMapper objectMapper;
 

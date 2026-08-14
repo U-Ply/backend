@@ -3,7 +3,7 @@ package com.uply.coupon.coupon.service;
 import com.uply.coupon.campaign.service.StockIdLookup;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
-import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
+import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class CouponServiceImpl implements CouponService {
 
-    private final CouponIssueStrategy couponIssueStrategy;
+    private final CouponIssueStrategySelector strategySelector;
     private final StockIdLookup stockIdLookup; // campaign 도메인 기능 활용
 
     /**

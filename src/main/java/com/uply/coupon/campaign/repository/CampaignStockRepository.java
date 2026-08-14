@@ -15,6 +15,6 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000"))
-    @Query("SELECT s FROM CampaignStock s WHERE s.stockId = :stockId")
+    @Query("SELECT s FROM CampaignStock s WHERE s.id = :stockId")
     Optional<CampaignStock> findByIdForUpdate(@Param("stockId") Long stockId);
 }
