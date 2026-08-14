@@ -70,6 +70,14 @@ src/test/java/com/uply/coupon/coupon/strategy/PessimisticLockIssueStrategyTest.j
 
 현재 테스트는 `@SpringBootTest`와 실제 MySQL을 사용한다.
 
+Spring 통합 테스트의 공통 설정은 다음 테스트 프로파일을 사용한다.
+
+```text
+src/test/resources/application-test.yml
+```
+
+`@SpringBootTest`로 실제 MySQL을 사용하는 테스트 클래스에는 `@ActiveProfiles("test")`를 적용한다. 순수 JUnit/Mockito 단위 테스트에는 적용하지 않는다.
+
 실행 전 다음 조건을 만족해야 한다.
 
 - MySQL이 실행 중이어야 한다.
@@ -80,8 +88,17 @@ src/test/java/com/uply/coupon/coupon/strategy/PessimisticLockIssueStrategyTest.j
 실행 명령:
 
 ```bash
+docker compose up -d mysql
 ./gradlew test
 ```
+
+특정 테스트만 실행하려면 다음 형식을 사용한다.
+
+```bash
+./gradlew test --tests "<테스트클래스명>"
+```
+
+`docs/schema.sql`은 테스트 실행마다 다시 적용하지 않는다. 로컬 스키마를 완전히 재생성해야 할 때만 운영체제별 `reset-schema` 스크립트를 사용하며, 이 작업은 기존 테스트 데이터를 모두 삭제한다.
 
 ### 5.4 Level 1 공통 검증 항목 및 전략별 판정
 
