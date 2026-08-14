@@ -3,9 +3,6 @@ package com.uply.coupon.coupon.strategy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
-import com.uply.coupon.coupon.strategy.IssueFailReason;
-import com.uply.coupon.coupon.strategy.IssueResult;
-import com.uply.coupon.coupon.strategy.LuaScriptIssueStrategy;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,8 +53,7 @@ class LuaScriptIssueStrategyUnitTest {
         kafkaTemplate = mock(KafkaTemplate.class);
 
         // Strategy 수동 생성 및 스크립트 초기화
-        luaScriptIssueStrategy =
-                new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate);
+        luaScriptIssueStrategy = new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate);
         luaScriptIssueStrategy.init();
 
         // Redis Key 구성
@@ -126,6 +122,4 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
         assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("0");
     }
-
-
 }

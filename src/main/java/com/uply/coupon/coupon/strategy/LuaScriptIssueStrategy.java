@@ -39,7 +39,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     public IssueResult issue(Long campaignId, Long userId, Long stockId, String idempotencyKey) {
         // TODO: Lua Script로 재고 확인 + 중복 체크 + 차감을 원자적으로 처리 후 Kafka 이벤트 발행
 
-
         // #1. 번호표(couponId) 사전 생성 (TSID)
         Long couponId = TSID.fast().toLong();
 

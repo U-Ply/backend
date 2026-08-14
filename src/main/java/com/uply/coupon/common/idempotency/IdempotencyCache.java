@@ -10,7 +10,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class IdempotencyCache {
-	private String status; // PROCESSING 또는 COMPLETED
+    private String status; // PROCESSING 또는 COMPLETED
     private int httpStatus;
     private String body;
     private String requestHash;

@@ -1,25 +1,5 @@
 package idempotency;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.uply.coupon.common.idempotency.IdempotencyCache;
-import com.uply.coupon.common.idempotency.RedisIdempotencyChecker;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
-
-import java.time.Duration;
-import java.util.Optional;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,20 +8,33 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.idempotency.IdempotencyCache;
+import com.uply.coupon.common.idempotency.RedisIdempotencyChecker;
+import java.time.Duration;
+import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+
 @ExtendWith(MockitoExtension.class)
 class RedisIdempotencyCheckerTest {
 
-    @InjectMocks
-    private RedisIdempotencyChecker idempotencyChecker;
+    @InjectMocks private RedisIdempotencyChecker idempotencyChecker;
 
-    @Mock
-    private StringRedisTemplate redisTemplate;
+    @Mock private StringRedisTemplate redisTemplate;
 
-    @Mock
-    private ValueOperations<String, String> valueOperations;
+    @Mock private ValueOperations<String, String> valueOperations;
 
-    @Mock
-    private ObjectMapper objectMapper;
+    @Mock private ObjectMapper objectMapper;
 
     private static final String IDEMPOTENCY_KEY = "test-key-1234";
     private static final String REDIS_KEY = "idempotency:" + IDEMPOTENCY_KEY;
@@ -61,7 +54,7 @@ class RedisIdempotencyCheckerTest {
             assertThat(idempotencyChecker.getCachedResponse(null)).isEmpty();
             assertThat(idempotencyChecker.getCachedResponse("")).isEmpty();
             assertThat(idempotencyChecker.getCachedResponse("   ")).isEmpty();
-            
+
             verifyNoInteractions(redisTemplate);
         }
 
@@ -70,7 +63,9 @@ class RedisIdempotencyCheckerTest {
         void getCachedResponse_firstRequest_returnsEmpty() throws Exception {
             // given
             given(objectMapper.writeValueAsString(any())).willReturn("{\"status\":\"PROCESSING\"}");
-            given(valueOperations.setIfAbsent(eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
+            given(
+                            valueOperations.setIfAbsent(
+                                    eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
                     .willReturn(true);
 
             // when
@@ -88,13 +83,17 @@ class RedisIdempotencyCheckerTest {
         void getCachedResponse_processingState_throwsException() throws Exception {
             // given
             String processingJson = "{\"status\":\"PROCESSING\"}";
-            IdempotencyCache processingCache = IdempotencyCache.builder().status("PROCESSING").build();
+            IdempotencyCache processingCache =
+                    IdempotencyCache.builder().status("PROCESSING").build();
 
             given(objectMapper.writeValueAsString(any())).willReturn(processingJson);
-            given(valueOperations.setIfAbsent(eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
+            given(
+                            valueOperations.setIfAbsent(
+                                    eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
                     .willReturn(false);
             given(valueOperations.get(REDIS_KEY)).willReturn(processingJson);
-            given(objectMapper.readValue(processingJson, IdempotencyCache.class)).willReturn(processingCache);
+            given(objectMapper.readValue(processingJson, IdempotencyCache.class))
+                    .willReturn(processingCache);
 
             // when & then
             assertThatThrownBy(() -> idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
@@ -106,17 +105,22 @@ class RedisIdempotencyCheckerTest {
         @DisplayName("중복 요청 시 상태가 COMPLETED이면 캐시된 응답 body를 반환한다")
         void getCachedResponse_completedState_returnsCachedBody() throws Exception {
             // given
-            String completedJson = "{\"status\":\"COMPLETED\",\"body\":\"{\\\"couponId\\\":\\\"100\\\"}\"}";
-            IdempotencyCache completedCache = IdempotencyCache.builder()
-                    .status("COMPLETED")
-                    .body("{\"couponId\":\"100\"}")
-                    .build();
+            String completedJson =
+                    "{\"status\":\"COMPLETED\",\"body\":\"{\\\"couponId\\\":\\\"100\\\"}\"}";
+            IdempotencyCache completedCache =
+                    IdempotencyCache.builder()
+                            .status("COMPLETED")
+                            .body("{\"couponId\":\"100\"}")
+                            .build();
 
             given(objectMapper.writeValueAsString(any())).willReturn("{\"status\":\"PROCESSING\"}");
-            given(valueOperations.setIfAbsent(eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
+            given(
+                            valueOperations.setIfAbsent(
+                                    eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
                     .willReturn(false);
             given(valueOperations.get(REDIS_KEY)).willReturn(completedJson);
-            given(objectMapper.readValue(completedJson, IdempotencyCache.class)).willReturn(completedCache);
+            given(objectMapper.readValue(completedJson, IdempotencyCache.class))
+                    .willReturn(completedCache);
 
             // when
             Optional<String> result = idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY);
@@ -132,7 +136,9 @@ class RedisIdempotencyCheckerTest {
             String invalidJson = "invalid-json";
 
             given(objectMapper.writeValueAsString(any())).willReturn("{\"status\":\"PROCESSING\"}");
-            given(valueOperations.setIfAbsent(eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
+            given(
+                            valueOperations.setIfAbsent(
+                                    eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
                     .willReturn(false);
             given(valueOperations.get(REDIS_KEY)).willReturn(invalidJson);
             given(objectMapper.readValue(invalidJson, IdempotencyCache.class))
@@ -157,7 +163,8 @@ class RedisIdempotencyCheckerTest {
             String responseBody = "{\"couponId\":\"100\"}";
             String cacheJson = "{\"status\":\"COMPLETED\",\"body\":\"...\"}";
 
-            given(objectMapper.writeValueAsString(any(IdempotencyCache.class))).willReturn(cacheJson);
+            given(objectMapper.writeValueAsString(any(IdempotencyCache.class)))
+                    .willReturn(cacheJson);
 
             // when
             idempotencyChecker.cacheResponse(IDEMPOTENCY_KEY, responseBody, 200);

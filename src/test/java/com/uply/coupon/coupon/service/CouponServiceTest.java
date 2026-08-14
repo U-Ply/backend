@@ -1,5 +1,12 @@
 package com.uply.coupon.coupon.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.*;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
@@ -8,6 +15,7 @@ import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.IssueResult;
+import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -16,32 +24,18 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.Optional;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.*;
-
 @ExtendWith(MockitoExtension.class)
 class CouponServiceTest {
 
-    @InjectMocks
-    private CouponServiceImpl couponService;
+    @InjectMocks private CouponServiceImpl couponService;
 
-    @Mock
-    private CouponIssueStrategy couponIssueStrategy;
+    @Mock private CouponIssueStrategy couponIssueStrategy;
 
-    @Mock
-    private StockIdLookup stockIdLookup;
+    @Mock private StockIdLookup stockIdLookup;
 
-    @Mock
-    private IdempotencyChecker idempotencyChecker;
+    @Mock private IdempotencyChecker idempotencyChecker;
 
-    @Mock
-    private ObjectMapper objectMapper;
+    @Mock private ObjectMapper objectMapper;
 
     private static final String IDEMPOTENCY_KEY = "key-123";
     private static final Long CAMPAIGN_ID = 1L;
@@ -65,10 +59,11 @@ class CouponServiceTest {
             // given
             CouponIssueRequest request = createRequest();
             String cachedBodyJson = "{\"couponId\":\"7777\",\"status\":\"ISSUED\"}";
-            CouponIssueResponse expectedResponse = CouponIssueResponse.builder()
-                    .couponId(String.valueOf(COUPON_ID))
-                    .status(CouponStatus.ISSUED)
-                    .build();
+            CouponIssueResponse expectedResponse =
+                    CouponIssueResponse.builder()
+                            .couponId(String.valueOf(COUPON_ID))
+                            .status(CouponStatus.ISSUED)
+                            .build();
 
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.of(cachedBodyJson));
@@ -117,11 +112,14 @@ class CouponServiceTest {
             IssueResult successResult = IssueResult.success(COUPON_ID);
             String responseJson = "{\"couponId\":\"7777\"}";
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY)).willReturn(Optional.empty());
-            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS)).willReturn(STOCK_ID);
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .willReturn(Optional.empty());
+            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
+                    .willReturn(STOCK_ID);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
                     .willReturn(successResult);
-            given(objectMapper.writeValueAsString(any(CouponIssueResponse.class))).willReturn(responseJson);
+            given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
+                    .willReturn(responseJson);
 
             // when
             CouponIssueResponse response = couponService.issue(IDEMPOTENCY_KEY, request);
@@ -142,7 +140,8 @@ class CouponServiceTest {
             // given
             CouponIssueRequest request = createRequest();
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY)).willReturn(Optional.empty());
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .willReturn(Optional.empty());
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willThrow(new RuntimeException("DB 조회 실패"));
 
@@ -162,7 +161,8 @@ class CouponServiceTest {
             CouponIssueRequest request = createRequest();
             IssueResult successResult = IssueResult.success(COUPON_ID);
 
-            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS)).willReturn(STOCK_ID);
+            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
+                    .willReturn(STOCK_ID);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, null))
                     .willReturn(successResult);
 

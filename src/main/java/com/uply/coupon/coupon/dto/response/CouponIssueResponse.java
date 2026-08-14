@@ -3,31 +3,28 @@ package com.uply.coupon.coupon.dto.response;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.strategy.IssueResult;
-
-import lombok.Builder;
-
 import java.time.Instant;
+import lombok.Builder;
 
 /** 쿠폰 발행 응답 DTO */
 @Builder
 public record CouponIssueResponse(
 
-    /** Redis 에서 재고 차감 후 직접 발급하는 TSID */
-    String couponId,
-    CouponStatus status,
+        /** Redis 에서 재고 차감 후 직접 발급하는 TSID */
+        String couponId,
+        CouponStatus status,
 
-    /** ISO-8601 UTC 시간 규격(...Z) 처리를 위해 Instant 타임스탬프 타입을 사용 */
-    @JsonFormat(
-            shape = JsonFormat.Shape.STRING,
-            pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-            timezone = "UTC")
-    Instant issuedAt,
-    
-    @JsonFormat(
-            shape = JsonFormat.Shape.STRING,
-            pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-            timezone = "UTC")
-    Instant expireAt) {
+        /** ISO-8601 UTC 시간 규격(...Z) 처리를 위해 Instant 타임스탬프 타입을 사용 */
+        @JsonFormat(
+                        shape = JsonFormat.Shape.STRING,
+                        pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                        timezone = "UTC")
+                Instant issuedAt,
+        @JsonFormat(
+                        shape = JsonFormat.Shape.STRING,
+                        pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                        timezone = "UTC")
+                Instant expireAt) {
 
     /**
      * IssueResult의 Long 타입 couponId를 String 으로 변환하여 성공 응답 DTO를 생성하는 팩토리 메서드 expireAt 은 캠페인의 쿠폰 정책에서
