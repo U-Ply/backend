@@ -80,8 +80,7 @@ class LuaScriptIssueStrategyUnitTest {
         Long userId = 10L;
 
         // when (idempotencyKey 파라미터에 빈 문자열 "" 전달)
-        IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
 
         // then
         assertThat(result.success()).isTrue();
@@ -103,8 +102,7 @@ class LuaScriptIssueStrategyUnitTest {
         luaScriptIssueStrategy.issue(campaignId, userId, stockId, ""); // 1차 발급 성공
 
         // when (동일 유저 재요청)
-        IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
 
         // then
         assertThat(result.success()).isFalse();
@@ -126,8 +124,7 @@ class LuaScriptIssueStrategyUnitTest {
         luaScriptIssueStrategy.issue(campaignId, user2, stockId, ""); // 재고 0 남음
 
         // when (재고 0 상태에서 요청)
-        IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, user3, stockId, "");
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, user3, stockId, "");
 
         // then
         assertThat(result.success()).isFalse();
@@ -145,8 +142,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         // when
         IssueResult result =
-                luaScriptIssueStrategy.issue(
-                		campaignId, userId, stockId, idempotencyKey);
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isTrue();
@@ -178,8 +174,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         // when (동일한 idempotencyKey로 2차 요청)
         IssueResult duplicateResult =
-                luaScriptIssueStrategy.issue(
-                		campaignId, userId, stockId, idempotencyKey);
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(duplicateResult.success()).isFalse();

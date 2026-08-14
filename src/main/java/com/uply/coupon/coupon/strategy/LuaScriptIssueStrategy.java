@@ -27,7 +27,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     private final ObjectMapper objectMapper; // JSON 변환용
 
     private DefaultRedisScript<List> issueScript;
-    
+
     private static final Duration IDEMPOTENCY_TTL = Duration.ofMinutes(10); // 규약: TTL 10분
 
     @PostConstruct
@@ -41,11 +41,9 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     /**
      * Redis 캐시에 CampaignStock 데이터가 이미 적재되어 있는 상태. stockId, remainingStock 만 사용 쿠폰 발급 성공 시 stockId 를
      * IssueResult 에 포함해야 Kafka 메시지로 전달 가능.
-     *
      */
     @Override
-    public IssueResult issue(
-    		Long campaignId, Long userId, Long stockId, String idempotencyKey) {
+    public IssueResult issue(Long campaignId, Long userId, Long stockId, String idempotencyKey) {
         // TODO: Lua Script로 재고 확인 + 중복 체크 + 차감을 원자적으로 처리 후 Kafka 이벤트 발행
 
         String idempotencyRedisKey = null;
@@ -77,7 +75,9 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         // -> 무시해도 된다.
         List<Object> result =
                 redisTemplate.execute(
-                        issueScript, List.of(stockIdKey, issuedCampaignKey), String.valueOf(userId));
+                        issueScript,
+                        List.of(stockIdKey, issuedCampaignKey),
+                        String.valueOf(userId));
 
         if (result == null || result.isEmpty()) {
             return IssueResult.fail(IssueFailReason.SYSTEM_ERROR);

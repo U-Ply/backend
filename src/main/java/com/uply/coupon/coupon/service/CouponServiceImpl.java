@@ -24,16 +24,16 @@ public class CouponServiceImpl implements CouponService {
     	// #1. stockId 구하기
     	Long stockId = stockIdLookup.lookupStockId(request.campaignId(), request.routeId(), request.fareClass());
     	
-        // #1. LuaScriptIssueStrategy 쿠폰 발급
+        // #2. LuaScriptIssueStrategy 쿠폰 발급
         //		IssueResult result = couponIssueStrategy
         //				.issue();
 
-        // #2-1 실패
+        // #3-1 실패
         //		if(!success) {
         //			throw new CouponIssueException(result.reason());
         //		}
 
-        // #2-2 성공
+        // #4-2 성공
         //		return CouponIssueResponse.from(result, expireAt);
         return null;
     }
