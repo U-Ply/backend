@@ -65,6 +65,11 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.batch:spring-batch-test'
 
+    // JUnit 의존성 추가
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+
     // ID 생성 (TSID)
     implementation 'io.hypersistence:hypersistence-tsid:2.1.4'
 }
