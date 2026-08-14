@@ -21,9 +21,11 @@ public class CouponServiceImpl implements CouponService {
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
 
-    	// #1. stockId 구하기
-    	Long stockId = stockIdLookup.lookupStockId(request.campaignId(), request.routeId(), request.fareClass());
-    	
+        // #1. stockId 구하기
+        Long stockId =
+                stockIdLookup.lookupStockId(
+                        request.campaignId(), request.routeId(), request.fareClass());
+
         // #2. LuaScriptIssueStrategy 쿠폰 발급
         //		IssueResult result = couponIssueStrategy
         //				.issue();
