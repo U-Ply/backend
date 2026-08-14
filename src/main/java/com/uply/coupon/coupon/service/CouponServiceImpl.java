@@ -14,6 +14,7 @@ import com.uply.coupon.coupon.strategy.IssueResult;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Optional;
+import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,9 +25,10 @@ import org.springframework.stereotype.Service;
 public class CouponServiceImpl implements CouponService {
 
     private final CouponIssueStrategy couponIssueStrategy;
-    private final StockIdLookup stockIdLookup;
     private final IdempotencyChecker idempotencyChecker;
     private final ObjectMapper objectMapper;
+    private final CouponIssueStrategySelector strategySelector;
+    private final StockIdLookup stockIdLookup; // campaign 도메인 기능 활용
 
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {

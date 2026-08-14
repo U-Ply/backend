@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
 public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
     private final StringRedisTemplate redisTemplate;
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
     private DefaultRedisScript<List> issueScript;
 

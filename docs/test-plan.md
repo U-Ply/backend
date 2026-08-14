@@ -70,6 +70,14 @@ src/test/java/com/uply/coupon/coupon/strategy/PessimisticLockIssueStrategyTest.j
 
 현재 테스트는 `@SpringBootTest`와 실제 MySQL을 사용한다.
 
+Spring 통합 테스트의 공통 설정은 다음 테스트 프로파일을 사용한다.
+
+```text
+src/test/resources/application-test.yml
+```
+
+`@SpringBootTest`로 실제 MySQL을 사용하는 테스트 클래스에는 `@ActiveProfiles("test")`를 적용한다. 순수 JUnit/Mockito 단위 테스트에는 적용하지 않는다.
+
 실행 전 다음 조건을 만족해야 한다.
 
 - MySQL이 실행 중이어야 한다.
@@ -80,10 +88,19 @@ src/test/java/com/uply/coupon/coupon/strategy/PessimisticLockIssueStrategyTest.j
 실행 명령:
 
 ```bash
+docker compose up -d mysql
 ./gradlew test
 ```
 
-### 5.4 Level 1 공통 판정 원칙
+특정 테스트만 실행하려면 다음 형식을 사용한다.
+
+```bash
+./gradlew test --tests "<테스트클래스명>"
+```
+
+`docs/schema.sql`은 테스트 실행마다 다시 적용하지 않는다. 로컬 스키마를 완전히 재생성해야 할 때만 운영체제별 `reset-schema` 스크립트를 사용하며, 이 작업은 기존 테스트 데이터를 모두 삭제한다.
+
+### 5.4 Level 1 공통 검증 항목 및 전략별 판정
 
 - 처리되지 않은 예외가 없어야 한다.
 - 성공 건수는 초기 재고와 일치해야 한다.
@@ -92,6 +109,27 @@ src/test/java/com/uply/coupon/coupon/strategy/PessimisticLockIssueStrategyTest.j
 - 같은 캠페인에서 같은 사용자의 쿠폰은 최대 한 장이어야 한다.
 - 동일 상태 변경 이력이 중복 저장되지 않아야 한다.
 - 동시 테스트는 제한 시간 안에 모든 작업이 종료되어야 한다.
+
+#### NoLock 기준선 예외
+
+위 공통 검증 항목은 안전한 발급 전략이 최종적으로 만족해야 할 정합성 기준이다.
+
+V0 NoLock은 동시성 제어 부재로 발생하는 문제를 재현하기 위한 기준선이므로 다음 항목의 위반이 예상된다.
+
+- 성공 건수와 초기 재고의 불일치
+- 실제 쿠폰 수와 재고 차감량의 불일치
+- `remaining_stock != total_stock - 전체 쿠폰 수`
+
+NoLock은 위 항목을 통과시키는 것이 목적이 아니다. 위반 건수와 차이를 실제 측정값으로 기록해 동시성 제어가 필요한 근거로 사용한다.
+
+다만 다음 항목은 NoLock에서도 별도로 확인한다.
+
+- 전체 요청이 제한 시간 안에 종료되는가
+- 처리되지 않은 예외와 DB 오류가 몇 건 발생했는가
+- 캠페인별 1인 1매 UNIQUE 제약이 동작하는가
+- 쿠폰과 이력 저장 결과가 일치하는가
+
+NoLock의 동시성 문제는 스레드 스케줄링에 따라 매 실행에서 동일하게 발생한다고 보장할 수 없으므로 반복 실행 결과를 기록한다.
 
 NoLock, Redis Lua 및 Kafka 관련 Level 1 테스트는 해당 전략 구현과 함께 추가한다.
 
@@ -262,7 +300,46 @@ CAFE24-VPS-01
 
 Docker 이미지에는 `latest` 대신 명시적인 버전 태그를 사용한다.
 
-### 8.3 부하 발생기 분리
+현재 공통 Docker 이미지 버전은 다음과 같다.
+
+| 서비스 | 이미지 | 확인된 버전 |
+| --- | --- | --- |
+| MySQL | `mysql:8.0.46` | 8.0.46 |
+| Redis | `redis:7.4.10` | 7.4.10 |
+| Kafka | `apache/kafka:3.7.0` | 3.7.0 |
+| Prometheus | `prom/prometheus:v2.53.0` | 2.53.0 |
+| Grafana | `grafana/grafana:13.1.3` | 13.1.3 |
+
+위 버전은 `LOCAL-DOCKER-01` 환경에서 실제 실행 중인 컨테이너를 기준으로 확인했다. 공통 버전을 변경할 때는 Compose와 이 표를 함께 수정하고 새로운 테스트 환경 또는 실행 회차로 기록한다.
+
+### 8.3 MySQL 스키마 초기화 정책
+
+루트 `docker-compose.yml`은 `docs/schema.sql`을 MySQL의 `/docker-entrypoint-initdb.d/01-schema.sql`에 읽기 전용으로 마운트한다.
+
+- 빈 `mysql_data` volume을 처음 생성할 때만 스키마가 자동 적용된다.
+- 기존 volume에서 `docker compose up -d`를 실행해도 기존 데이터는 삭제되지 않는다.
+- `docker compose down`은 데이터를 유지한다.
+- `docker compose down -v`는 volume과 모든 DB 데이터를 삭제하므로 명시적인 초기화가 필요할 때만 사용한다.
+
+DDL 변경 후 로컬 DB를 완전히 재생성해야 할 때는 운영체제에 맞는 스크립트를 사용한다.
+
+Mac/Linux:
+
+```bash
+./scripts/test/reset-schema.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\test\reset-schema.ps1
+```
+
+두 스크립트는 `RESET`을 직접 입력한 경우에만 실행된다. 현재 `docs/schema.sql`은 테이블을 DROP한 뒤 다시 생성하므로, 스크립트를 실행하면 `coupon_db`의 사용자·캠페인·재고·쿠폰·이력·검증 데이터가 모두 삭제된다.
+
+스키마 재생성과 부하 테스트 데이터 초기화는 구분한다. 매 부하 테스트 전에는 스키마를 DROP하지 않고 테스트 데이터와 Redis/Kafka 상태만 초기화하는 별도 `reset-test-data` 절차를 사용한다. 해당 절차는 공통 시드 구현 이후 추가한다.
+
+### 8.4 부하 발생기 분리
 
 성능 비교 시 k6는 가능하면 애플리케이션과 다른 머신에서 실행한다. 같은 머신에서 실행하면 부하 발생기가 CPU와 메모리를 점유해 API 결과를 왜곡할 수 있다.
 
@@ -286,7 +363,7 @@ DLT = 0건
 
 사용하지 않는 저장소의 조건은 `N/A`로 기록한다.
 
-초기화와 시드 적재는 향후 저장소의 공통 스크립트로 자동화한다. 자동화 전에는 실행한 SQL과 Redis/Kafka 명령을 결과 문서에 함께 기록한다.
+스키마 재생성은 `reset-schema` 스크립트를 사용한다. 테스트 데이터와 Redis/Kafka 상태를 초기화하는 `reset-test-data` 절차는 공통 시드 구현 이후 추가한다. 해당 자동화가 준비되기 전에는 실행한 SQL과 Redis/Kafka 명령을 결과 문서에 함께 기록한다.
 
 ## 10. 공통 실행 순서
 
