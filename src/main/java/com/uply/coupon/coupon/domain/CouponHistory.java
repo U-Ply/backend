@@ -15,9 +15,7 @@ import org.hibernate.annotations.CreationTimestamp;
         uniqueConstraints = @UniqueConstraint(columnNames = {"idempotency_key"}),
         indexes = {
             // 특정 쿠폰의 이력을 발생 시각 순서로 조회할 때 사용
-            @Index(name = "idx_coupon_event", columnList = "coupon_id, event_at, history_id"),
-            // 특정 상태로 변경된 이력을 시간 기준으로 조회할 때 사용
-            @Index(name = "idx_to_status_event_at", columnList = "to_status, event_at")
+            @Index(name = "idx_coupon_event", columnList = "coupon_id, event_at, history_id")
         })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)

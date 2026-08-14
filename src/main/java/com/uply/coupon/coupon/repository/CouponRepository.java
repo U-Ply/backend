@@ -9,6 +9,8 @@ import org.springframework.data.repository.query.Param;
 
 public interface CouponRepository extends JpaRepository<Coupon, Long> {
 
+    boolean existsByCampaignIdAndUserId(Long campaignId, Long userId);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             """

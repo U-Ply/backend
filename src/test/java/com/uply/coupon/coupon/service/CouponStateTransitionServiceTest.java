@@ -96,7 +96,7 @@ class CouponStateTransitionServiceTest {
 
     @Test
     void doesNotSaveHistoryWhenStateTransitionIsInvalid() {
-        Coupon coupon = Coupon.issue(1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
         coupon.use(EVENT_AT);
         when(couponRepository.cancelIfIssued(COUPON_ID, EVENT_AT.plusMinutes(1))).thenReturn(0);
         when(couponRepository.findById(COUPON_ID)).thenReturn(Optional.of(coupon));
