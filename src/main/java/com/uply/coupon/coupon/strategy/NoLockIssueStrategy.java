@@ -8,6 +8,7 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.LocalDateTime;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +36,17 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
                         .findById(stockId)
                         .orElseThrow(
                                 () -> new IllegalStateException("존재하지 않는 stockId: " + stockId));
+        // 멱등성 확인
+        Optional<CouponHistory> processed =
+                couponHistoryRepository.findByIdempotencyKey(idempotencyKey);
+        if (processed.isPresent()) {
+            return IssueResult.success(processed.get().getCouponId());
+        }
+
+        // 중복 발급 확인
+        if (couponRepository.existsByCampaignIdAndUserId(campaignId, userId)) {
+            return IssueResult.fail(IssueFailReason.ALREADY_ISSUED);
+        }
 
         // 확인과 차감 사이에 다른 요청이 끼어들 수 있는 전형적인 read-modify-write 취약 구조
         if (stock.getRemainingStock() <= 0) {
@@ -42,6 +54,7 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
         }
 
         stock.decrease();
+        campaignStockRepository.save(stock);
 
         Coupon coupon =
                 Coupon.issue(
