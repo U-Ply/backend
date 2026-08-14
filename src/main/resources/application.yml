@@ -53,3 +53,9 @@ management:
   endpoint:
     health:
       show-details: always
+
+# 발급 전략 선택. 재빌드 없이 환경변수로 바꿀 수 있다.
+# NO_LOCK / PESSIMISTIC_LOCK / LUA_SCRIPT
+coupon:
+  issue:
+   strategy: ${COUPON_STRATEGY:PESSIMISTIC_LOCK}
