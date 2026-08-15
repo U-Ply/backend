@@ -20,28 +20,34 @@ public class CouponStateTransitionService {
     private final CouponHistoryRepository couponHistoryRepository;
 
     @Transactional
-    public void use(Long couponId, String idempotencyKey, LocalDateTime usedAt) {
-        int updatedRows = couponRepository.useIfIssued(couponId, usedAt);
+    public void use(Long couponId, String idempotencyKey) {
+        int updatedRows = couponRepository.useIfIssued(couponId);
         validateUpdatedRows(updatedRows, couponId, CouponStatus.USED);
 
-        couponHistoryRepository.save(CouponHistory.used(couponId, idempotencyKey, usedAt));
+        Coupon coupon = findCoupon(couponId);
+        couponHistoryRepository.save(
+                CouponHistory.used(couponId, idempotencyKey, coupon.getUsedAt()));
     }
 
     @Transactional
-    public void cancel(Long couponId, String idempotencyKey, LocalDateTime cancelledAt) {
-        int updatedRows = couponRepository.cancelIfIssued(couponId, cancelledAt);
+    public void cancel(Long couponId, String idempotencyKey) {
+        int updatedRows = couponRepository.cancelIfIssued(couponId);
         validateUpdatedRows(updatedRows, couponId, CouponStatus.CANCELLED);
 
+        Coupon coupon = findCoupon(couponId);
         couponHistoryRepository.save(
-                CouponHistory.cancelled(couponId, idempotencyKey, cancelledAt));
+                CouponHistory.cancelled(couponId, idempotencyKey, coupon.getCancelledAt()));
     }
 
     @Transactional
-    public void expire(Long couponId, String idempotencyKey, LocalDateTime expiredAt) {
-        int updatedRows = couponRepository.expireIfIssued(couponId, expiredAt);
-        validateUpdatedRows(updatedRows, couponId, CouponStatus.EXPIRED);
+    public boolean expireCoupon(Long couponId, String idempotencyKey, LocalDateTime cutoff) {
+        int updatedRows = couponRepository.expireIfIssued(couponId, cutoff);
+        if (updatedRows == 0) {
+            return false;
+        }
 
-        couponHistoryRepository.save(CouponHistory.expired(couponId, idempotencyKey, expiredAt));
+        couponHistoryRepository.save(CouponHistory.expired(couponId, idempotencyKey, cutoff));
+        return true;
     }
 
     private void validateUpdatedRows(int updatedRows, Long couponId, CouponStatus targetStatus) {
@@ -49,10 +55,13 @@ public class CouponStateTransitionService {
             return;
         }
 
-        Coupon coupon =
-                couponRepository
-                        .findById(couponId)
-                        .orElseThrow(() -> new CouponNotFoundException(couponId));
+        Coupon coupon = findCoupon(couponId);
         throw new InvalidStateTransitionException(coupon.getStatus(), targetStatus);
+    }
+
+    private Coupon findCoupon(Long couponId) {
+        return couponRepository
+                .findById(couponId)
+                .orElseThrow(() -> new CouponNotFoundException(couponId));
     }
 }

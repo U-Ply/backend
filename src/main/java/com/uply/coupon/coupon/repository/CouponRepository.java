@@ -16,36 +16,34 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
             """
             update Coupon c
                set c.status = com.uply.coupon.coupon.domain.CouponStatus.USED,
-                   c.usedAt = :usedAt
+                   c.usedAt = CURRENT_TIMESTAMP
              where c.couponId = :couponId
                and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
-               and c.expireAt > :usedAt
+               and c.expireAt > CURRENT_TIMESTAMP
             """)
-    int useIfIssued(@Param("couponId") Long couponId, @Param("usedAt") LocalDateTime usedAt);
+    int useIfIssued(@Param("couponId") Long couponId);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             """
             update Coupon c
                set c.status = com.uply.coupon.coupon.domain.CouponStatus.CANCELLED,
-                   c.cancelledAt = :cancelledAt
+                   c.cancelledAt = CURRENT_TIMESTAMP
              where c.couponId = :couponId
                and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
-               and c.expireAt > :cancelledAt
+               and c.expireAt > CURRENT_TIMESTAMP
             """)
-    int cancelIfIssued(
-            @Param("couponId") Long couponId, @Param("cancelledAt") LocalDateTime cancelledAt);
+    int cancelIfIssued(@Param("couponId") Long couponId);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             """
             update Coupon c
                set c.status = com.uply.coupon.coupon.domain.CouponStatus.EXPIRED,
-                   c.expiredAt = :expiredAt
+                   c.expiredAt = :cutoff
              where c.couponId = :couponId
                and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
-               and c.expireAt <= :expiredAt
+               and c.expireAt <= :cutoff
             """)
-    int expireIfIssued(
-            @Param("couponId") Long couponId, @Param("expiredAt") LocalDateTime expiredAt);
+    int expireIfIssued(@Param("couponId") Long couponId, @Param("cutoff") LocalDateTime cutoff);
 }
