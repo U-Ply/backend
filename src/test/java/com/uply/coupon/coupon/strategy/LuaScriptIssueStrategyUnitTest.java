@@ -1,14 +1,8 @@
-package CouponIssueTest;
+package com.uply.coupon.coupon.strategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.uply.coupon.coupon.dto.IdempotencyCache;
-import com.uply.coupon.coupon.strategy.IssueFailReason;
-import com.uply.coupon.coupon.strategy.IssueResult;
-import com.uply.coupon.coupon.strategy.LuaScriptIssueStrategy;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,9 +17,8 @@ class LuaScriptIssueStrategyUnitTest {
     private static LettuceConnectionFactory connectionFactory;
     private static StringRedisTemplate redisTemplate;
 
-    private KafkaTemplate<String, Object> kafkaTemplate;
+    private KafkaTemplate<String, String> kafkaTemplate;
     private LuaScriptIssueStrategy luaScriptIssueStrategy;
-    private ObjectMapper objectMapper;
 
     private final Long campaignId = 1L;
     private final Long stockId = 5001L;
@@ -58,11 +51,9 @@ class LuaScriptIssueStrategyUnitTest {
 
         // KafkaTemplate Mock 생성 (테스트 시 호출만 되고 검증은 생략)
         kafkaTemplate = mock(KafkaTemplate.class);
-        objectMapper = new ObjectMapper();
 
         // Strategy 수동 생성 및 스크립트 초기화
-        luaScriptIssueStrategy =
-                new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate, objectMapper);
+        luaScriptIssueStrategy = new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate);
         luaScriptIssueStrategy.init();
 
         // Redis Key 구성
@@ -130,57 +121,5 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
         assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("0");
-    }
-
-    @Test
-    @DisplayName("정상 발급 시 멱등성 캐시가 idempotency:issue:{key} 포맷으로 저장되고 TTL은 10분이다")
-    void issue_Success_SaveIdempotencyCache() throws Exception {
-        // given
-        Long userId = 10L;
-        String idempotencyKey = "tx-uuid-1234";
-        String expectedRedisKey = "idempotency:" + idempotencyKey;
-
-        // when
-        IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
-
-        // then
-        assertThat(result.success()).isTrue();
-
-        // 1. Redis에 멱등성 키 존재 여부 검증
-        String cachedJson = redisTemplate.opsForValue().get(expectedRedisKey);
-        assertThat(cachedJson).isNotNull();
-
-        // 2. JSON 내용 규약 검증 (httpStatus: 200, body 데이터 포함)
-        IdempotencyCache cache = objectMapper.readValue(cachedJson, IdempotencyCache.class);
-        assertThat(cache.getHttpStatus()).isEqualTo(200);
-        assertThat(cache.getBody()).contains(String.valueOf(result.couponId()));
-        assertThat(cache.getBody()).contains(String.valueOf(stockId));
-
-        // 3. TTL 검증 (10분 = 600초)
-        Long expireTime = redisTemplate.getExpire(expectedRedisKey, TimeUnit.SECONDS);
-        assertThat(expireTime).isGreaterThan(0).isLessThanOrEqualTo(600);
-    }
-
-    @Test
-    @DisplayName("동일한 idempotencyKey로 재요청 시 DUPLICATE_REQUEST 에러를 반환하고 재고를 추가 차감하지 않는다")
-    void issue_Fail_DuplicateIdempotencyKey() {
-        // given
-        Long userId = 10L;
-        String idempotencyKey = "tx-uuid-dup-test";
-
-        // 1차 요청 수행 (성공)
-        luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
-
-        // when (동일한 idempotencyKey로 2차 요청)
-        IssueResult duplicateResult =
-                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
-
-        // then
-        assertThat(duplicateResult.success()).isFalse();
-        assertThat(duplicateResult.reason()).isEqualTo(IssueFailReason.DUPLICATE_REQUEST);
-
-        // 재고는 1차 발급 차감 후인 1 상태 유지 (중복 차감 방지)
-        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("1");
     }
 }

@@ -1,10 +1,14 @@
 package com.uply.coupon.operation.tools;
 
+import com.uply.coupon.coupon.domain.CouponStatus;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import javax.sql.DataSource;
@@ -18,18 +22,24 @@ import org.springframework.stereotype.Component;
  * 검증 배치용 더미데이터 생성기.
  *
  * <pre>
- * 실행 예)
- *   --spring.profiles.active=dummy --users=100000 --seed=42 --truncate
+ * 검증용 (기본값)
+ *   --spring.profiles.active=dummy --users=100000 --coupons=100000 --seed=42 --truncate
+ *
+ * 검증기 자체 검증 (오염 5건 주입)
+ *   ... --corrupt=5
+ *
+ * 부하 테스트 시드 (테스트 설계서 6.2 / 9절)
+ *   --spring.profiles.active=dummy --users=20000 --campaigns=1 --routes=1
+ *   --fare-classes=1 --stock=10000 --coupons=0 --truncate
  * </pre>
  *
  * 지켜야 하는 원칙 세 가지
  *
  * <ul>
- *   <li><b>시드 고정</b> — 같은 인자면 같은 데이터. 300만 건 CSV 는 900MB 라 커밋할 수 없으므로, 데이터 대신 생성기와 시드를 커밋해서 재현성을
- *       코드로 보장한다.
- *   <li><b>시각 고정</b> — 모든 시각은 base-time 에서만 파생한다. {@code LocalDateTime.now()} 를 쓰면 실행할 때마다 데이터가 달라져
+ *   <li><b>시드 고정</b> — 같은 인자면 같은 데이터. 데이터 대신 생성기와 시드를 커밋해 재현성을 코드로 보장한다.
+ *   <li><b>시각 고정</b> — 모든 시각은 base-time 에서만 파생한다. {@code NOW()} 나 컬럼 DEFAULT 에 맡기면 실행할 때마다 값이 달라져
  *       재현성이 깨진다.
- *   <li><b>단일 스레드</b> — 병렬로 돌리면 난수 소비 순서가 흔들려 재현성이 깨진다. 멘토가 적재 속도는 평가하지 않는다고 명시했으므로 손해가 없다.
+ *   <li><b>단일 스레드</b> — 병렬로 돌리면 난수 소비 순서가 흔들려 재현성이 깨진다.
  * </ul>
  */
 @Component
@@ -37,12 +47,7 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class DummyDataGenerator implements CommandLineRunner {
 
-    /**
-     * 배치 커밋 단위.
-     *
-     * <p>rewriteBatchedStatements=true 가 켜져 있으면 이 CHUNK 만큼이 하나의 다중 VALUES 문장으로 합쳐져 한 번에 전송된다. 너무 크면
-     * max_allowed_packet(기본 64MB)에 걸리고, 너무 작으면 왕복이 다시 늘어난다. 300만 건 확장 시 5000~10000 으로 올려보며 튜닝할 것.
-     */
+    /** 배치 커밋 단위. rewriteBatchedStatements=true 와 짝을 이룬다. */
     private static final int CHUNK = 1000;
 
     /** 초기화 대상. 자식 → 부모 순서여야 한다. verification_* 는 결과라 건드리지 않는다. */
@@ -50,19 +55,30 @@ public class DummyDataGenerator implements CommandLineRunner {
         "coupon_history", "coupons", "campaign_stocks", "campaigns", "users"
     };
 
-    /** 재고 풀 = 캠페인 × 노선 × 좌석등급. uk_stock_pool(campaign_id, route_id, fare_class) 와 대응. */
     private static final String[] ROUTES = {"JEJU", "BUSAN", "FUKUOKA", "BANGKOK", "DANANG"};
-
     private static final String[] FARE_CLASSES = {"ECONOMY", "BUSINESS"};
+
+    /** 최종 상태 분포(%). 누적값으로 비교한다. ISSUED 70 / USED 20 / CANCELLED 5 / EXPIRED 5 */
+    private static final int P_ISSUED = 70;
+
+    private static final int P_USED = 90;
+    private static final int P_CANCELLED = 95;
+
+    /** 발급 시각을 base-time 이후 이 범위 안에서 흩는다. */
+    private static final int ISSUE_SPREAD_DAYS = 14;
+
+    private static final int CHANGE_WINDOW_DAYS = 14;
 
     private final DataSource dataSource;
     private final ApplicationArguments appArgs;
 
     private long userCount;
     private long campaignCount;
+    private long couponCount;
     private int routeCount;
     private int fareClassCount;
     private int totalStock;
+    private int corruptCount;
     private long seed;
     private LocalDateTime baseTime;
     private boolean truncate;
@@ -83,10 +99,14 @@ public class DummyDataGenerator implements CommandLineRunner {
             timed("campaigns", () -> insertCampaigns(conn));
             timed("campaign_stocks", () -> insertCampaignStocks(conn));
 
-            // 다음 단계가 여기에 붙는다
-            //   timed("coupons", () -> insertCoupons(conn));   ← 상태 머신 시뮬레이션
-            //   updateRemainingStock(conn);
-            //   corrupt(conn);
+            if (couponCount > 0) {
+                timed("coupons", () -> insertCoupons(conn));
+                timed("remaining_stock", () -> updateRemainingStock(conn));
+            }
+
+            if (corruptCount > 0) {
+                timed("corrupt", () -> corrupt(conn));
+            }
         }
     }
 
@@ -95,11 +115,13 @@ public class DummyDataGenerator implements CommandLineRunner {
     private void parseArgs() {
         userCount = argLong("users", 1000);
         campaignCount = argLong("campaigns", 30);
+        couponCount = argLong("coupons", 100_000);
         routeCount = (int) argLong("routes", ROUTES.length);
         fareClassCount = (int) argLong("fare-classes", FARE_CLASSES.length);
         totalStock = (int) argLong("stock", 12_500);
+        corruptCount = (int) argLong("corrupt", 0);
         seed = argLong("seed", 42);
-        baseTime = LocalDateTime.parse(arg("base-time", "2026-08-01T00:00:00"));
+        baseTime = LocalDateTime.parse(arg("base-time", "2026-06-01T00:00:00"));
         truncate = appArgs.containsOption("truncate");
 
         if (routeCount < 1 || routeCount > ROUTES.length) {
@@ -127,7 +149,6 @@ public class DummyDataGenerator implements CommandLineRunner {
      * 구간별로 독립된 난수원을 만든다.
      *
      * <p>전역 Random 하나를 모든 구간이 나눠 쓰면, users 개수만 바꿔도 그 뒤 구간의 난수 소비 위치가 통째로 밀려서 coupons 데이터가 전부 달라진다.
-     * 구간마다 시드를 파생시키면 한 구간의 규모를 바꿔도 다른 구간은 그대로 재현된다.
      */
     private Random sectionRandom(int section) {
         return new Random(seed * 1_000_003L + section);
@@ -137,7 +158,7 @@ public class DummyDataGenerator implements CommandLineRunner {
 
     /**
      * FK 참조 대상 테이블은 자식이 비어 있어도 TRUNCATE 가 거부된다(ERROR 1701). MySQL 은 자식 행 존재 여부를 보지 않고 FK 관계의 존재만 보기
-     * 때문에, FOREIGN_KEY_CHECKS 를 꺼야 한다.
+     * 때문에 FOREIGN_KEY_CHECKS 를 꺼야 한다.
      */
     private void truncateAll(Connection conn) throws SQLException {
         try (Statement st = conn.createStatement()) {
@@ -166,12 +187,10 @@ public class DummyDataGenerator implements CommandLineRunner {
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (long i = 1; i <= userCount; i++) {
                 ps.setLong(1, i);
-                // uk_users_email 이 UNIQUE 라 유일해야 한다. 순차 문자열이면 충돌이 구조적으로 불가능하고
-                // 인덱스에도 순서대로 들어가서 페이지 분할이 적다.
+                // uk_users_email 이 UNIQUE 라 유일해야 한다. 순차 문자열이면 충돌이 구조적으로
+                // 불가능하고 인덱스에도 순서대로 들어가서 페이지 분할이 적다.
                 ps.setString(2, "user" + i + "@example.com");
                 ps.setString(3, "user" + i);
-                // setTimestamp 가 아니라 setObject(LocalDateTime). Timestamp 는 시간대 변환이 끼어들어
-                // 실행 환경에 따라 값이 달라진다.
                 ps.setObject(4, baseTime);
 
                 ps.addBatch();
@@ -181,15 +200,10 @@ public class DummyDataGenerator implements CommandLineRunner {
                     inserted += flush(ps, conn);
                     pending = 0;
                 }
-
                 if (i % 10_000 == 0) {
                     System.out.printf("  users %,d / %,d%n", i, userCount);
                 }
             }
-
-            // userCount 가 CHUNK 로 나누어떨어지지 않으면 마지막 조각이 남는다.
-            // 10만처럼 딱 떨어지는 값으로만 테스트하면 이 누락이 드러나지 않으므로
-            // --users=99999 로 한 번 검증할 것.
             if (pending > 0) {
                 inserted += flush(ps, conn);
             }
@@ -197,17 +211,12 @@ public class DummyDataGenerator implements CommandLineRunner {
             conn.rollback();
             throw e;
         }
-
         return inserted;
     }
 
     // ────────────────────────── campaigns ──────────────────────────
 
-    /**
-     * 캠페인은 많아야 수십 개라 청크가 필요 없다. 한 번에 배치하고 커밋한다.
-     *
-     * <p>ck_campaign_period CHECK (expire_at > open_at) 이 걸려 있으므로 순서에 주의.
-     */
+    /** ck_campaign_period CHECK (expire_at > open_at) 이 걸려 있으므로 순서에 주의. */
     private int insertCampaigns(Connection conn) throws SQLException {
         final String sql =
                 "INSERT INTO campaigns (campaign_id, name, open_at, expire_at, created_at) "
@@ -217,8 +226,8 @@ public class DummyDataGenerator implements CommandLineRunner {
             for (long c = 1; c <= campaignCount; c++) {
                 ps.setLong(1, c);
                 ps.setString(2, "특가 캠페인 " + c + "회차");
-                ps.setObject(3, baseTime); // open_at
-                ps.setObject(4, baseTime.plusDays(30)); // expire_at — 반드시 open_at 이후
+                ps.setObject(3, baseTime);
+                ps.setObject(4, baseTime.plusDays(60));
                 ps.setObject(5, baseTime);
                 ps.addBatch();
             }
@@ -236,9 +245,6 @@ public class DummyDataGenerator implements CommandLineRunner {
     /**
      * 재고 풀 = 캠페인 × 노선 × 좌석등급.
      *
-     * <p>total_stock 을 나중에 배정할 쿠폰 수보다 크게 잡는다. 그러면 INV-01(발급 수 ≤ total_stock)이 구조적으로 위반 불가능해지고,
-     * remaining_stock 계산 후에도 ck_stock_nonneg 를 만족한다.
-     *
      * <p>쿠폰을 아직 넣기 전이므로 remaining_stock = total_stock 으로 둔다. 쿠폰 적재가 끝난 뒤 updateRemainingStock() 에서
      * 실제 발급 수를 빼서 확정한다.
      */
@@ -249,7 +255,6 @@ public class DummyDataGenerator implements CommandLineRunner {
                         + "VALUES (?, ?, ?, ?, ?, ?, ?)";
 
         long stockId = 0;
-
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (long c = 1; c <= campaignCount; c++) {
                 for (int r = 0; r < routeCount; r++) {
@@ -273,6 +278,279 @@ public class DummyDataGenerator implements CommandLineRunner {
             conn.rollback();
             throw e;
         }
+    }
+
+    // ─────────────────── coupons + coupon_history ───────────────────
+
+    /**
+     * 쿠폰 한 장의 "일생" 을 시뮬레이션해서 coupons 와 coupon_history 를 동시에 만든다.
+     *
+     * <p>status 와 이력을 따로 랜덤으로 찍으면 {@code status=USED / 이력 마지막=CANCELLED} 같은 행이 생겨 INV-04 가 즉시 FAIL
+     * 한다. 그러면 검증기가 틀린 건지 데이터가 틀린 건지 구분할 수 없다. 실제 전이를 순서대로 재생하면 INV-04·05·06·07 이 구조적으로 만족된다.
+     *
+     * <p>유저는 캠페인 안에서 1번부터 순차 배정한다. 캠페인이 다르면 같은 유저를 다시 써도 {@code UNIQUE(campaign_id, user_id)} 에 걸리지
+     * 않으므로, 중복 체크 자료구조가 필요 없다.
+     */
+    private int insertCoupons(Connection conn) throws SQLException {
+        final int poolsPerCampaign = routeCount * fareClassCount;
+        final long poolCount = campaignCount * poolsPerCampaign;
+        final long perPool = couponCount / poolCount;
+        final long perCampaign = perPool * poolsPerCampaign;
+        final long actualTotal = perPool * poolCount;
+
+        LocalDateTime maxEventAt = baseTime.plusDays(ISSUE_SPREAD_DAYS + CHANGE_WINDOW_DAYS);
+        if (maxEventAt.isAfter(LocalDateTime.now())) {
+            System.out.println("  [경고] 생성될 최대 이벤트 시각이 " + maxEventAt + " 로 미래입니다.");
+            System.out.println("         검증 쿼리의 created_at <= NOW() 필터에 걸려 INV-03/04 가 오검출됩니다.");
+            System.out.println("         --base-time 을 더 과거로 잡으세요.");
+        }
+
+        if (perPool < 1) {
+            throw new IllegalArgumentException(
+                    "--coupons(" + couponCount + ") 가 재고 풀 수(" + poolCount + ") 보다 적습니다");
+        }
+        if (perPool > totalStock) {
+            throw new IllegalArgumentException(
+                    "풀당 쿠폰 " + perPool + "장 > total_stock " + totalStock + " — INV-01 위반이 됩니다");
+        }
+        if (perCampaign > userCount) {
+            throw new IllegalArgumentException(
+                    "캠페인당 쿠폰 "
+                            + perCampaign
+                            + "장 > 유저 "
+                            + userCount
+                            + "명 — UNIQUE(campaign_id, user_id) 를 만족할 수 없습니다");
+        }
+        if (actualTotal != couponCount) {
+            System.out.printf(
+                    "  요청 %,d장 → 실제 %,d장 (풀당 %,d장 × 풀 %,d개)%n",
+                    couponCount, actualTotal, perPool, poolCount);
+        }
+
+        final String couponSql =
+                "INSERT INTO coupons (coupon_id, user_id, campaign_id, stock_id, status, "
+                        + "issued_at, used_at, cancelled_at, expired_at, expire_at, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        final String historySql =
+                "INSERT INTO coupon_history "
+                        + "(coupon_id, from_status, to_status, idempotency_key, event_at, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?)";
+
+        final Random rnd = sectionRandom(3);
+        long couponId = 0;
+        long historyRows = 0;
+        int pending = 0;
+
+        try (PreparedStatement pc = conn.prepareStatement(couponSql);
+                PreparedStatement ph = conn.prepareStatement(historySql)) {
+
+            for (long c = 1; c <= campaignCount; c++) {
+                long userInCampaign = 0;
+                long stockBase = (c - 1) * poolsPerCampaign;
+
+                for (int p = 1; p <= poolsPerCampaign; p++) {
+                    long stockId = stockBase + p;
+
+                    for (long k = 0; k < perPool; k++) {
+                        couponId++;
+                        userInCampaign++;
+
+                        // ① 발급 — 항상 여기서 시작한다
+                        LocalDateTime issuedAt =
+                                baseTime.plusSeconds(rnd.nextInt(ISSUE_SPREAD_DAYS * 24 * 3600));
+
+                        // ② 최종 상태를 분포에서 뽑되, 허용된 전이만 밟는다
+
+                        CouponStatus status = pickStatus(rnd);
+                        LocalDateTime expireAt;
+                        LocalDateTime usedAt = null;
+                        LocalDateTime cancelledAt = null;
+                        LocalDateTime expiredAt = null;
+                        LocalDateTime changedAt = null;
+
+                        if (status == CouponStatus.EXPIRED) {
+                            // 만료된 쿠폰은 유효기간이 짧고 이미 지나 있어야 논리가 맞는다
+                            expireAt = issuedAt.plusDays(1 + rnd.nextInt(10));
+                            changedAt = expireAt.plusMinutes(1 + rnd.nextInt(60));
+                            expiredAt = changedAt;
+                        } else {
+                            // expire_at 은 "앞으로의 마감"이라 미래여도 된다. 이벤트가 아니라서
+                            // snapshot 필터와 무관하다.
+                            expireAt = issuedAt.plusDays(7 + rnd.nextInt(84));
+
+                            if (status != CouponStatus.ISSUED) {
+                                // ★ 상태 변경은 발급 후 CHANGE_WINDOW_DAYS 안에서만 일어나게 한다.
+                                //    유효기간 전체로 흩으면 이벤트가 미래로 새어나가고,
+                                //    검증 쿼리의 created_at <= snapshot_at 에 걸려 제외되면서
+                                //    "마지막 이력 = ISSUED" 로 보여 INV-04 가 오검출된다.
+                                changedAt =
+                                        issuedAt.plusSeconds(
+                                                60 + rnd.nextInt(CHANGE_WINDOW_DAYS * 24 * 3600));
+                                if (status == CouponStatus.USED) {
+                                    usedAt = changedAt;
+                                } else {
+                                    cancelledAt = changedAt;
+                                }
+                            }
+                        }
+                        pc.setLong(1, couponId);
+                        pc.setLong(2, userInCampaign);
+                        pc.setLong(3, c);
+                        pc.setLong(4, stockId);
+                        pc.setString(5, status.name());
+                        pc.setObject(6, issuedAt);
+                        setNullableTime(pc, 7, usedAt);
+                        setNullableTime(pc, 8, cancelledAt);
+                        setNullableTime(pc, 9, expiredAt);
+                        pc.setObject(10, expireAt);
+                        // created_at 을 컬럼 DEFAULT(CURRENT_TIMESTAMP)에 맡기면 실행할 때마다
+                        // 값이 달라져 재현성이 깨진다. 반드시 명시한다.
+                        pc.setObject(11, issuedAt);
+                        pc.addBatch();
+
+                        // 발급 이력 (from_status 는 NULL)
+                        ph.setLong(1, couponId);
+                        ph.setNull(2, Types.VARCHAR);
+                        ph.setString(3, CouponStatus.ISSUED.name());
+                        ph.setString(4, "dummy-" + couponId + "-1");
+                        ph.setObject(5, issuedAt);
+                        ph.setObject(6, issuedAt);
+                        ph.addBatch();
+                        historyRows++;
+
+                        // 상태 변경 이력
+                        if (status != CouponStatus.ISSUED) {
+                            ph.setLong(1, couponId);
+                            ph.setString(2, CouponStatus.ISSUED.name());
+                            ph.setString(3, status.name());
+                            ph.setString(4, "dummy-" + couponId + "-2");
+                            ph.setObject(5, changedAt);
+                            ph.setObject(6, changedAt);
+                            ph.addBatch();
+                            historyRows++;
+                        }
+
+                        pending++;
+                        if (pending == CHUNK) {
+                            flushCouponChunk(pc, ph, conn);
+                            pending = 0;
+                        }
+                        if (couponId % 10_000 == 0) {
+                            System.out.printf("  coupons %,d / %,d%n", couponId, actualTotal);
+                        }
+                    }
+                }
+            }
+
+            if (pending > 0) {
+                flushCouponChunk(pc, ph, conn);
+            }
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        }
+
+        System.out.printf("  coupon_history %,d건%n", historyRows);
+        return (int) couponId;
+    }
+
+    /** FK 때문에 부모(coupons)를 먼저 실행해야 자식(coupon_history)이 들어간다. */
+    private void flushCouponChunk(PreparedStatement pc, PreparedStatement ph, Connection conn)
+            throws SQLException {
+        pc.executeBatch();
+        ph.executeBatch();
+        conn.commit();
+    }
+
+    private CouponStatus pickStatus(Random rnd) {
+        int r = rnd.nextInt(100);
+        if (r < P_ISSUED) {
+            return CouponStatus.ISSUED;
+        }
+        if (r < P_USED) {
+            return CouponStatus.USED;
+        }
+        if (r < P_CANCELLED) {
+            return CouponStatus.CANCELLED;
+        }
+        return CouponStatus.EXPIRED;
+    }
+
+    private void setNullableTime(PreparedStatement ps, int index, LocalDateTime value)
+            throws SQLException {
+        if (value == null) {
+            ps.setNull(index, Types.TIMESTAMP);
+        } else {
+            ps.setObject(index, value);
+        }
+    }
+
+    // ────────────────────── remaining_stock ──────────────────────
+
+    /** 취소·만료는 재고 소멸 정책이므로 상태를 보지 않는다. USED 든 CANCELLED 든 EXPIRED 든 전부 "발급된 것" 이다. (공통 협업 기준 3번) */
+    private int updateRemainingStock(Connection conn) throws SQLException {
+        final String sql =
+                "UPDATE campaign_stocks s SET s.remaining_stock = s.total_stock "
+                        + "- (SELECT COUNT(*) FROM coupons c WHERE c.stock_id = s.stock_id)";
+        try (Statement st = conn.createStatement()) {
+            int updated = st.executeUpdate(sql);
+            conn.commit();
+            return updated;
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        }
+    }
+
+    // ────────────────────────── corrupt ──────────────────────────
+
+    /**
+     * 검증기 자체 검증용 오염 주입.
+     *
+     * <p>"위반 0건" 은 검증기가 아무것도 안 해도 나온다. 정상에서 0건, 오염 N건에서 정확히 N건이 나와야 검증기가 작동한다는 증거가 된다.
+     *
+     * <p>USED 쿠폰의 status 만 CANCELLED 로 바꾸고 타임스탬프도 같이 옮긴다. 그러면 INV-04(현재 상태 ≠ 이력 최종)만 걸리고 INV-06·07
+     * 은 여전히 통과한다 — 규칙 하나만 정확히 겨냥해야 "오탐 없음" 을 함께 증명할 수 있다.
+     */
+    private int corrupt(Connection conn) throws SQLException {
+        List<Long> targets = new ArrayList<>();
+
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "SELECT coupon_id FROM coupons WHERE status = 'USED' "
+                                + "ORDER BY coupon_id LIMIT ?")) {
+            ps.setInt(1, corruptCount);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    targets.add(rs.getLong(1));
+                }
+            }
+        }
+
+        if (targets.size() < corruptCount) {
+            throw new IllegalStateException(
+                    "오염 대상이 부족합니다. USED 쿠폰 " + targets.size() + "건 < 요청 " + corruptCount + "건");
+        }
+
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "UPDATE coupons SET status = 'CANCELLED', cancelled_at = used_at, "
+                                + "used_at = NULL WHERE coupon_id = ?")) {
+            for (Long id : targets) {
+                ps.setLong(1, id);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+            conn.commit();
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        }
+
+        System.out.println("  오염 주입 대상 coupon_id = " + targets);
+        System.out.println("  → INV-04 가 정확히 " + targets.size() + "건 검출해야 하고,");
+        System.out.println("    INV-01/02/03/06/07 은 여전히 0건이어야 한다 (오탐 없음)");
+        return targets.size();
     }
 
     // ────────────────────────────── 공통 ──────────────────────────────
@@ -305,6 +583,8 @@ public class DummyDataGenerator implements CommandLineRunner {
         System.out.printf("  fare-classes : %d%n", fareClassCount);
         System.out.printf("  stock pools  : %,d%n", campaignCount * routeCount * fareClassCount);
         System.out.printf("  total_stock  : %,d%n", totalStock);
+        System.out.printf("  coupons      : %,d%n", couponCount);
+        System.out.printf("  corrupt      : %,d%n", corruptCount);
         System.out.printf("  seed         : %d%n", seed);
         System.out.printf("  base-time    : %s%n", baseTime);
         System.out.printf("  truncate     : %s%n", truncate);
