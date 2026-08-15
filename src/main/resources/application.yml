@@ -58,4 +58,4 @@ management:
 # NO_LOCK / PESSIMISTIC_LOCK / LUA_SCRIPT
 coupon:
   issue:
-   strategy: ${COUPON_STRATEGY:PESSIMISTIC_LOCK}
+   strategy: ${COUPON_STRATEGY:LUA_SCRIPT}

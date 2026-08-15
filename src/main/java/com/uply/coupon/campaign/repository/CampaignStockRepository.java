@@ -4,6 +4,7 @@ import com.uply.coupon.campaign.domain.CampaignStock;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.QueryHint;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -35,4 +36,6 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000"))
     @Query("SELECT s FROM CampaignStock s WHERE s.id = :stockId")
     Optional<CampaignStock> findByIdForUpdate(@Param("stockId") Long stockId);
+
+	List<CampaignStock> findAllByCampaignId(Long campaignId);
 }
