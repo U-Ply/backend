@@ -53,13 +53,23 @@ public class Coupon implements Persistable<Long> {
 
     public static Coupon issue(
             Long couponId, Long userId, Long campaignId, Long stockId, LocalDateTime expireAt) {
+        return issue(couponId, userId, campaignId, stockId, LocalDateTime.now(), expireAt);
+    }
+
+    public static Coupon issue(
+            Long couponId,
+            Long userId,
+            Long campaignId,
+            Long stockId,
+            LocalDateTime issuedAt,
+            LocalDateTime expireAt) {
         Coupon coupon = new Coupon();
         coupon.couponId = couponId;
         coupon.userId = userId;
         coupon.campaignId = campaignId;
         coupon.stockId = stockId;
         coupon.status = CouponStatus.ISSUED;
-        coupon.issuedAt = LocalDateTime.now();
+        coupon.issuedAt = issuedAt;
         coupon.expireAt = expireAt;
 
         return coupon;

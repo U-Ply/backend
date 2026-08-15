@@ -59,3 +59,6 @@ management:
 coupon:
   issue:
    strategy: ${COUPON_STRATEGY:PESSIMISTIC_LOCK}
+  kafka:
+    consumer:
+      enabled: ${KAFKA_CONSUMER_ENABLED:true}

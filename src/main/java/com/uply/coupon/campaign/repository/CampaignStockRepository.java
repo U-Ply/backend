@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
@@ -30,6 +31,29 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
 
     @Query(value = "SELECT NOW(3)", nativeQuery = true)
     LocalDateTime currentDatabaseTime();
+
+    @Query(
+            """
+            select c.expireAt
+              from CampaignStock s
+              join s.campaign c
+             where s.id = :stockId
+               and c.id = :campaignId
+            """)
+    Optional<LocalDateTime> findCouponExpireAt(
+            @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(
+            """
+            update CampaignStock s
+               set s.remainingStock = s.remainingStock - 1
+             where s.id = :stockId
+               and s.campaign.id = :campaignId
+               and s.remainingStock > 0
+            """)
+    int decreaseRemainingStockIfAvailable(
+            @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000"))
