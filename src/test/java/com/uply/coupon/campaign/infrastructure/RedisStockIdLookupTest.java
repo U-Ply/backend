@@ -1,5 +1,10 @@
 package com.uply.coupon.campaign.infrastructure;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
+
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,22 +15,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.verify;
-
 @ExtendWith(MockitoExtension.class)
 class RedisStockIdLookupTest {
 
-    @InjectMocks
-    private RedisStockIdLookup redisStockIdLookup;
+    @InjectMocks private RedisStockIdLookup redisStockIdLookup;
 
-    @Mock
-    private StringRedisTemplate redisTemplate;
+    @Mock private StringRedisTemplate redisTemplate;
 
-    @Mock
-    private ValueOperations<String, String> valueOperations;
+    @Mock private ValueOperations<String, String> valueOperations;
 
     @Test
     @DisplayName("Redis에 stockId 키가 존재하면 Long 타입의 stockId를 정상 반환한다.")

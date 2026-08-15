@@ -1,7 +1,13 @@
 package com.uply.coupon.campaign.service;
 
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.*;
+
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -11,36 +17,21 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.*;
-
-/**
- * Redis 캐시 사전 데이터 적재 테스트
- */
+/** Redis 캐시 사전 데이터 적재 테스트 */
 @ExtendWith(MockitoExtension.class)
 class CampaignCacheWarmupServiceTest {
 
-    @InjectMocks
-    private CampaignCacheWarmupService campaignCacheWarmupService;
+    @InjectMocks private CampaignCacheWarmupService campaignCacheWarmupService;
 
-    @Mock
-    private CampaignStockRepository campaignStockRepository;
+    @Mock private CampaignStockRepository campaignStockRepository;
 
-    @Mock
-    private StringRedisTemplate redisTemplate;
+    @Mock private StringRedisTemplate redisTemplate;
 
-    @Mock
-    private ValueOperations<String, String> valueOperations;
+    @Mock private ValueOperations<String, String> valueOperations;
 
-    @Mock
-    private CampaignStock stock1;
+    @Mock private CampaignStock stock1;
 
-    @Mock
-    private CampaignStock stock2;
+    @Mock private CampaignStock stock2;
 
     @Test
     @DisplayName("캠페인 재고 목록이 정상 조회되면 Redis에 재고, stockId, 발급 키 설정이 실행된다.")

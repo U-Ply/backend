@@ -37,5 +37,5 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
     @Query("SELECT s FROM CampaignStock s WHERE s.id = :stockId")
     Optional<CampaignStock> findByIdForUpdate(@Param("stockId") Long stockId);
 
-	List<CampaignStock> findAllByCampaignId(Long campaignId);
+    List<CampaignStock> findAllByCampaignId(Long campaignId);
 }
