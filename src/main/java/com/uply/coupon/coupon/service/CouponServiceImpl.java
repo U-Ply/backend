@@ -3,11 +3,11 @@ package com.uply.coupon.coupon.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
+import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
-import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueResult;
 import java.time.Instant;
@@ -22,7 +22,6 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class CouponServiceImpl implements CouponService {
 
-    private final CouponIssueStrategy couponIssueStrategy;
     private final IdempotencyChecker idempotencyChecker;
     private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
@@ -56,14 +55,14 @@ public class CouponServiceImpl implements CouponService {
                     stockIdLookup.lookupStockId(
                             request.campaignId(), request.routeId(), request.fareClass());
 
-            // Lua Script 기반 원자적 발급 실행
+            // 설정으로 선택된 발급 전략 실행
             IssueResult result =
-                    couponIssueStrategy.issue(
-                            request.campaignId(), request.userId(), stockId, idempotencyKey);
+                    strategySelector
+                            .current()
+                            .issue(request.campaignId(), request.userId(), stockId, idempotencyKey);
 
             if (!result.success()) {
-                // 예외 필요
-                // throw new CouponIssueException(result.reason());
+                throw new CouponIssueException(result.reason());
             }
 
             // 응답 DTO 생성

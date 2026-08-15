@@ -10,6 +10,7 @@ import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyCache;
 import com.uply.coupon.common.idempotency.RedisIdempotencyChecker;
 import java.time.Duration;
@@ -79,7 +80,7 @@ class RedisIdempotencyCheckerTest {
         }
 
         @Test
-        @DisplayName("중복 요청 시 상태가 PROCESSING이면 IllegalStateException을 던진다")
+        @DisplayName("중복 요청 시 상태가 PROCESSING이면 전용 예외를 던진다")
         void getCachedResponse_processingState_throwsException() throws Exception {
             // given
             String processingJson = "{\"status\":\"PROCESSING\"}";
@@ -97,8 +98,8 @@ class RedisIdempotencyCheckerTest {
 
             // when & then
             assertThatThrownBy(() -> idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("이미 처리 중인 요청입니다");
+                    .isInstanceOf(IdempotencyRequestInProgressException.class)
+                    .hasMessageContaining("already in progress");
         }
 
         @Test

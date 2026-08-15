@@ -10,6 +10,34 @@
 - Redis 전략은 `stock:{stockId}`와 `issued:{campaignId}`가 공통 초기 상태로 준비되어 있어야 한다.
 - 각 실행 전 쿠폰, 이력, DB 재고, Redis 재고와 멱등성 키를 초기화해야 한다.
 
+## 공통 시드와 초기화
+
+최초 한 번 공통 데이터를 생성한다. 이 작업은 `coupon_db`와 Redis의 기존 데이터를 모두 삭제한다.
+
+```bash
+./scripts/load-test/seed-level2.sh
+```
+
+생성되는 고정 데이터:
+
+```text
+userId       = 1~20000
+campaignId   = 1
+stockId      = 1
+routeId      = JEJU
+fareClass    = ECONOMY
+totalStock   = 10000
+remaining    = 10000
+```
+
+전략 또는 실행 회차를 바꾸기 전에는 다음 명령으로 실행 결과만 초기화한다.
+
+```bash
+./scripts/load-test/reset-level2.sh
+```
+
+초기화 후에는 사용자와 캠페인은 유지되고 쿠폰·이력·검증 결과가 삭제된다. DB와 Redis 재고는 10,000으로 돌아가고 Redis의 발급 사용자 및 멱등성 키도 제거된다.
+
 ## 실행 예시
 
 먼저 재고 100장, 요청 200건의 스모크 테스트를 실행한다.
@@ -76,3 +104,11 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 - `http_reqs`, `http_req_duration`, `iterations`
 
 k6 결과만으로 정합성을 판정하지 않는다. 실행이 끝난 후 DB 쿠폰 수, 중복 발급 수, DB 잔여 재고와 Redis 잔여 재고를 별도 검증한다.
+
+```bash
+docker exec -i coupon-mysql mysql -uroot -proot1234 < load-tests/sql/verify-level2.sql
+docker exec coupon-redis redis-cli GET stock:1
+docker exec coupon-redis redis-cli SCARD issued:1
+```
+
+실행 결과 문서는 `load-tests/templates/level2-result-template.md`를 복사해 작성한다.

@@ -2,6 +2,7 @@ package com.uply.coupon.common.idempotency;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import java.time.Duration;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -59,7 +60,7 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
             // 1. 선행 요청이 아직 처리 중인 경우 (동시성 요청 차단)
             if ("PROCESSING".equals(cache.getStatus())) {
                 log.warn("[멱등성 검사] 이미 처리 중인 요청입니다. key: {}", redisKey);
-                throw new IllegalStateException("이미 처리 중인 요청입니다. 잠시 후 다시 시도해주세요.");
+                throw new IdempotencyRequestInProgressException();
             }
 
             // 2. 처리가 완료된 요청인 경우 캐시된 JSON body 반환

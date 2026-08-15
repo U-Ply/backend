@@ -9,11 +9,14 @@ import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
+import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
+import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueResult;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
@@ -30,6 +33,8 @@ class CouponServiceTest {
     @InjectMocks private CouponServiceImpl couponService;
 
     @Mock private CouponIssueStrategy couponIssueStrategy;
+
+    @Mock private CouponIssueStrategySelector strategySelector;
 
     @Mock private StockIdLookup stockIdLookup;
 
@@ -80,6 +85,7 @@ class CouponServiceTest {
             // 중요: 캐시 Hit 시 주식 조회 및 발급 전략이 호출되지 않음을 검증
             verifyNoInteractions(stockIdLookup);
             verifyNoInteractions(couponIssueStrategy);
+            verifyNoInteractions(strategySelector);
         }
 
         @Test
@@ -88,15 +94,15 @@ class CouponServiceTest {
             // given
             CouponIssueRequest request = createRequest();
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
-                    .willThrow(new IllegalStateException("이미 처리 중인 요청입니다."));
+                    .willThrow(new IdempotencyRequestInProgressException());
 
             // when & then
             assertThatThrownBy(() -> couponService.issue(IDEMPOTENCY_KEY, request))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("이미 처리 중인 요청입니다.");
+                    .isInstanceOf(IdempotencyRequestInProgressException.class);
 
             verifyNoInteractions(stockIdLookup);
             verifyNoInteractions(couponIssueStrategy);
+            verifyNoInteractions(strategySelector);
         }
     }
 
@@ -116,6 +122,7 @@ class CouponServiceTest {
                     .willReturn(Optional.empty());
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willReturn(STOCK_ID);
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
                     .willReturn(successResult);
             given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
@@ -155,6 +162,30 @@ class CouponServiceTest {
         }
 
         @Test
+        @DisplayName("발급 전략이 실패 결과를 반환하면 전용 예외를 던지고 PROCESSING 선점을 해제한다")
+        void issue_strategyFailure_throwsCouponIssueException() {
+            CouponIssueRequest request = createRequest();
+
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .willReturn(Optional.empty());
+            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
+                    .willReturn(STOCK_ID);
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
+                    .willReturn(
+                            IssueResult.fail(
+                                    com.uply.coupon.coupon.strategy.IssueFailReason.OUT_OF_STOCK));
+
+            assertThatThrownBy(() -> couponService.issue(IDEMPOTENCY_KEY, request))
+                    .isInstanceOf(CouponIssueException.class)
+                    .extracting("reason")
+                    .isEqualTo(com.uply.coupon.coupon.strategy.IssueFailReason.OUT_OF_STOCK);
+
+            verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
+            verify(idempotencyChecker, never()).cacheResponse(anyString(), anyString(), anyInt());
+        }
+
+        @Test
         @DisplayName("idempotencyKey가 null이나 공백이면 멱등성 검사 및 캐싱을 건너뛰고 정상 발급한다")
         void issue_noIdempotencyKey_success() {
             // given
@@ -163,6 +194,7 @@ class CouponServiceTest {
 
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willReturn(STOCK_ID);
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, null))
                     .willReturn(successResult);
 
