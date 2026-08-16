@@ -86,6 +86,7 @@ public class CouponServiceImpl implements CouponService {
             return response;
 
         } catch (Exception e) {
+            e.printStackTrace();
             // 비즈니스 로직 / 인프라 예외 발생 시 PROCESSING 키 삭제 (재시도 허용)
             if (hasIdempotencyKey(idempotencyKey)) {
                 idempotencyChecker.clearProgress(idempotencyKey);

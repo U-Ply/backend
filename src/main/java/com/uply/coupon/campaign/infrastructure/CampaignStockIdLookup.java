@@ -29,6 +29,7 @@ public class CampaignStockIdLookup implements StockIdLookup {
 
         LocalDateTime databaseTime = campaignStockRepository.currentDatabaseTime();
         if (stock.getCampaign().getOpenAt().isAfter(databaseTime)) {
+            System.out.println("캠페인 시작 전이다.");
             throw new CampaignNotOpenException(campaignId, stock.getCampaign().getOpenAt());
         }
 
