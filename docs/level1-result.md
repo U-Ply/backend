@@ -7,7 +7,7 @@ Level 1은 전략별 기능·비즈니스 규칙과 소규모 동시성 오류�
 
 | 항목 | 값 |
 | --- | --- |
-| gitCommit | `<커밋 후 git rev-parse HEAD 값으로 교체>` |
+| gitCommit | 36cf2dc |
 | environmentId | LOCAL-NATIVE-01 |
 | runNumber | 1 |
 | 실행 일시 | 2026-08-16 14:20:24 (KST) |
