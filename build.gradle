@@ -76,4 +76,7 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // 테스트는 coupon_db_test 를 쓴다.
+    // 개발용 coupon_db 의 검증 더미데이터를 ./gradlew build 한 번에 날리지 않기 위해서다.
+    environment 'DB_NAME', 'coupon_db_test'
 }

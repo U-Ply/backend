@@ -1,3 +1,6 @@
 spring:
   main:
     web-application-type: none
+
+
+coupon.kafka.consumer.enabled: false
