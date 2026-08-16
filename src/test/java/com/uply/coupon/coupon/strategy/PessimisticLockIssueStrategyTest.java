@@ -13,8 +13,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
+@ActiveProfiles("test")
 class PessimisticLockIssueStrategyTest {
 
     @Autowired PessimisticLockIssueStrategy strategy;
@@ -131,6 +133,7 @@ class PessimisticLockIssueStrategyTest {
 
         AtomicInteger success = new AtomicInteger();
         AtomicInteger outOfStock = new AtomicInteger();
+        AtomicInteger alreadyIssued = new AtomicInteger();
         AtomicInteger lockTimeout = new AtomicInteger();
         AtomicInteger error = new AtomicInteger(); // 처리 안 된 예외 = 실제 서비스의 500
 
@@ -146,6 +149,8 @@ class PessimisticLockIssueStrategyTest {
                                 success.incrementAndGet();
                             } else if (result.reason() == IssueFailReason.OUT_OF_STOCK) {
                                 outOfStock.incrementAndGet();
+                            } else if (result.reason() == IssueFailReason.ALREADY_ISSUED) {
+                                alreadyIssued.incrementAndGet();
                             } else if (result.reason() == IssueFailReason.LOCK_TIMEOUT) {
                                 lockTimeout.incrementAndGet();
                             }
@@ -159,8 +164,29 @@ class PessimisticLockIssueStrategyTest {
         }
 
         start.countDown();
-        done.await(30, TimeUnit.SECONDS);
+        boolean finished = done.await(30, TimeUnit.SECONDS);
         executor.shutdown();
+
+        System.out.printf(
+                "성공 %d건 / 재고소진 %d건 / 중복 %d건 / 락 timeout %d건 / 기타 예외 %d건" + " (쿠폰 %d장, 잔여 재고 %d장)%n",
+                success.get(),
+                outOfStock.get(),
+                alreadyIssued.get(),
+                lockTimeout.get(),
+                error.get(),
+                couponCount(),
+                remainingStock());
+
+        assertThat(finished).isTrue(); // 제한 시간 안에 모든 요청이 끝나야 한다
+
+        // 요청이 어디로도 새지 않았는지 확인 (합이 안 맞으면 집계되지 않은 결과가 있다는 뜻)
+        assertThat(
+                        success.get()
+                                + outOfStock.get()
+                                + alreadyIssued.get()
+                                + lockTimeout.get()
+                                + error.get())
+                .isEqualTo(USER_COUNT);
 
         assertThat(error.get()).isZero(); // 부하테스트의 "5xx 0건"에 대응
         assertThat(success.get()).isEqualTo(TOTAL_STOCK); // 정확히 재고만큼만 성공
