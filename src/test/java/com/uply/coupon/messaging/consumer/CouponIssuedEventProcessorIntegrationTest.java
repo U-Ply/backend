@@ -6,13 +6,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
 
-@Disabled("테스트 전용 DB 구성 후 활성화")
+@ActiveProfiles("test")
 @SpringBootTest
 class CouponIssuedEventProcessorIntegrationTest {
 
