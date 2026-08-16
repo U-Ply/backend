@@ -1,0 +1,4 @@
+coupon:
+  kafka:
+    consumer:
+      enabled: false

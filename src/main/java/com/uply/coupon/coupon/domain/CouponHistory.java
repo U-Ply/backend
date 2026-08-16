@@ -40,12 +40,17 @@ public class CouponHistory {
 
     // 발급 이력 기록
     public static CouponHistory issued(Long couponId, String idempotencyKey) {
+        return issued(couponId, idempotencyKey, LocalDateTime.now());
+    }
+
+    public static CouponHistory issued(
+            Long couponId, String idempotencyKey, LocalDateTime eventAt) {
         CouponHistory history = new CouponHistory();
         history.couponId = couponId;
         history.fromStatus = null;
         history.toStatus = CouponStatus.ISSUED;
         history.idempotencyKey = idempotencyKey;
-        history.eventAt = LocalDateTime.now();
+        history.eventAt = eventAt;
         return history;
     }
 

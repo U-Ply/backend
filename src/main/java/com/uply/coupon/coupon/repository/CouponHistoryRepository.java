@@ -11,5 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
  */
 public interface CouponHistoryRepository extends JpaRepository<CouponHistory, Long> {
 
+    boolean existsByIdempotencyKey(String idempotencyKey);
+
     Optional<CouponHistory> findByIdempotencyKey(String idempotencyKey);
 }
