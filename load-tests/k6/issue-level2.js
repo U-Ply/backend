@@ -16,6 +16,7 @@ const issued = new Counter('coupon_issued');
 const outOfStock = new Counter('coupon_out_of_stock');
 const alreadyIssued = new Counter('coupon_already_issued');
 const clientErrors = new Counter('coupon_other_4xx');
+const lockTimeout = new Counter('coupon_lock_timeout');
 const serverErrors = new Counter('coupon_5xx');
 const unexpectedResponses = new Counter('coupon_unexpected_response');
 
@@ -33,6 +34,7 @@ export const options = {
   },
   thresholds: {
     checks: ['rate>0.99'],
+    coupon_lock_timeout: ['count==0'],
     coupon_5xx: ['count==0'],
     coupon_other_4xx: ['count==0'],
     coupon_unexpected_response: ['count==0'],
@@ -70,6 +72,8 @@ export default function () {
     outOfStock.add(1);
   } else if (response.status === 409 && body?.errorCode === 'ALREADY_ISSUED') {
     alreadyIssued.add(1);
+  } else if (response.status === 503 && body?.errorCode === 'LOCK_TIMEOUT') {
+    lockTimeout.add(1);
   } else if (response.status >= 500) {
     serverErrors.add(1);
   } else if (response.status >= 400 && response.status < 500) {

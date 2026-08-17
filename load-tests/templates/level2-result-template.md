@@ -38,14 +38,28 @@
 | 성공 (`coupon_issued`) |  |
 | 재고 소진 (`coupon_out_of_stock`) |  |
 | 중복 발급 (`coupon_already_issued`) |  |
+| 락 대기 시간 초과 (`coupon_lock_timeout`) |  |
 | 기타 4xx (`coupon_other_4xx`) |  |
-| 5xx (`coupon_5xx`) |  |
-| 예상하지 못한 응답 |  |
+| 기타 5xx (`coupon_5xx`) |  |
+| 예상하지 못한 응답 (`coupon_unexpected_response`) |  |
 | TPS |  |
 | 평균 응답 시간 |  |
 | p95 |  |
 | p99 |  |
 | 최대 응답 시간 |  |
+
+응답 건수 검산:
+
+```text
+전체 요청
+= 성공
++ 재고 소진
++ 중복 발급
++ LOCK_TIMEOUT
++ 기타 4xx
++ 기타 5xx
++ 예상하지 못한 응답
+```
 
 원본 요약 JSON:
 
@@ -61,6 +75,7 @@ load-tests/results/<strategy>-vu<vus>-run<run>.json
 | DB 잔여 재고 | 0 |  |  |
 | 초과 발급 재고 풀 | 0 |  |  |
 | 중복 발급 사용자 | 0 |  |  |
+| `LOCK_TIMEOUT` | 0 |  |  |
 | DB 재고 차이 (`stock_diff`) | 0 |  |  |
 | Redis 잔여 재고 | N/A 또는 0 |  |  |
 | Redis 발급 사용자 수 | N/A 또는 10,000 |  |  |
