@@ -114,10 +114,26 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 - `coupon_issued`
 - `coupon_out_of_stock`
 - `coupon_already_issued`
+- `coupon_lock_timeout`
 - `coupon_other_4xx`
 - `coupon_5xx`
 - `coupon_unexpected_response`
 - `http_reqs`, `http_req_duration`, `iterations`
+
+`coupon_lock_timeout`은 비관적 락을 제한 시간 안에 획득하지 못해 반환된 `503 LOCK_TIMEOUT`만 별도로 집계한다. 이 값은 일반 `coupon_5xx`에 중복 집계되지 않으며 Level 2 통과 기준은 0건이다.
+
+결과 건수는 다음 식으로 전체 요청 수와 일치해야 한다.
+
+```text
+전체 요청
+= coupon_issued
++ coupon_out_of_stock
++ coupon_already_issued
++ coupon_lock_timeout
++ coupon_other_4xx
++ coupon_5xx
++ coupon_unexpected_response
+```
 
 k6 결과만으로 정합성을 판정하지 않는다. 실행이 끝난 후 DB 쿠폰 수, 중복 발급 수, DB 잔여 재고와 Redis 잔여 재고를 별도 검증한다.
 
