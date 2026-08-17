@@ -2,6 +2,7 @@ package com.uply.coupon.campaign.service;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +20,8 @@ import org.springframework.transaction.annotation.Transactional;
  * 주요 캐싱 데이터 구조
  *   1. stock:{stockId} (String) - 잔여/총 재고 수량
  *   2. stockId:{campaignId}:{routeId}:{fareClass} (String) - 검색 조건별 매핑되는 Stock PK
- *   3. issued:{campaignId} (Set) - 중복 발급 방지용 유저 집합
+ *   3. campaign:{campaignId}:openAt (String) - 오픈 시각(UTC epoch milliseconds)
+ *   4. issued:{campaignId} (Set) - 중복 발급 방지용 유저 집합
  * <pre>
  */
 @Slf4j
@@ -29,6 +31,7 @@ public class CampaignCacheWarmupService {
 
     private static final String KEY_STOCK = "stock:%d";
     private static final String KEY_STOCK_ID = "stockId:%d:%s:%s";
+    private static final String KEY_CAMPAIGN_OPEN_AT = "campaign:%d:openAt";
     private static final String KEY_ISSUED = "issued:%d";
 
     private static final long CACHE_TTL_HOURS = 24;
@@ -51,6 +54,18 @@ public class CampaignCacheWarmupService {
             log.warn("No stocks found for campaignId: {}", campaignId);
             return;
         }
+
+        // Redis Lua가 애플리케이션 서버 시간이 아닌 Redis 서버 시간을 기준으로 정시 오픈을 검사한다.
+        long openAtEpochMillis =
+                stocks.get(0).getCampaign().getOpenAt().toInstant(ZoneOffset.UTC).toEpochMilli();
+        String campaignOpenAtKey = String.format(KEY_CAMPAIGN_OPEN_AT, campaignId);
+        redisTemplate
+                .opsForValue()
+                .set(
+                        campaignOpenAtKey,
+                        String.valueOf(openAtEpochMillis),
+                        CACHE_TTL_HOURS,
+                        TimeUnit.HOURS);
 
         for (CampaignStock stock : stocks) {
             // 1) stock:{stockId} -> 재고 수량

@@ -25,6 +25,7 @@ class LuaScriptIssueStrategyUnitTest {
 
     private String issuedKey;
     private String stockKey;
+    private String campaignOpenAtKey;
 
     @BeforeAll
     static void beforeAll() {
@@ -59,9 +60,13 @@ class LuaScriptIssueStrategyUnitTest {
         // Redis Key 구성
         issuedKey = String.format("issued:%d", campaignId);
         stockKey = "stock:" + stockId;
+        campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
 
         // 사전 캐시 워밍 (Cache Warm-up)
         redisTemplate.opsForValue().set(stockKey, "2"); // 초기 재고 2개
+        redisTemplate
+                .opsForValue()
+                .set(campaignOpenAtKey, String.valueOf(System.currentTimeMillis() - 1_000));
     }
 
     @Test
@@ -121,5 +126,20 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
         assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("0");
+    }
+
+    @Test
+    @DisplayName("캠페인 오픈 전 요청은 CAMPAIGN_NOT_OPEN이고 재고를 차감하지 않는다")
+    void issueFailCampaignNotOpen() {
+        redisTemplate
+                .opsForValue()
+                .set(campaignOpenAtKey, String.valueOf(System.currentTimeMillis() + 60_000));
+
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, 10L, stockId, "");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_NOT_OPEN);
+        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("2");
+        assertThat(redisTemplate.opsForSet().isMember(issuedKey, "10")).isFalse();
     }
 }

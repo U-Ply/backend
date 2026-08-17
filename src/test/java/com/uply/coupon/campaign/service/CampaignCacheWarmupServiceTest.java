@@ -3,8 +3,11 @@ package com.uply.coupon.campaign.service;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
+import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -33,13 +36,19 @@ class CampaignCacheWarmupServiceTest {
 
     @Mock private CampaignStock stock2;
 
+    @Mock private Campaign campaign;
+
     @Test
     @DisplayName("캠페인 재고 목록이 정상 조회되면 Redis에 재고, stockId, 발급 키 설정이 실행된다.")
     void warmupCampaign_Success() {
         // given
         Long campaignId = 1L;
+        LocalDateTime openAt = LocalDateTime.of(2026, 8, 17, 10, 0);
+        long openAtEpochMillis = openAt.toInstant(ZoneOffset.UTC).toEpochMilli();
 
         // Stock 1 데이터 설정
+        given(stock1.getCampaign()).willReturn(campaign);
+        given(campaign.getOpenAt()).willReturn(openAt);
         given(stock1.getId()).willReturn(100L);
         given(stock1.getTotalStock()).willReturn(500);
         given(stock1.getRouteId()).willReturn("ICN-NRT");
@@ -59,6 +68,9 @@ class CampaignCacheWarmupServiceTest {
         campaignCacheWarmupService.warmupCampaign(campaignId);
 
         // then
+        verify(valueOperations)
+                .set("campaign:1:openAt", String.valueOf(openAtEpochMillis), 24L, TimeUnit.HOURS);
+
         // 1. Stock 1 저장 검증
         verify(valueOperations).set("stock:100", "500", 24L, TimeUnit.HOURS);
         verify(valueOperations).set("stockId:1:ICN-NRT:Y", "100", 24L, TimeUnit.HOURS);
