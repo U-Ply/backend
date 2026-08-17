@@ -47,6 +47,8 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         String stockIdKey = String.format("stock:%d", stockId);
         // 캠페인 중복 검사 Key: coupon:issued:{campaignId}
         String issuedCampaignKey = String.format("issued:%d", campaignId);
+        // 캠페인 오픈 시각 Key
+        String campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
 
         // #4. Lua Script 실행 (Atomic 연산)
         // Spring Data Redis의 execute() 메서드가 타입 정보가 없는 Raw Type List를 반환하기 때문에 발생하는 컴파일러 경고
@@ -54,7 +56,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         List<Object> result =
                 redisTemplate.execute(
                         issueScript,
-                        List.of(stockIdKey, issuedCampaignKey),
+                        List.of(stockIdKey, issuedCampaignKey, campaignOpenAtKey),
                         String.valueOf(userId));
 
         if (result == null || result.isEmpty()) {
@@ -93,6 +95,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         return switch ((int) resultCode) {
             case -1 -> IssueFailReason.ALREADY_ISSUED;
             case -2 -> IssueFailReason.OUT_OF_STOCK;
+            case -4 -> IssueFailReason.CAMPAIGN_NOT_OPEN;
             default -> IssueFailReason.SYSTEM_ERROR;
         };
     }

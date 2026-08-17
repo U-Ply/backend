@@ -2,12 +2,13 @@ package com.uply.coupon.coupon.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.uply.coupon.campaign.service.StockIdLookup;
+import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
+import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueResult;
 import java.time.Instant;
@@ -25,7 +26,7 @@ public class CouponServiceImpl implements CouponService {
     private final IdempotencyChecker idempotencyChecker;
     private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
-    private final StockIdLookup stockIdLookup; // campaign 도메인 기능 활용
+    private final StockIdLookupSelector stockIdLookupSelector;
 
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
@@ -50,16 +51,19 @@ public class CouponServiceImpl implements CouponService {
 
         // #2. 최초 요청 처리 (예외 발생 시 PROCESSING 락 해제를 위한 try-catch)
         try {
-            // stockId 조회
+            CouponIssueStrategy issueStrategy = strategySelector.current();
+
+            // DB 전략은 MySQL, Lua 전략은 Redis에서 stockId를 조회한다.
             Long stockId =
-                    stockIdLookup.lookupStockId(
-                            request.campaignId(), request.routeId(), request.fareClass());
+                    stockIdLookupSelector
+                            .forStrategy(issueStrategy.name())
+                            .lookupStockId(
+                                    request.campaignId(), request.routeId(), request.fareClass());
 
             // 설정으로 선택된 발급 전략 실행
             IssueResult result =
-                    strategySelector
-                            .current()
-                            .issue(request.campaignId(), request.userId(), stockId, idempotencyKey);
+                    issueStrategy.issue(
+                            request.campaignId(), request.userId(), stockId, idempotencyKey);
 
             if (!result.success()) {
                 throw new CouponIssueException(result.reason());

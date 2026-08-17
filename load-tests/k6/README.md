@@ -40,6 +40,22 @@ remaining    = 10000
 
 ## 실행 예시
 
+NoLock·비관적 락의 순수 동시성 제어 성능을 비교할 때는 Redis 멱등성 계층을 끄고 애플리케이션을 실행한다. k6는 매 요청에 서로 다른 Idempotency-Key를 전송한다.
+
+```bash
+COUPON_STRATEGY=NO_LOCK \
+COUPON_IDEMPOTENCY_ENABLED=false \
+./gradlew bootRun
+```
+
+```bash
+COUPON_STRATEGY=PESSIMISTIC_LOCK \
+COUPON_IDEMPOTENCY_ENABLED=false \
+./gradlew bootRun
+```
+
+일반 실행과 멱등성 검증에서는 `COUPON_IDEMPOTENCY_ENABLED`를 생략하거나 `true`로 설정한다. `false`는 Level 2 전략 비교 전용이며 운영 설정으로 사용하지 않는다.
+
 먼저 재고 100장, 요청 200건의 스모크 테스트를 실행한다.
 
 ```bash

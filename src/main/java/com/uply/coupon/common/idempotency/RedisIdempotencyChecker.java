@@ -7,12 +7,17 @@ import java.time.Duration;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 /** Redis 기반 멱등성 검사 및 응답 캐싱 구현체 */
 @Slf4j
 @Component
+@ConditionalOnProperty(
+        name = "coupon.idempotency.enabled",
+        havingValue = "true",
+        matchIfMissing = true)
 @RequiredArgsConstructor
 public class RedisIdempotencyChecker implements IdempotencyChecker {
 
