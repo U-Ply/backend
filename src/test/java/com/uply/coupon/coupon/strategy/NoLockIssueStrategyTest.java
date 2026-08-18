@@ -247,12 +247,16 @@ class NoLockIssueStrategyTest {
 
         int issued = couponCount(); // 실제 발급된 쿠폰 수
         int consumed = TOTAL_STOCK - remainingStock(); // 재고가 줄어든 양
+        int overIssued = Math.max(0, issued - TOTAL_STOCK); // 초기 재고를 넘겨 발급된 수
 
         System.out.printf(
-                "발급 %d건 / 재고 차감 %d건 → 유실 %d건" + " (재고소진 %d건, 중복 %d건, 락 경합 실패 %d건, 기타 예외 %d건)%n",
+                "성공 응답 %d건 / 실제 쿠폰 %d건 / 재고 차감 %d건 → 유실 %d건, 초과 발급 %d건"
+                        + " (재고소진 %d건, 중복 %d건, 락 경합 실패 %d건, 기타 예외 %d건)%n",
+                success.get(),
                 issued,
                 consumed,
                 issued - consumed,
+                overIssued,
                 outOfStock.get(),
                 alreadyIssued.get(),
                 deadlock.get(),
