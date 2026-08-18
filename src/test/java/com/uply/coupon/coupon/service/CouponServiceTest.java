@@ -9,6 +9,7 @@ import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
+import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
@@ -37,6 +38,7 @@ class CouponServiceTest {
     @Mock private CouponIssueStrategySelector strategySelector;
 
     @Mock private StockIdLookup stockIdLookup;
+    @Mock private StockIdLookupSelector stockIdLookupSelector;
 
     @Mock private IdempotencyChecker idempotencyChecker;
 
@@ -84,6 +86,7 @@ class CouponServiceTest {
 
             // 중요: 캐시 Hit 시 주식 조회 및 발급 전략이 호출되지 않음을 검증
             verifyNoInteractions(stockIdLookup);
+            verifyNoInteractions(stockIdLookupSelector);
             verifyNoInteractions(couponIssueStrategy);
             verifyNoInteractions(strategySelector);
         }
@@ -101,6 +104,7 @@ class CouponServiceTest {
                     .isInstanceOf(IdempotencyRequestInProgressException.class);
 
             verifyNoInteractions(stockIdLookup);
+            verifyNoInteractions(stockIdLookupSelector);
             verifyNoInteractions(couponIssueStrategy);
             verifyNoInteractions(strategySelector);
         }
@@ -120,9 +124,11 @@ class CouponServiceTest {
 
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.empty());
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.name()).willReturn("PESSIMISTIC_LOCK");
+            given(stockIdLookupSelector.forStrategy("PESSIMISTIC_LOCK")).willReturn(stockIdLookup);
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willReturn(STOCK_ID);
-            given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
                     .willReturn(successResult);
             given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
@@ -149,6 +155,9 @@ class CouponServiceTest {
 
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.empty());
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.name()).willReturn("NO_LOCK");
+            given(stockIdLookupSelector.forStrategy("NO_LOCK")).willReturn(stockIdLookup);
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willThrow(new RuntimeException("DB 조회 실패"));
 
@@ -168,9 +177,11 @@ class CouponServiceTest {
 
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.empty());
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.name()).willReturn("PESSIMISTIC_LOCK");
+            given(stockIdLookupSelector.forStrategy("PESSIMISTIC_LOCK")).willReturn(stockIdLookup);
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willReturn(STOCK_ID);
-            given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
                     .willReturn(
                             IssueResult.fail(
@@ -192,9 +203,11 @@ class CouponServiceTest {
             CouponIssueRequest request = createRequest();
             IssueResult successResult = IssueResult.success(COUPON_ID);
 
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.name()).willReturn("NO_LOCK");
+            given(stockIdLookupSelector.forStrategy("NO_LOCK")).willReturn(stockIdLookup);
             given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
                     .willReturn(STOCK_ID);
-            given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, null))
                     .willReturn(successResult);
 

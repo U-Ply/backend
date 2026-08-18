@@ -40,6 +40,22 @@ remaining    = 10000
 
 ## 실행 예시
 
+NoLock·비관적 락의 순수 동시성 제어 성능을 비교할 때는 Redis 멱등성 계층을 끄고 애플리케이션을 실행한다. k6는 매 요청에 서로 다른 Idempotency-Key를 전송한다.
+
+```bash
+COUPON_STRATEGY=NO_LOCK \
+COUPON_IDEMPOTENCY_ENABLED=false \
+./gradlew bootRun
+```
+
+```bash
+COUPON_STRATEGY=PESSIMISTIC_LOCK \
+COUPON_IDEMPOTENCY_ENABLED=false \
+./gradlew bootRun
+```
+
+일반 실행과 멱등성 검증에서는 `COUPON_IDEMPOTENCY_ENABLED`를 생략하거나 `true`로 설정한다. `false`는 Level 2 전략 비교 전용이며 운영 설정으로 사용하지 않는다.
+
 먼저 재고 100장, 요청 200건의 스모크 테스트를 실행한다.
 
 ```bash
@@ -98,10 +114,26 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 - `coupon_issued`
 - `coupon_out_of_stock`
 - `coupon_already_issued`
+- `coupon_lock_timeout`
 - `coupon_other_4xx`
 - `coupon_5xx`
 - `coupon_unexpected_response`
 - `http_reqs`, `http_req_duration`, `iterations`
+
+`coupon_lock_timeout`은 비관적 락을 제한 시간 안에 획득하지 못해 반환된 `503 LOCK_TIMEOUT`만 별도로 집계한다. 이 값은 일반 `coupon_5xx`에 중복 집계되지 않으며 Level 2 통과 기준은 0건이다.
+
+결과 건수는 다음 식으로 전체 요청 수와 일치해야 한다.
+
+```text
+전체 요청
+= coupon_issued
++ coupon_out_of_stock
++ coupon_already_issued
++ coupon_lock_timeout
++ coupon_other_4xx
++ coupon_5xx
++ coupon_unexpected_response
+```
 
 k6 결과만으로 정합성을 판정하지 않는다. 실행이 끝난 후 DB 쿠폰 수, 중복 발급 수, DB 잔여 재고와 Redis 잔여 재고를 별도 검증한다.
 

@@ -58,4 +58,7 @@ management:
 # NO_LOCK / PESSIMISTIC_LOCK / LUA_SCRIPT
 coupon:
   issue:
-   strategy: ${COUPON_STRATEGY:LUA_SCRIPT}
+    strategy: ${COUPON_STRATEGY:LUA_SCRIPT}
+  idempotency:
+    # Level 2의 순수 전략 비교에서만 false로 설정한다. 일반 실행에서는 Redis 멱등성을 사용한다.
+    enabled: ${COUPON_IDEMPOTENCY_ENABLED:true}
