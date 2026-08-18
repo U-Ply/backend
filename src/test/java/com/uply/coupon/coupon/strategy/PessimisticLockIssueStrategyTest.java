@@ -1,7 +1,12 @@
 package com.uply.coupon.coupon.strategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 
+import com.uply.coupon.coupon.domain.CouponHistory;
+import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -12,6 +17,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -20,6 +27,8 @@ import org.springframework.test.context.ActiveProfiles;
 class PessimisticLockIssueStrategyTest {
 
     @Autowired PessimisticLockIssueStrategy strategy;
+
+    @SpyBean CouponHistoryRepository couponHistoryRepository;
 
     @Autowired JdbcTemplate jdbcTemplate;
 
@@ -69,6 +78,10 @@ class PessimisticLockIssueStrategyTest {
     private int couponCount() {
         return jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM coupons WHERE stock_id = ?", Integer.class, STOCK_ID);
+    }
+
+    private int historyCount() {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM coupon_history", Integer.class);
     }
 
     @Test
@@ -122,6 +135,21 @@ class PessimisticLockIssueStrategyTest {
         assertThat(retry.couponId()).isEqualTo(first.couponId()); // 같은 쿠폰이어야 한다
         assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1); // 재고는 1만 차감
         assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("이력 저장이 실패하면 재고 차감과 쿠폰 생성이 모두 롤백된다")
+    void 트랜잭션_롤백() {
+        doThrow(new DataIntegrityViolationException("테스트용 강제 예외"))
+                .when(couponHistoryRepository)
+                .save(any(CouponHistory.class));
+
+        assertThatThrownBy(() -> strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "rollback-key"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK); // 차감이 되돌려졌는지 확인
+        assertThat(couponCount()).isZero(); // 쿠폰이 남지 않았는지 확인
+        assertThat(historyCount()).isZero(); // 이력이 남지 않았는지 확인
     }
 
     @Test
