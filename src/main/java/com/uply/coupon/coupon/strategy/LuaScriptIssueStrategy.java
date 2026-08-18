@@ -1,6 +1,7 @@
 package com.uply.coupon.coupon.strategy;
 
-import io.hypersistence.tsid.TSID;
+import com.uply.coupon.common.id.CouponIdGenerator;
+import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import jakarta.annotation.PostConstruct;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -8,7 +9,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 
@@ -19,7 +19,8 @@ import org.springframework.stereotype.Component;
 public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
     private final StringRedisTemplate redisTemplate;
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final CouponIdGenerator couponIdGenerator;
+    private final CouponSaveStrategy couponSaveStrategy;
 
     private DefaultRedisScript<List> issueScript;
 
@@ -40,7 +41,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         // TODO: Lua Script로 재고 확인 + 중복 체크 + 차감을 원자적으로 처리 후 Kafka 이벤트 발행
 
         // #1. 번호표(couponId) 사전 생성 (TSID)
-        Long couponId = TSID.fast().toLong();
+        Long couponId = couponIdGenerator.generate();
 
         // #2. Redis Key 생성
         // stockId key
@@ -71,18 +72,10 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
-        //        // #7. Kafka 비동기 이벤트 발행 (DB Insert용)
-        //        CouponIssuedEvent event = new CouponIssuedEvent(
-        //                couponId,
-        //                stockId,
-        //                userId,
-        //                campaignId,
-        //                routeId,
-        //                fareClassId
-        //        );
-        //        kafkaTemplate.send("coupon-issued-topic", String.valueOf(couponId), event);
+        // #6. DB 저장 전략 선택
+        couponSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey);
 
-        // #6. 성공 결과 반환 (IssueResult)
+        // #7. 성공 결과 반환 (IssueResult)
         return IssueResult.success(couponId);
     }
 
