@@ -2,7 +2,9 @@ services:
   mysql:
     image: mysql:8.0.46
     container_name: coupon-mysql
+    command: --default-time-zone=+00:00
     environment:
+      TZ: UTC	
       MYSQL_ROOT_PASSWORD: root1234
       MYSQL_DATABASE: coupon_db
       MYSQL_USER: coupon
