@@ -19,6 +19,11 @@ import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.LocalDateTime;
 import java.util.TimeZone;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -223,6 +228,50 @@ class CouponServiceIntegrationTest {
             assertThat(stockId).isNotNull();
             String remainStock = redisTemplate.opsForValue().get("stock:" + stockId);
             assertThat(Long.parseLong(remainStock)).isEqualTo(9L);
+        }
+        
+        @Test
+        @DisplayName("카프카 비동기 저장: 동일 유저가 10번 동시 요청 시 정확히 1번만 성공(중복 발급 방지)")
+        void issueCoupon_DuplicateRequest_OnlyOneSuccess() throws InterruptedException {
+            // given
+            int concurrentRequests = 10;
+            long sameUserId = 999L; // 동일한 유저
+            String sameIdempotencyKey = "same-key-999";
+
+            ExecutorService executorService = Executors.newFixedThreadPool(concurrentRequests);
+            CountDownLatch doneLatch = new CountDownLatch(concurrentRequests);
+
+            AtomicInteger successCount = new AtomicInteger();
+            AtomicInteger failCount = new AtomicInteger();
+
+            // when
+            for (int i = 0; i < concurrentRequests; i++) {
+                executorService.submit(
+                        () -> {
+                            try {
+                                CouponIssueRequest request =
+                                        new CouponIssueRequest(
+                                                sameUserId, campaignId, routeId, fareClass);
+                                couponService.issue(sameIdempotencyKey, request);
+                                successCount.incrementAndGet();
+                            } catch (Exception e) {
+                                failCount.incrementAndGet();
+                            } finally {
+                                doneLatch.countDown();
+                            }
+                        });
+            }
+
+            doneLatch.await();
+            executorService.shutdown();
+
+            // then
+            assertThat(successCount.get()).isEqualTo(1); // 1번만 성공
+            assertThat(failCount.get()).isEqualTo(9); // 나머지 9번은 중복 요청으로 실패
+
+            then(kafkaTemplate)
+                    .should(times(1))
+                    .send(eq("coupon-issued"), anyString(), any(CouponIssuedEvent.class));
         }
     }
 }
