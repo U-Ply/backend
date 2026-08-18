@@ -7,6 +7,8 @@ import static org.mockito.Mockito.doThrow;
 
 import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -137,6 +139,50 @@ class NoLockIssueStrategyTest {
         assertThat(retry.couponId()).isEqualTo(first.couponId()); // 같은 쿠폰이어야 한다
         assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1); // 재고는 1만 차감
         assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("쿠폰 만료 시각은 캠페인의 expire_at을 그대로 따른다")
+    void 만료시각은_캠페인_기준() {
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "expire-key");
+
+        assertThat(result.success()).isTrue();
+
+        // @BeforeEach 가 캠페인을 NOW(3) + 30일로 만들어 두었다.
+        // 하드코딩된 "발급일 + 7일" 이 아니라 이 값이 그대로 쿠폰에 실려야 한다.
+        LocalDateTime campaignExpireAt =
+                jdbcTemplate.queryForObject(
+                        "SELECT expire_at FROM campaigns WHERE campaign_id = ?",
+                        LocalDateTime.class,
+                        CAMPAIGN_ID);
+        LocalDateTime couponExpireAt =
+                jdbcTemplate.queryForObject(
+                        "SELECT expire_at FROM coupons WHERE coupon_id = ?",
+                        LocalDateTime.class,
+                        result.couponId());
+
+        assertThat(couponExpireAt).isEqualTo(campaignExpireAt);
+    }
+
+    @Test
+    @DisplayName("발급 시각은 JVM이 아니라 DB의 NOW(3)를 따른다")
+    void 발급시각은_DB_기준() {
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "issued-at-key");
+
+        assertThat(result.success()).isTrue();
+
+        LocalDateTime issuedAt =
+                jdbcTemplate.queryForObject(
+                        "SELECT issued_at FROM coupons WHERE coupon_id = ?",
+                        LocalDateTime.class,
+                        result.couponId());
+        LocalDateTime databaseTime =
+                jdbcTemplate.queryForObject("SELECT NOW(3)", LocalDateTime.class);
+
+        // JVM은 UTC, MySQL 서버는 KST로 돌기 때문에 JVM 시각을 쓰면 9시간이 어긋난다.
+        // DB 시각을 썼다면 방금 발급했으므로 차이가 몇 초 이내여야 한다.
+        assertThat(Duration.between(issuedAt, databaseTime).abs())
+                .isLessThan(Duration.ofMinutes(1));
     }
 
     @Test
