@@ -30,15 +30,17 @@ class CouponTest {
     }
 
     @Test
-    void issuedCouponCanBeCancelled() {
+    void usedCouponCanBeCancelled() {
         Coupon coupon = issuedCoupon();
-        LocalDateTime cancelledAt = LocalDateTime.of(2026, 8, 13, 12, 0);
+        LocalDateTime usedAt = LocalDateTime.of(2026, 8, 13, 12, 0);
+        LocalDateTime cancelledAt = usedAt.plusMinutes(1);
+        coupon.use(usedAt);
 
         coupon.cancel(cancelledAt);
 
         assertThat(coupon.getStatus()).isEqualTo(CouponStatus.CANCELLED);
         assertThat(coupon.getCancelledAt()).isEqualTo(cancelledAt);
-        assertThat(coupon.getUsedAt()).isNull();
+        assertThat(coupon.getUsedAt()).isEqualTo(usedAt);
         assertThat(coupon.getExpiredAt()).isNull();
     }
 
@@ -56,43 +58,24 @@ class CouponTest {
     }
 
     @Test
-    void usedCouponCannotBeCancelled() { // 사용된 쿠폰 취소 못하게 하는 기능 검증  단, 이미 USED 상태인 쿠폰은 항공사가 취소해도
-        // CANCELLED로 변경되지 않아야 한다
+    void issuedCouponCanBeCancelledByAirline() {
         Coupon coupon = issuedCoupon();
-        LocalDateTime usedAt = LocalDateTime.of(2026, 8, 13, 12, 0);
-        coupon.use(usedAt);
+        LocalDateTime cancelledAt = LocalDateTime.of(2026, 8, 13, 12, 1);
 
-        assertThatThrownBy(() -> coupon.cancel(usedAt.plusMinutes(1))) // 사용 시각보다 1분 뒤에 취소를 시도
-                .isInstanceOf(InvalidStateTransitionException.class)
-                .satisfies(
-                        exception -> {
-                            InvalidStateTransitionException transitionException =
-                                    (InvalidStateTransitionException)
-                                            exception; // 예외의 에러 코드와 현재 목표 상태를 확인하기 위해 타입을 변환
-                            assertThat(transitionException.getErrorCode()) // 상태 전이 오류 코드인지 확인
-                                    .isEqualTo("INVALID_STATE_TRANSITION");
-                            assertThat(
-                                            transitionException
-                                                    .getCurrentStatus()) // 예외 발생 당시 쿠폰의 현재 상태가
-                                    // USED인지 확인
-                                    .isEqualTo(CouponStatus.USED);
-                            assertThat(
-                                            transitionException
-                                                    .getTargetStatus()) // 변경하려던 목표 상태가 CANCELLED인지
-                                    // 확인
-                                    .isEqualTo(CouponStatus.CANCELLED);
-                        });
+        coupon.cancel(cancelledAt);
 
-        assertThat(coupon.getStatus())
-                .isEqualTo(CouponStatus.USED); // 취소 실패 후에도 기존 USED 상태가 유지되는지 확인
-        assertThat(coupon.getUsedAt()).isEqualTo(usedAt); // 기존 사용 시각이 변경되지 않았는지 확인
-        assertThat(coupon.getCancelledAt()).isNull(); // 취소에 실패했을때 취소 시각이 기록되지 않았는지 확인
+        assertThat(coupon.getStatus()).isEqualTo(CouponStatus.CANCELLED);
+        assertThat(coupon.getUsedAt()).isNull();
+        assertThat(coupon.getCancelledAt()).isEqualTo(cancelledAt);
+        assertThat(coupon.getExpiredAt()).isNull();
     }
 
     @Test
     void cancelledCouponCannotBeUsed() {
         Coupon coupon = issuedCoupon();
-        LocalDateTime cancelledAt = LocalDateTime.of(2026, 8, 13, 12, 0);
+        LocalDateTime usedAt = LocalDateTime.of(2026, 8, 13, 12, 0);
+        LocalDateTime cancelledAt = usedAt.plusMinutes(1);
+        coupon.use(usedAt);
         coupon.cancel(cancelledAt);
 
         assertThatThrownBy(
@@ -108,7 +91,7 @@ class CouponTest {
 
         assertThat(coupon.getStatus()).isEqualTo(CouponStatus.CANCELLED);
         assertThat(coupon.getCancelledAt()).isEqualTo(cancelledAt);
-        assertThat(coupon.getUsedAt()).isNull();
+        assertThat(coupon.getUsedAt()).isEqualTo(usedAt);
     }
 
     @Test

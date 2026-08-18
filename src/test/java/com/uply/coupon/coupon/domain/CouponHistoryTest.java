@@ -43,7 +43,7 @@ class CouponHistoryTest {
         CouponHistory history = CouponHistory.cancelled(COUPON_ID, idempotencyKey, EVENT_AT);
 
         assertThat(history.getCouponId()).isEqualTo(COUPON_ID);
-        assertThat(history.getFromStatus()).isEqualTo(CouponStatus.ISSUED);
+        assertThat(history.getFromStatus()).isEqualTo(CouponStatus.USED);
         assertThat(history.getToStatus()).isEqualTo(CouponStatus.CANCELLED);
         assertThat(history.getIdempotencyKey()).isEqualTo(idempotencyKey);
         assertThat(history.getEventAt()).isEqualTo(EVENT_AT);

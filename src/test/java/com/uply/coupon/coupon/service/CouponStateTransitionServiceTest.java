@@ -57,18 +57,20 @@ class CouponStateTransitionServiceTest {
         verify(couponRepository).findById(COUPON_ID);
     }
 
-    // 취소 조건부 UPDATE가 1건 성공했을 때 ISSUED → CANCELLED 이력이 올바르게 저장되는지 확인
+    // 취소 조건부 UPDATE가 1건 성공했을 때 USED → CANCELLED 이력이 올바르게 저장되는지 확인
     @Test
     void savesCancelledHistoryOnlyWhenConditionalUpdateSucceeds() {
         Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        coupon.use(EVENT_AT.minusMinutes(1));
         coupon.cancel(EVENT_AT);
-        when(couponRepository.cancelIfIssued(COUPON_ID)).thenReturn(1);
+        when(couponRepository.cancelIfUsed(COUPON_ID)).thenReturn(1);
         when(couponRepository.findById(COUPON_ID)).thenReturn(Optional.of(coupon));
 
         service.cancel(COUPON_ID, IDEMPOTENCY_KEY);
 
         ArgumentCaptor<CouponHistory> historyCaptor = ArgumentCaptor.forClass(CouponHistory.class);
         verify(couponHistoryRepository).save(historyCaptor.capture());
+        assertThat(historyCaptor.getValue().getFromStatus()).isEqualTo(CouponStatus.USED);
         assertThat(historyCaptor.getValue().getToStatus()).isEqualTo(CouponStatus.CANCELLED);
         assertThat(historyCaptor.getValue().getEventAt()).isEqualTo(EVENT_AT);
     }
@@ -118,12 +120,11 @@ class CouponStateTransitionServiceTest {
         verify(couponHistoryRepository, never()).save(org.mockito.ArgumentMatchers.any());
     }
 
-    // 이미 USED인 쿠폰을 CANCELLED로 변경하려고 하면 INVALID_STATE_TRANSITION 예외가 발생하고 이력을 저장하지 않는지 확인
+    // 아직 ISSUED인 쿠폰을 CANCELLED로 변경하려고 하면 INVALID_STATE_TRANSITION 예외가 발생하고 이력을 저장하지 않는지 확인
     @Test
     void doesNotSaveHistoryWhenStateTransitionIsInvalid() {
         Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
-        coupon.use(EVENT_AT);
-        when(couponRepository.cancelIfIssued(COUPON_ID)).thenReturn(0);
+        when(couponRepository.cancelIfUsed(COUPON_ID)).thenReturn(0);
         when(couponRepository.findById(COUPON_ID)).thenReturn(Optional.of(coupon));
 
         assertThatThrownBy(() -> service.cancel(COUPON_ID, IDEMPOTENCY_KEY))
@@ -133,7 +134,7 @@ class CouponStateTransitionServiceTest {
                             InvalidStateTransitionException transitionException =
                                     (InvalidStateTransitionException) exception;
                             assertThat(transitionException.getCurrentStatus())
-                                    .isEqualTo(CouponStatus.USED);
+                                    .isEqualTo(CouponStatus.ISSUED);
                             assertThat(transitionException.getTargetStatus())
                                     .isEqualTo(CouponStatus.CANCELLED);
                         });
