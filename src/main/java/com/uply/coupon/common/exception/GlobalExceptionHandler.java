@@ -34,7 +34,7 @@ public class GlobalExceptionHandler {
                             HttpStatus.INTERNAL_SERVER_ERROR,
                             "INTERNAL_SERVER_ERROR",
                             "서버 내부 오류가 발생했습니다.");
-		default -> throw new IllegalArgumentException("Unexpected value: " + reason);
+            default -> throw new IllegalArgumentException("Unexpected value: " + reason);
         };
     }
 
