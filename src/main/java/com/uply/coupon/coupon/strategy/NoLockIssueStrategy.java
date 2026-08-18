@@ -2,6 +2,7 @@ package com.uply.coupon.coupon.strategy;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponHistory;
@@ -31,6 +32,18 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
     public IssueResult issue(Long campaignId, Long userId, Long stockId, String idempotencyKey) {
         // TODO: 락/원자적 연산 없이 "재고 확인 → 차감"을 그대로 구현
         // 예: SELECT remaining_stock ... 확인 후 별도 UPDATE (조건 없이)
+        LocalDateTime databaseTime = campaignStockRepository.currentDatabaseTime();
+
+        LocalDateTime expireAt =
+                campaignStockRepository
+                        .findCouponExpireAt(stockId, campaignId)
+                        .orElseThrow(() -> new CampaignNotFoundException(campaignId, stockId));
+
+        // TODO: CAMPAIGN_EXPIRED 오류 코드 추가 여부를 2번과 협의 중이라 임시로 IllegalStateException 을 던진다.
+        if (!expireAt.isAfter(databaseTime)) {
+            throw new IllegalStateException("쿠폰 만료 시각은 발급 시각보다 이후여야 합니다. expireAt=" + expireAt);
+        }
+
         CampaignStock stock =
                 campaignStockRepository
                         .findById(stockId)
@@ -62,7 +75,8 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
                         userId,
                         campaignId,
                         stockId,
-                        LocalDateTime.now().plusDays(7));
+                        databaseTime,
+                        expireAt);
         couponRepository.save(coupon);
         couponHistoryRepository.save(CouponHistory.issued(coupon.getCouponId(), idempotencyKey));
 
