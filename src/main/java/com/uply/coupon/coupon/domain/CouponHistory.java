@@ -56,27 +56,34 @@ public class CouponHistory {
 
     // 사용 이력 기록
     public static CouponHistory used(Long couponId, String idempotencyKey, LocalDateTime eventAt) {
-        return transitioned(couponId, CouponStatus.USED, idempotencyKey, eventAt);
+        return transitioned(
+                couponId, CouponStatus.ISSUED, CouponStatus.USED, idempotencyKey, eventAt);
     }
 
     // 취소 이력 기록
     public static CouponHistory cancelled(
             Long couponId, String idempotencyKey, LocalDateTime eventAt) {
-        return transitioned(couponId, CouponStatus.CANCELLED, idempotencyKey, eventAt);
+        return transitioned(
+                couponId, CouponStatus.USED, CouponStatus.CANCELLED, idempotencyKey, eventAt);
     }
 
     // 만료 이력 기록
     public static CouponHistory expired(
             Long couponId, String idempotencyKey, LocalDateTime eventAt) {
-        return transitioned(couponId, CouponStatus.EXPIRED, idempotencyKey, eventAt);
+        return transitioned(
+                couponId, CouponStatus.ISSUED, CouponStatus.EXPIRED, idempotencyKey, eventAt);
     }
 
     // 발급 이후 상태 변경 이력의 공통 값 설정
     private static CouponHistory transitioned(
-            Long couponId, CouponStatus toStatus, String idempotencyKey, LocalDateTime eventAt) {
+            Long couponId,
+            CouponStatus fromStatus,
+            CouponStatus toStatus,
+            String idempotencyKey,
+            LocalDateTime eventAt) {
         CouponHistory history = new CouponHistory();
         history.couponId = couponId;
-        history.fromStatus = CouponStatus.ISSUED;
+        history.fromStatus = fromStatus;
         history.toStatus = toStatus;
         history.idempotencyKey = idempotencyKey;
         history.eventAt = eventAt;

@@ -20,23 +20,25 @@ public class CouponStateTransitionService {
     private final CouponHistoryRepository couponHistoryRepository;
 
     @Transactional
-    public void use(Long couponId, String idempotencyKey) {
+    public Coupon use(Long couponId, String idempotencyKey) {
         int updatedRows = couponRepository.useIfIssued(couponId);
         validateUpdatedRows(updatedRows, couponId, CouponStatus.USED);
 
         Coupon coupon = findCoupon(couponId);
         couponHistoryRepository.save(
                 CouponHistory.used(couponId, idempotencyKey, coupon.getUsedAt()));
+        return coupon;
     }
 
     @Transactional
-    public void cancel(Long couponId, String idempotencyKey) {
-        int updatedRows = couponRepository.cancelIfIssued(couponId);
+    public Coupon cancel(Long couponId, String idempotencyKey) {
+        int updatedRows = couponRepository.cancelIfUsed(couponId);
         validateUpdatedRows(updatedRows, couponId, CouponStatus.CANCELLED);
 
         Coupon coupon = findCoupon(couponId);
         couponHistoryRepository.save(
                 CouponHistory.cancelled(couponId, idempotencyKey, coupon.getCancelledAt()));
+        return coupon;
     }
 
     @Transactional

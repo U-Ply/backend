@@ -94,7 +94,17 @@ public class Coupon implements Persistable<Long> {
     }
 
     private void validateTransition(CouponStatus targetStatus) {
-        if (status != CouponStatus.ISSUED) {
+        boolean allowed =
+                switch (status) {
+                    case ISSUED ->
+                            targetStatus == CouponStatus.USED
+                                    || targetStatus == CouponStatus.CANCELLED
+                                    || targetStatus == CouponStatus.EXPIRED;
+                    case USED -> targetStatus == CouponStatus.CANCELLED;
+                    case CANCELLED, EXPIRED -> false;
+                };
+
+        if (!allowed) {
             throw new InvalidStateTransitionException(status, targetStatus);
         }
     }
