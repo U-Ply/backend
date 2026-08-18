@@ -30,14 +30,16 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>1. 성공=10/실패=20 2. 남은재고=0 3. 발급자 Set 크기 = 10
  */
 @Transactional
-@SpringBootTest
+@SpringBootTest(properties = {
+	    "coupon.save.strategy=sync-db",
+	    "spring.datasource.hikari.maximum-pool-size=35",
+	    "spring.datasource.hikari.connection-timeout=10000"
+	})
 class CouponConcurrencyTest {
 
     @Autowired private CouponService couponService;
 
     @Autowired private CampaignCacheWarmupService warmupService;
-
-    @Autowired private CouponRepository couponRepository;
 
     @Autowired private CampaignRepository campaignRepository;
 

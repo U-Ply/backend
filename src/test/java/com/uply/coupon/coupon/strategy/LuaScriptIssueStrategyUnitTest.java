@@ -1,145 +1,201 @@
 package com.uply.coupon.coupon.strategy;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import com.uply.coupon.common.id.CouponIdGenerator;
+import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
+import java.util.Collections;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
+@ExtendWith(MockitoExtension.class)
 class LuaScriptIssueStrategyUnitTest {
 
-    private static LettuceConnectionFactory connectionFactory;
-    private static StringRedisTemplate redisTemplate;
+    @Mock
+    private StringRedisTemplate redisTemplate;
 
-    private KafkaTemplate<String, String> kafkaTemplate;
+    @Mock
+    private CouponIdGenerator couponIdGenerator;
+
+    @Mock
+    private CouponSaveStrategy couponSaveStrategy;
+
+    @InjectMocks
     private LuaScriptIssueStrategy luaScriptIssueStrategy;
 
-    private final Long campaignId = 1L;
-    private final Long stockId = 5001L;
-
-    private String issuedKey;
-    private String stockKey;
-    private String campaignOpenAtKey;
-
-    @BeforeAll
-    static void beforeAll() {
-        // 로컬 Redis 커넥션 직접 연결
-        connectionFactory = new LettuceConnectionFactory("localhost", 6379);
-        connectionFactory.afterPropertiesSet();
-
-        redisTemplate = new StringRedisTemplate(connectionFactory);
-        redisTemplate.afterPropertiesSet();
-    }
-
-    @AfterAll
-    static void afterAll() {
-        if (connectionFactory != null) {
-            connectionFactory.destroy();
-        }
-    }
-
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
-        // Redis 데이터 초기화
-        redisTemplate.getConnectionFactory().getConnection().serverCommands().flushAll();
-
-        // KafkaTemplate Mock 생성 (테스트 시 호출만 되고 검증은 생략)
-        kafkaTemplate = mock(KafkaTemplate.class);
-
-        // Strategy 수동 생성 및 스크립트 초기화
-        luaScriptIssueStrategy = new LuaScriptIssueStrategy(redisTemplate, kafkaTemplate);
         luaScriptIssueStrategy.init();
-
-        // Redis Key 구성
-        issuedKey = String.format("issued:%d", campaignId);
-        stockKey = "stock:" + stockId;
-        campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
-
-        // 사전 캐시 워밍 (Cache Warm-up)
-        redisTemplate.opsForValue().set(stockKey, "2"); // 초기 재고 2개
-        redisTemplate
-                .opsForValue()
-                .set(campaignOpenAtKey, String.valueOf(System.currentTimeMillis() - 1_000));
     }
 
     @Test
-    @DisplayName("정상 요청 시 Redis 재고가 차감되고 유저가 발급 목록에 추가된다")
+    @DisplayName("Lua Script 실행 성공(1) 시 DB 저장 전략을 호출하고 성공 결과를 반환한다")
     void issue_Success() {
         // given
-        Long userId = 10L;
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
 
-        // when (idempotencyKey 파라미터에 빈 문자열 "" 전달)
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(1L));
+
+        // when
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isTrue();
-        assertThat(result.couponId()).isNotNull();
+        assertThat(result.couponId()).isEqualTo(couponId);
 
-        // Redis 상태 검증
-        String remainingStock = redisTemplate.opsForValue().get(stockKey);
-        Boolean isMember = redisTemplate.opsForSet().isMember(issuedKey, String.valueOf(userId));
-
-        assertThat(remainingStock).isEqualTo("1"); // 2 -> 1 차감
-        assertThat(isMember).isTrue(); // 발급 목록 유저 존재
+        // 저장 전략 save() 정상 호출 검증
+        verify(couponSaveStrategy).save(couponId, userId, campaignId, stockId, idempotencyKey);
     }
 
     @Test
-    @DisplayName("동일 유저 중복 요청 시 ALREADY_ISSUED 실패 결과를 반환한다")
+    @DisplayName("이미 발급된 유저(-1)인 경우 저장 전략을 호출하지 않고 ALREADY_ISSUED를 반환한다")
     void issue_Fail_AlreadyIssued() {
         // given
-        Long userId = 10L;
-        luaScriptIssueStrategy.issue(campaignId, userId, stockId, ""); // 1차 발급 성공
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
 
-        // when (동일 유저 재요청)
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, "");
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-1L));
+
+        // when
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.ALREADY_ISSUED);
 
-        // 재고는 1차 발급 때 차감된 1 상태 유지
-        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("1");
+        // 실패 시 저장 전략 미호출 검증
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("재고 부족 시 OUT_OF_STOCK 실패 결과를 반환한다")
+    @DisplayName("재고가 부족한 경우(-2) 저장 전략을 호출하지 않고 OUT_OF_STOCK을 반환한다")
     void issue_Fail_OutOfStock() {
         // given
-        Long user1 = 10L;
-        Long user2 = 20L;
-        Long user3 = 30L;
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
 
-        luaScriptIssueStrategy.issue(campaignId, user1, stockId, ""); // 재고 1 남음
-        luaScriptIssueStrategy.issue(campaignId, user2, stockId, ""); // 재고 0 남음
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-2L));
 
-        // when (재고 0 상태에서 요청)
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, user3, stockId, "");
+        // when
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
-        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("0");
+
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("캠페인 오픈 전 요청은 CAMPAIGN_NOT_OPEN이고 재고를 차감하지 않는다")
-    void issueFailCampaignNotOpen() {
-        redisTemplate
-                .opsForValue()
-                .set(campaignOpenAtKey, String.valueOf(System.currentTimeMillis() + 60_000));
+    @DisplayName("캠페인 오픈 전인 경우(-4) 저장 전략을 호출하지 않고 CAMPAIGN_NOT_OPEN을 반환한다")
+    void issue_Fail_CampaignNotOpen() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
 
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, 10L, stockId, "");
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-4L));
 
+        // when
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+
+        // then
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_NOT_OPEN);
-        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("2");
-        assertThat(redisTemplate.opsForSet().isMember(issuedKey, "10")).isFalse();
+
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Redis 응답이 빈 리스트인 경우 저장 전략을 호출하지 않고 SYSTEM_ERROR를 반환한다")
+    void issue_Fail_EmptyRedisResult() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(Collections.emptyList());
+
+        // when
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+
+        // then
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.SYSTEM_ERROR);
+
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("정의되지 않은 스크립트 반환 코드(-99)인 경우 SYSTEM_ERROR를 반환한다")
+    void issue_Fail_UnknownResultCode() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-99L));
+
+        // when
+        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+
+        // then
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.SYSTEM_ERROR);
+
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("전략 이름을 조회하면 LUA_SCRIPT를 반환한다")
+    void name_Success() {
+        // when
+        String name = luaScriptIssueStrategy.name();
+
+        // then
+        assertThat(name).isEqualTo("LUA_SCRIPT");
     }
 }
