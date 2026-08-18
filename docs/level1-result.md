@@ -7,7 +7,7 @@ Level 1은 전략별 기능·비즈니스 규칙과 소규모 동시성 오류�
 
 | 항목 | 값 |
 | --- | --- |
-| gitCommit | (feat/68 머지 후 SHA 기입) |
+| gitCommit | 3d52e75 |
 | environmentId | LOCAL-NATIVE-01 |
 | runNumber | 3 |
 | 실행 일시 | 2026-08-19 00:22:53 (KST) |
