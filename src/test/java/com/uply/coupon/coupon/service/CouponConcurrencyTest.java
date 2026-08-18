@@ -298,6 +298,5 @@ class CouponConcurrencyTest {
             assertThat(Long.parseLong(remainStock)).isEqualTo(0L);
             assertThat(redisTemplate.opsForSet().size("issued:" + campaignId)).isEqualTo(10L);
         }
-
     }
 }

@@ -23,7 +23,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -229,7 +228,7 @@ class CouponServiceIntegrationTest {
             String remainStock = redisTemplate.opsForValue().get("stock:" + stockId);
             assertThat(Long.parseLong(remainStock)).isEqualTo(9L);
         }
-        
+
         @Test
         @DisplayName("카프카 비동기 저장: 동일 유저가 10번 동시 요청 시 정확히 1번만 성공(중복 발급 방지)")
         void issueCoupon_DuplicateRequest_OnlyOneSuccess() throws InterruptedException {
