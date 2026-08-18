@@ -17,7 +17,6 @@ import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
-
 import java.time.LocalDateTime;
 import java.util.TimeZone;
 import org.junit.jupiter.api.AfterEach;
@@ -36,11 +35,12 @@ import org.springframework.transaction.annotation.Transactional;
 class CouponServiceIntegrationTest {
 
     @Nested
-    @SpringBootTest(properties = {
-        "coupon.save.strategy=sync-db",
-        "coupon.issue.strategy=LUA_SCRIPT",
-        "spring.datasource.hikari.maximum-pool-size=20"
-    })
+    @SpringBootTest(
+            properties = {
+                "coupon.save.strategy=sync-db",
+                "coupon.issue.strategy=LUA_SCRIPT",
+                "spring.datasource.hikari.maximum-pool-size=20"
+            })
     @Transactional
     @DisplayName("1. 동기 DB 저장 전략 (sync-db) 통합 테스트")
     class SyncDbStrategyTest {
@@ -65,30 +65,30 @@ class CouponServiceIntegrationTest {
             TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
             LocalDateTime now = LocalDateTime.now();
 
-         // 1. 엔티티 없이 SQL로 users 테이블에 FK 충족용 더미 데이터 삽입
+            // 1. 엔티티 없이 SQL로 users 테이블에 FK 충족용 더미 데이터 삽입
             jdbcTemplate.update(
-                "INSERT INTO users (user_id, email, name) VALUES (?,?,?) ON DUPLICATE KEY UPDATE user_id = user_id", 
-                userId, "user@test.com", "테스트유저"
-            );
-            
+                    "INSERT INTO users (user_id, email, name) VALUES (?,?,?) ON DUPLICATE KEY UPDATE user_id = user_id",
+                    userId,
+                    "user@test.com",
+                    "테스트유저");
+
             // 1. RDB 캠페인/재고 데이터 생성
-            Campaign campaign = campaignRepository.save(
-                Campaign.builder()
-                    .name("동기 DB 발급 테스트 캠페인")
-                    .openAt(now.minusHours(1))
-                    .expireAt(now.plusDays(7))
-                    .build()
-            );
+            Campaign campaign =
+                    campaignRepository.save(
+                            Campaign.builder()
+                                    .name("동기 DB 발급 테스트 캠페인")
+                                    .openAt(now.minusHours(1))
+                                    .expireAt(now.plusDays(7))
+                                    .build());
             this.campaignId = campaign.getId();
 
             campaignStockRepository.save(
-                CampaignStock.builder()
-                    .campaign(campaign)
-                    .routeId(routeId)
-                    .fareClass(fareClass)
-                    .totalStock(10)
-                    .build()
-            );
+                    CampaignStock.builder()
+                            .campaign(campaign)
+                            .routeId(routeId)
+                            .fareClass(fareClass)
+                            .totalStock(10)
+                            .build());
 
             // 2. Redis 캐시 웜업 (RedisStockIdLookup용 Key 생성)
             warmupService.warmupCampaign(this.campaignId);
@@ -100,10 +100,12 @@ class CouponServiceIntegrationTest {
         }
 
         @Test
-        @DisplayName("RedisStockIdLookup으로 stockId를 조회하고, SyncMysqlSaveStrategy를 통해 DB에 동기적으로 즉시 저장된다.")
+        @DisplayName(
+                "RedisStockIdLookup으로 stockId를 조회하고, SyncMysqlSaveStrategy를 통해 DB에 동기적으로 즉시 저장된다.")
         void issueCoupon_SyncDb_Success() {
             // given
-            CouponIssueRequest request = new CouponIssueRequest(userId, campaignId, routeId, fareClass);
+            CouponIssueRequest request =
+                    new CouponIssueRequest(userId, campaignId, routeId, fareClass);
             String idempotencyKey = "sync-db-idempotency-key-100";
             long beforeCount = couponRepository.count();
 
@@ -116,10 +118,13 @@ class CouponServiceIntegrationTest {
 
             // 1. RDB 동기 저장 검증 (즉시 1건 생성)
             long count = couponRepository.count();
-            assertThat(count).isEqualTo(beforeCount +1);
+            assertThat(count).isEqualTo(beforeCount + 1);
 
             // 2. Redis 잔여 재고 검증 (10 -> 9 차감)
-            String stockId = redisTemplate.opsForValue().get("stockId:" + campaignId + ":" + routeId + ":" + fareClass);
+            String stockId =
+                    redisTemplate
+                            .opsForValue()
+                            .get("stockId:" + campaignId + ":" + routeId + ":" + fareClass);
             assertThat(stockId).isNotNull();
             String remainStock = redisTemplate.opsForValue().get("stock:" + stockId);
             assertThat(Long.parseLong(remainStock)).isEqualTo(9L);
@@ -127,10 +132,7 @@ class CouponServiceIntegrationTest {
     }
 
     @Nested
-    @SpringBootTest(properties = {
-        "coupon.save.strategy=kafka",
-        "coupon.issue.strategy=LUA_SCRIPT"
-    })
+    @SpringBootTest(properties = {"coupon.save.strategy=kafka", "coupon.issue.strategy=LUA_SCRIPT"})
     @Transactional
     @DisplayName("2. 카프카 비동기 저장 전략 (kafka) 통합 테스트")
     class KafkaStrategyTest {
@@ -157,27 +159,27 @@ class CouponServiceIntegrationTest {
 
             // 1. 엔티티 없이 SQL로 users 테이블에 FK 충족용 더미 데이터 삽입
             jdbcTemplate.update(
-                "INSERT INTO users (user_id, email, name) VALUES (?,?,?) ON DUPLICATE KEY UPDATE user_id = user_id", 
-                userId, "user@test.com", "테스트유저"
-            );
-            
-            Campaign campaign = campaignRepository.save(
-                Campaign.builder()
-                    .name("카프카 비동기 발급 테스트 캠페인")
-                    .openAt(now.minusHours(1))
-                    .expireAt(now.plusDays(7))
-                    .build()
-            );
+                    "INSERT INTO users (user_id, email, name) VALUES (?,?,?) ON DUPLICATE KEY UPDATE user_id = user_id",
+                    userId,
+                    "user@test.com",
+                    "테스트유저");
+
+            Campaign campaign =
+                    campaignRepository.save(
+                            Campaign.builder()
+                                    .name("카프카 비동기 발급 테스트 캠페인")
+                                    .openAt(now.minusHours(1))
+                                    .expireAt(now.plusDays(7))
+                                    .build());
             this.campaignId = campaign.getId();
 
             campaignStockRepository.save(
-                CampaignStock.builder()
-                    .campaign(campaign)
-                    .routeId(routeId)
-                    .fareClass(fareClass)
-                    .totalStock(10)
-                    .build()
-            );
+                    CampaignStock.builder()
+                            .campaign(campaign)
+                            .routeId(routeId)
+                            .fareClass(fareClass)
+                            .totalStock(10)
+                            .build());
 
             warmupService.warmupCampaign(this.campaignId);
         }
@@ -188,10 +190,12 @@ class CouponServiceIntegrationTest {
         }
 
         @Test
-        @DisplayName("RedisStockIdLookup으로 stockId를 조회하고, CouponIssuedProducer를 통해 Kafka 이벤트가 정상 발행된다.")
+        @DisplayName(
+                "RedisStockIdLookup으로 stockId를 조회하고, CouponIssuedProducer를 통해 Kafka 이벤트가 정상 발행된다.")
         void issueCoupon_Kafka_Success() {
             // given
-            CouponIssueRequest request = new CouponIssueRequest(userId, campaignId, routeId, fareClass);
+            CouponIssueRequest request =
+                    new CouponIssueRequest(userId, campaignId, routeId, fareClass);
             String idempotencyKey = "kafka-idempotency-key-200";
             long beforeCount = couponRepository.count();
 
@@ -203,14 +207,19 @@ class CouponServiceIntegrationTest {
             assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
 
             // 1. Kafka 이벤트 발행 검증 (KafkaTemplate.send 호출 확인)
-            then(kafkaTemplate).should(times(1)).send(eq("coupon-issued"), anyString(), any(CouponIssuedEvent.class));
+            then(kafkaTemplate)
+                    .should(times(1))
+                    .send(eq("coupon-issued"), anyString(), any(CouponIssuedEvent.class));
 
             // 2. RDB 검증 (비동기 처리이므로 요청 시점에는 DB에 0건 저장되어야 함)
             long count = couponRepository.count();
             assertThat(count).isEqualTo(beforeCount);
 
             // 3. Redis 잔여 재고 검증 (10 -> 9 차감)
-            String stockId = redisTemplate.opsForValue().get("stockId:" + campaignId + ":" + routeId + ":" + fareClass);
+            String stockId =
+                    redisTemplate
+                            .opsForValue()
+                            .get("stockId:" + campaignId + ":" + routeId + ":" + fareClass);
             assertThat(stockId).isNotNull();
             String remainStock = redisTemplate.opsForValue().get("stock:" + stockId);
             assertThat(Long.parseLong(remainStock)).isEqualTo(9L);

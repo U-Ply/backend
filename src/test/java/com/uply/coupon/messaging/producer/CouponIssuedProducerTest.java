@@ -1,5 +1,9 @@
 package com.uply.coupon.messaging.producer;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,18 +13,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.core.KafkaTemplate;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-
 @ExtendWith(MockitoExtension.class)
 class CouponIssuedProducerTest {
 
-    @Mock
-    private KafkaTemplate<String, Object> kafkaTemplate;
+    @Mock private KafkaTemplate<String, Object> kafkaTemplate;
 
-    @InjectMocks
-    private CouponIssuedProducer kafkaEventCouponSaver;
+    @InjectMocks private CouponIssuedProducer kafkaEventCouponSaver;
 
     @Test
     @DisplayName("KafkaEventCouponSaver 호출 시 coupon-issued 토픽으로 이벤트가 발행된다")
@@ -36,10 +34,10 @@ class CouponIssuedProducerTest {
         kafkaEventCouponSaver.save(couponId, campaignId, stockId, userId, idempotencyKey);
 
         // then
-        verify(kafkaTemplate).send(
-                eq("coupon-issued"),
-                eq(String.valueOf(couponId)),
-                any(CouponIssuedEvent.class)
-        );
+        verify(kafkaTemplate)
+                .send(
+                        eq("coupon-issued"),
+                        eq(String.valueOf(couponId)),
+                        any(CouponIssuedEvent.class));
     }
 }

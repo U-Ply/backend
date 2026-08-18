@@ -1,7 +1,17 @@
 package com.uply.coupon.coupon.strategy;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
+import java.util.Collections;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,31 +22,16 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 
-import java.util.Collections;
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-
 @ExtendWith(MockitoExtension.class)
 class LuaScriptIssueStrategyUnitTest {
 
-    @Mock
-    private StringRedisTemplate redisTemplate;
+    @Mock private StringRedisTemplate redisTemplate;
 
-    @Mock
-    private CouponIdGenerator couponIdGenerator;
+    @Mock private CouponIdGenerator couponIdGenerator;
 
-    @Mock
-    private CouponSaveStrategy couponSaveStrategy;
+    @Mock private CouponSaveStrategy couponSaveStrategy;
 
-    @InjectMocks
-    private LuaScriptIssueStrategy luaScriptIssueStrategy;
+    @InjectMocks private LuaScriptIssueStrategy luaScriptIssueStrategy;
 
     @BeforeEach
     void setUp() {
@@ -58,7 +53,8 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(List.of(1L));
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isTrue();
@@ -83,7 +79,8 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(List.of(-1L));
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();
@@ -108,7 +105,8 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(List.of(-2L));
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();
@@ -132,7 +130,8 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(List.of(-4L));
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();
@@ -156,7 +155,8 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(Collections.emptyList());
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();
@@ -180,7 +180,8 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(List.of(-99L));
 
         // when
-        IssueResult result = luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
 
         // then
         assertThat(result.success()).isFalse();

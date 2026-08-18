@@ -1,11 +1,13 @@
 package com.uply.coupon.coupon.strategy;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.coupon.strategy.save.SyncMysqlSaveStrategy;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -14,21 +16,15 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.annotation.Transactional;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-
 @Transactional
 @ExtendWith(MockitoExtension.class)
 class SyncMysqlSaveStrategyTest {
 
-    @Mock
-    private CouponRepository couponRepository;
+    @Mock private CouponRepository couponRepository;
 
-    @Mock
-    private CouponHistoryRepository couponHistoryRepository;
+    @Mock private CouponHistoryRepository couponHistoryRepository;
 
-    @InjectMocks
-    private SyncMysqlSaveStrategy syncMysqlSaveStrategy;
+    @InjectMocks private SyncMysqlSaveStrategy syncMysqlSaveStrategy;
 
     @Test
     @DisplayName("SyncMysqlSaveStrategy 호출 시 Coupon과 CouponHistory가 정상 저장된다")

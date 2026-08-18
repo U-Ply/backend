@@ -8,7 +8,6 @@ import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
-import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.LocalDateTime;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
@@ -30,11 +29,12 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>1. 성공=10/실패=20 2. 남은재고=0 3. 발급자 Set 크기 = 10
  */
 @Transactional
-@SpringBootTest(properties = {
-	    "coupon.save.strategy=sync-db",
-	    "spring.datasource.hikari.maximum-pool-size=35",
-	    "spring.datasource.hikari.connection-timeout=10000"
-	})
+@SpringBootTest(
+        properties = {
+            "coupon.save.strategy=sync-db",
+            "spring.datasource.hikari.maximum-pool-size=35",
+            "spring.datasource.hikari.connection-timeout=10000"
+        })
 class CouponConcurrencyTest {
 
     @Autowired private CouponService couponService;

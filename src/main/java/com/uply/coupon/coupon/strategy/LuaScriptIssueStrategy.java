@@ -1,5 +1,7 @@
 package com.uply.coupon.coupon.strategy;
 
+import com.uply.coupon.common.id.CouponIdGenerator;
+import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import jakarta.annotation.PostConstruct;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -10,9 +12,6 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 
-import com.uply.coupon.common.id.CouponIdGenerator;
-import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
-
 /** Redis + Lua Script 기반 발급 전략 */
 @Component("luaScriptIssueStrategy")
 @Slf4j
@@ -20,7 +19,7 @@ import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
     private final StringRedisTemplate redisTemplate;
-    private final CouponIdGenerator couponIdGenerator; 
+    private final CouponIdGenerator couponIdGenerator;
     private final CouponSaveStrategy couponSaveStrategy;
 
     private DefaultRedisScript<List> issueScript;
