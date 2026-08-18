@@ -23,6 +23,31 @@ SET @snapshot_at = NOW(3);
 
 SELECT @snapshot_at AS snapshot_at;
 
+-- ─────────────────────── 검사 범위 ───────────────────────
+-- 아래 INV 숫자를 믿어도 되는지를 먼저 판정한다.
+-- 스냅샷 이후 들어온 행은 정상이다(부하 테스트 중이면 당연히 있다).
+-- 문제는 '한참' 미래인 행이다. 60초 유예로 동시성(ms 단위)과
+-- 시계 어긋남(분·시간 단위)을 가른다.
+-- skewed > 0 이면 그 행들은 검사에서 통째로 빠진 것이고,
+-- 아래 INV 결과는 "통과" 가 아니라 "미검사" 다.
+
+SELECT 'coupons' AS target,
+       COUNT(*) AS total,
+       COALESCE(SUM(created_at <= @snapshot_at), 0) AS in_scope,
+       COALESCE(SUM(created_at > @snapshot_at + INTERVAL 60 SECOND), 0) AS skewed
+FROM coupons
+UNION ALL
+SELECT 'coupon_history',
+       COUNT(*),
+       COALESCE(SUM(created_at <= @snapshot_at), 0),
+       COALESCE(SUM(created_at > @snapshot_at + INTERVAL 60 SECOND), 0)
+FROM coupon_history
+UNION ALL
+SELECT 'campaign_stocks',
+       COUNT(*),
+       COALESCE(SUM(created_at <= @snapshot_at), 0),
+       COALESCE(SUM(created_at > @snapshot_at + INTERVAL 60 SECOND), 0)
+FROM campaign_stocks;
 
 -- ─────────────────────────── 요약 ───────────────────────────
 

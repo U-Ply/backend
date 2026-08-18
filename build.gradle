@@ -79,4 +79,10 @@ tasks.named('test') {
     // 테스트는 coupon_db_test 를 쓴다.
     // 개발용 coupon_db 의 검증 더미데이터를 ./gradlew build 한 번에 날리지 않기 위해서다.
     environment 'DB_NAME', 'coupon_db_test'
+    // 시각 판정을 DB NOW(3)와 맞추기 위해 테스트 JVM도 UTC로 고정한다.
+    systemProperty 'user.timezone', 'UTC'
+}
+
+tasks.named('bootRun') {
+    systemProperty 'user.timezone', 'UTC'
 }

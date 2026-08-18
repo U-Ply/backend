@@ -3,7 +3,7 @@ spring:
     name: coupon-service
 
   datasource:
-    url: jdbc:mysql://${DB_HOST:localhost}:3306/${DB_NAME:coupon_db}?rewriteBatchedStatements=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    url: jdbc:mysql://${DB_HOST:localhost}:3306/${DB_NAME:coupon_db}?rewriteBatchedStatements=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&forceConnectionTimeZoneToSession=true
     username: ${DB_USERNAME:coupon}
     password: ${DB_PASSWORD:coupon1234}
     hikari:
