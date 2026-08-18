@@ -13,6 +13,7 @@ import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
+import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.LocalDateTime;
@@ -41,7 +42,6 @@ class CouponConcurrencyTest {
 
     @Nested
     @SpringBootTest(properties = {"coupon.save.strategy=sync-db"})
-    @Transactional
     @DisplayName("1. 동기 DB 저장 전략 (sync-db) 동시성 테스트")
     class SyncDbStrategyConcurrencyTest {
 
@@ -49,10 +49,13 @@ class CouponConcurrencyTest {
         @Autowired private CampaignCacheWarmupService warmupService;
         @Autowired private CampaignRepository campaignRepository;
         @Autowired private CampaignStockRepository campaignStockRepository;
+        @Autowired private CouponRepository couponRepository;
+        @Autowired private CouponHistoryRepository couponHistoryRepository;
         @Autowired private StringRedisTemplate redisTemplate;
         @Autowired private JdbcTemplate jdbcTemplate;
 
         private Long campaignId;
+        private Long stockId;
         private final String routeId = "ICN-NRT";
         private final String fareClass = "Y";
 
@@ -61,10 +64,7 @@ class CouponConcurrencyTest {
             TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
             LocalDateTime now = LocalDateTime.now();
 
-            // 빠른 피드백 및 명확한 Lock Timeout 유도 (1초 설정)
-            jdbcTemplate.execute("SET SESSION innodb_lock_wait_timeout = 1");
-
-            // 동시성 테스트 참여 유저 30명 사전 주입 (FK 제약조건 방지)
+            // 1. 유저 사전 데이터 생성 (FK 참조용)
             for (long i = 1; i <= 30; i++) {
                 jdbcTemplate.update(
                         "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
@@ -73,6 +73,7 @@ class CouponConcurrencyTest {
                         "유저" + i);
             }
 
+            // 2. 캠페인 및 재고 데이터 생성 (테스트 클래스에 @Transactional이 없으므로 자동 커밋됨)
             Campaign campaign =
                     campaignRepository.save(
                             Campaign.builder()
@@ -90,13 +91,21 @@ class CouponConcurrencyTest {
                                     .fareClass(fareClass)
                                     .totalStock(10)
                                     .build());
-            stock.getId();
+            this.stockId = stock.getId();
 
+            // 3. Redis 캐시 워밍업
             warmupService.warmupCampaign(this.campaignId);
         }
 
         @AfterEach
         void tearDown() {
+            // @Transactional이 없으므로 격리를 위해 명시적 DB/Redis CleanUp 수행
+            couponHistoryRepository.deleteAllInBatch();
+            couponRepository.deleteAllInBatch();
+            campaignStockRepository.deleteAllInBatch();
+            campaignRepository.deleteAllInBatch();
+            jdbcTemplate.execute("DELETE FROM users");
+
             redisTemplate.getConnectionFactory().getConnection().serverCommands().flushDb();
         }
 
@@ -113,8 +122,10 @@ class CouponConcurrencyTest {
             AtomicInteger successCount = new AtomicInteger();
             AtomicInteger failCount = new AtomicInteger();
 
-            // 멀티스레드 예외 수집용 스레드 세이프 컬렉션
             Queue<Throwable> exceptions = new ConcurrentLinkedQueue<>();
+
+            long beforeCount = couponRepository.count();
+            long beforeHistoryCount = couponHistoryRepository.count();
 
             // when
             for (long userId = 1; userId <= totalRequests; userId++) {
@@ -147,31 +158,24 @@ class CouponConcurrencyTest {
             executorService.shutdown();
 
             // then
-            //            // 1. 성공/실패 수량 검증
-            //            assertThat(successCount.get()).isEqualTo(0);
-            //            assertThat(failCount.get()).isEqualTo(30);
-            //
-            //            // 2. RDB 동기 저장 건수 검증 (즉시 10건 저장)
-            //            assertThat(couponRepository.count()).isEqualTo(beforeCount+10);
-            //
-            //            // 3. Redis 잔여 재고 및 발급자 Set 검증
-            //            String remainStock = redisTemplate.opsForValue().get("stock:" + stockId);
-            //            assertThat(Long.parseLong(remainStock)).isEqualTo(0L);
-            //            assertThat(redisTemplate.opsForSet().size("issued:" +
-            // campaignId)).isEqualTo(10L);
+            // 1. 성공/실패 요청 수 검증 (재고 10개 기준: 성공 10건, 재고소진 실패 20건)
+            assertThat(successCount.get()).isEqualTo(10);
+            assertThat(failCount.get()).isEqualTo(20);
 
-            // then: Lock 타임아웃 예외 발생 수치 검증
-            long failureCount =
+            // 2. RDB 동기 저장 결과 정량 검증
+            assertThat(couponRepository.count()).isEqualTo(beforeCount + 10L);
+            assertThat(couponHistoryRepository.count()).isEqualTo(beforeHistoryCount + 10L);
+
+            // 3. Redis 잔여 재고 및 발급 완료 유저 Set 검증
+            String remainStock = redisTemplate.opsForValue().get("stock:" + stockId);
+            assertThat(Long.parseLong(remainStock)).isEqualTo(0L);
+            assertThat(redisTemplate.opsForSet().size("issued:" + campaignId)).isEqualTo(10L);
+
+            // 4. 예외 발생 내역 검증 (예상치 못한 DB Lock Timeout이나 System Crash 예외가 없는지 확인)
+            boolean hasUnexpectedException =
                     exceptions.stream()
-                            .filter(
-                                    e ->
-                                            e instanceof PessimisticLockingFailureException
-                                                    || e.getCause()
-                                                            instanceof
-                                                            PessimisticLockingFailureException)
-                            .count();
-
-            assertThat(failureCount).isGreaterThan(0);
+                            .anyMatch(e -> e instanceof PessimisticLockingFailureException);
+            assertThat(hasUnexpectedException).isFalse();
         }
     }
 
