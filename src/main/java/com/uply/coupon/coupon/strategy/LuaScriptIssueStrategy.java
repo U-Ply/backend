@@ -85,7 +85,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                         @Override
                         public Object execute(RedisOperations operations) {
                             operations.multi(); // 트랜잭션 시작
-                            operations.opsForValue().increment("stock:" + campaignId);
+                            operations.opsForValue().increment("stock:" + stockId);
                             operations
                                     .opsForSet()
                                     .remove("issued:" + campaignId, String.valueOf(userId));
