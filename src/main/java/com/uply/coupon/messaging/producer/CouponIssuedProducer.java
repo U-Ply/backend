@@ -12,6 +12,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -45,12 +46,12 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
 
     @Override
     public void save(
-            Long couponId, Long userId, Long campaignId, Long stockId, String idempotencyKey) {
+            Long couponId, Long userId, Long campaignId, Long stockId, String idempotencyKey, LocalDateTime expireAt) {
 
         // #1. E2E Latency 측정을 위한 publishedAt(Instant.now()) 포함 이벤트 생성
         CouponIssuedEvent event =
                 new CouponIssuedEvent(
-                        couponId, userId, campaignId, stockId, idempotencyKey, Instant.now());
+                        couponId, userId, campaignId, stockId, idempotencyKey, Instant.now(), expireAt);
 
         // #2. 직렬화 (확실한 실패 지점)
         String jsonPayload = toJson(event);

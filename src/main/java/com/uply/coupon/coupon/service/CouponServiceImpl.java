@@ -2,6 +2,7 @@ package com.uply.coupon.coupon.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
@@ -10,9 +11,9 @@ import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.coupon.strategy.IssueResult;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +28,7 @@ public class CouponServiceImpl implements CouponService {
     private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
     private final StockIdLookupSelector stockIdLookupSelector;
+    private final CampaignCacheRepository campaignCacheRepository;
 
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
@@ -48,9 +50,24 @@ public class CouponServiceImpl implements CouponService {
                 return parseCachedResponse(cachedBody.get());
             }
         }
-
+        
         // #2. 최초 요청 처리 (예외 발생 시 PROCESSING 락 해제를 위한 try-catch)
         try {
+        	// [승인 시점 측정] try 진입 직후 측정하여 예외 발생 시 catch문에서 락 해제 보장
+        	Instant now = Instant.now();
+
+            // 캠페인 메타데이터(오픈/만료 시각) Redis 조회
+            Instant openAt = campaignCacheRepository.getOpenAt(request.campaignId());
+            Instant expireAt = campaignCacheRepository.getExpireAt(request.campaignId());
+
+            // 오픈 및 만료 시각 검증
+            if (now.isBefore(openAt)) {
+                throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_OPEN);
+            }
+            if (now.isAfter(expireAt)) {
+                throw new CouponIssueException(IssueFailReason.CAMPAIGN_EXPIRED);
+            }
+        	
             CouponIssueStrategy issueStrategy = strategySelector.current();
 
             // DB 전략은 MySQL, Lua 전략은 Redis에서 stockId를 조회한다.
@@ -70,9 +87,6 @@ public class CouponServiceImpl implements CouponService {
             }
 
             // 응답 DTO 생성
-            // Instant 기준 현재 시각 및 만료 시각 생성
-            Instant now = Instant.now();
-            Instant expireAt = now.plus(7, ChronoUnit.DAYS);
             CouponIssueResponse response =
                     CouponIssueResponse.builder()
                             .couponId(String.valueOf(result.couponId()))

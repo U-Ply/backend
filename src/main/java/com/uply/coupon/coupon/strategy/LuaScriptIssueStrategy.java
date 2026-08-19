@@ -1,9 +1,14 @@
 package com.uply.coupon.coupon.strategy;
 
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import jakarta.annotation.PostConstruct;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -79,9 +84,12 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
+        // Redis 캐싱된 expireAt 조회
+        LocalDateTime expireAt = getExpireAt(campaignId);
+        
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {
-            couponSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey);
+            couponSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
 
         } catch (CouponIssueException e) {
             // 결과가 불명확한 타임아웃(KAFKA_PUBLISH_UNKNOWN) 발생 시 Redis 보상 유예 (초과 발급 방지)
@@ -111,6 +119,26 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     @Override
     public String name() {
         return "LUA_SCRIPT";
+    }
+    
+    /**
+     * expireAt 조회 헬퍼 메소드
+     */
+    private LocalDateTime getExpireAt(Long campaignId) {
+    	String key = String.format("campaign:%d:expireAt", campaignId);
+        String expireAtStr = redisTemplate.opsForValue().get(key);
+
+        if (expireAtStr == null) {
+            throw new CampaignNotFoundException(campaignId, campaignId);
+        }
+    	
+        // 파싱 과정에서 에러 발생 가능 -> 쿠폰 발급 실패 예외에 담아서 전파
+        try {
+            long expireAtEpochMillis = Long.parseLong(expireAtStr);
+            return LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
+        } catch (NumberFormatException e) {
+            throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
+        }
     }
 
     /** Redis 롤백 전용 헬퍼 메소드 */

@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   2. stockId:{campaignId}:{routeId}:{fareClass} (String) - 검색 조건별 매핑되는 Stock PK
  *   3. campaign:{campaignId}:openAt (String) - 오픈 시각(UTC epoch milliseconds)
  *   4. issued:{campaignId} (Set) - 중복 발급 방지용 유저 집합
+ *   5. campaign:{campaignId}:expireAt (String) - 만료 시각
  * <pre>
  */
 @Slf4j
@@ -32,6 +33,7 @@ public class CampaignCacheWarmupService {
     private static final String KEY_STOCK = "stock:%d";
     private static final String KEY_STOCK_ID = "stockId:%d:%s:%s";
     private static final String KEY_CAMPAIGN_OPEN_AT = "campaign:%d:openAt";
+    private static final String KEY_CAMPAIGN_EXPIRE_AT = "campaign:%d:expireAt"; // [추가] 만료 시각 Key
     private static final String KEY_ISSUED = "issued:%d";
 
     private static final long CACHE_TTL_HOURS = 24;
@@ -64,6 +66,18 @@ public class CampaignCacheWarmupService {
                 .set(
                         campaignOpenAtKey,
                         String.valueOf(openAtEpochMillis),
+                        CACHE_TTL_HOURS,
+                        TimeUnit.HOURS);
+        
+        // [추가] campaign:{campaignId}:expireAt -> 만료 시각 (UTC epoch millis)
+        long expireAtEpochMillis =
+                stocks.get(0).getCampaign().getExpireAt().toInstant(ZoneOffset.UTC).toEpochMilli();
+        String campaignExpireAtKey = String.format(KEY_CAMPAIGN_EXPIRE_AT, campaignId);
+        redisTemplate
+                .opsForValue()
+                .set(
+                        campaignExpireAtKey,
+                        String.valueOf(expireAtEpochMillis),
                         CACHE_TTL_HOURS,
                         TimeUnit.HOURS);
 

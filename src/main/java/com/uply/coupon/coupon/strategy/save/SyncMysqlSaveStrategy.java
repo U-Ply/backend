@@ -27,7 +27,7 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
     @Override
     @Transactional
     public void save(
-            Long couponId, Long userId, Long campaignId, Long stockId, String idempotencyKey) {
+            Long couponId, Long userId, Long campaignId, Long stockId, String idempotencyKey, LocalDateTime expireAt) {
 
         try {
             // 1. DB 원자적 재고 차감 실행 (영향받은 행 수가 0이면 재고 부족 또는 mismatch)
@@ -40,7 +40,7 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
             // 2. 쿠폰 발급, 히스토리 DB 저장
             Coupon coupon =
                     Coupon.issue(
-                            couponId, userId, campaignId, stockId, LocalDateTime.now().plusDays(7));
+                            couponId, userId, campaignId, stockId, expireAt);
             couponRepository.save(coupon);
             couponHistoryRepository.save(
                     CouponHistory.issued(coupon.getCouponId(), idempotencyKey));
