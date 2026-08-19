@@ -3,8 +3,10 @@ package com.uply.coupon.common.exception;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -79,6 +81,22 @@ public class GlobalExceptionHandler {
         log.error("Unhandled exception", exception);
         return response(
                 HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_SERVER_ERROR", "서버 내부 오류가 발생했습니다.");
+    }
+
+    @ExceptionHandler(CannotCreateTransactionException.class)
+    public ResponseEntity<ApiErrorResponse> handleConnectionUnavailable(
+            CannotCreateTransactionException exception) {
+        log.warn("Connection unavailable on issue", exception);
+        return response(
+                HttpStatus.SERVICE_UNAVAILABLE, "CONNECTION_UNAVAILABLE", "일시적으로 요청을 처리할 수 없습니다.");
+    }
+
+    @ExceptionHandler(PessimisticLockingFailureException.class)
+    public ResponseEntity<ApiErrorResponse> handleConcurrencyConflict(
+            PessimisticLockingFailureException exception) {
+        log.warn("Concurrency conflict on issue", exception);
+        return response(
+                HttpStatus.SERVICE_UNAVAILABLE, "CONCURRENCY_CONFLICT", "동시 요청 경합으로 처리하지 못했습니다.");
     }
 
     private ResponseEntity<ApiErrorResponse> conflict(String errorCode, String message) {

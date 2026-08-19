@@ -77,6 +77,9 @@ V0은 동시성 제어가 없을 때 무엇이 깨지는지 재현하기 위한 
 - 응답 분류의 합이 전체 요청 수와 일치한다
 - 캠페인별 1인 1매 UNIQUE 제약이 동작한다
 
+교착은 `503 CONCURRENCY_CONFLICT`로 응답된다(6.1 참고). 500이 아니므로 k6에서 별도 카운터로
+집계해야 하며, 이것을 `coupon_5xx`와 같이 취급하면 V0의 정상적인 관측값이 오류로 잡힌다.
+
 ## 3. 설정 요약
 
 | 항목 | 값 | 설정 위치 |
@@ -158,9 +161,21 @@ Unhandled exception                                           (5건)
 ```
 
 커넥션 풀(10개)을 락 대기 요청이 전부 점유하고, 초과분은 `connection-timeout` 3초에 걸려
-`CannotGetJdbcConnectionException`으로 실패한다. 이 예외는 전략의 catch 절
-(`PessimisticLockingFailureException`, `QueryTimeoutException`)에 걸리지 않으므로
-`GlobalExceptionHandler.handleUnexpected`를 거쳐 500으로 나간다.
+실패한다. 실패 시점의 풀 상태가 로그에 그대로 남는다.
+
+```text
+HikariPool-1 - Connection is not available, request timed out after 3014ms
+(total=10, active=10, idle=0, waiting=4)
+```
+
+던져지는 예외는 `CannotCreateTransactionException`이다. 스택을 보면
+`TransactionInterceptor` → `createTransactionIfNecessary` → `JpaTransactionManager.doBegin`으로,
+**전략 메서드에 진입하기도 전에 `@Transactional`이 트랜잭션을 열려다 실패한 것**이다.
+따라서 전략 내부의 어떤 catch로도 처리할 수 없다.
+
+이 예외는 `TransactionException` 계열이며 `DataAccessException`과 계보가 다르다.
+`DataAccessResourceFailureException`이나 `CannotGetJdbcConnectionException`으로 핸들러를 걸면
+잡히지 않는다.
 
 ### 5.3 Level 2에 미치는 영향
 
@@ -176,25 +191,51 @@ Level 1 규모(재고 10 / 사용자 30)에서는 락 timeout이 0건이라 이 
 
 ## 6. 실패가 응답으로 바뀌는 경로
 
-| 원인 | 예외 | 전략의 처리 | HTTP |
-| --- | --- | --- | --- |
-| 락 대기 초과 | `PessimisticLockingFailureException` | `LOCK_TIMEOUT` | 503 |
-| 쿼리 타임아웃 | `QueryTimeoutException` | `LOCK_TIMEOUT` | 503 |
-| InnoDB 교착 | `PessimisticLockingFailureException` | `LOCK_TIMEOUT` | 503 |
-| **커넥션 획득 실패** | `CannotGetJdbcConnectionException` | **처리 없음** | **500** |
-| 캠페인–재고 조합 불일치 | `CampaignNotFoundException` | 처리 없음(전파) | 404 |
-| 캠페인 만료 | — | `CAMPAIGN_EXPIRED` | 409 |
+| 원인 | 발생 시점 | 예외 | 오류 코드 | HTTP |
+| --- | --- | --- | --- | --- |
+| 락 대기 초과 (V1) | `FOR UPDATE` 실행 중 | `PessimisticLockingFailureException` | `LOCK_TIMEOUT` | 503 |
+| 쿼리 타임아웃 | 쿼리 실행 중 | `QueryTimeoutException` | `LOCK_TIMEOUT` | 503 |
+| InnoDB 교착 | 트랜잭션 커밋 시점 | `PessimisticLockingFailureException` | `CONCURRENCY_CONFLICT` | 503 |
+| 커넥션 획득 실패 | 트랜잭션 시작 단계 | `CannotCreateTransactionException` | `CONNECTION_UNAVAILABLE` | 503 |
+| 캠페인–재고 조합 불일치 | 사전 검증 | `CampaignNotFoundException` | `CAMPAIGN_NOT_FOUND` | 404 |
+| 캠페인 만료 | 사전 검증 | — | `CAMPAIGN_EXPIRED` | 409 |
 
-굵게 표시한 한 줄이 Level 2·3 인수 기준 "기타 5xx 0건"에 직접 걸린다.
+발급 경로에서 분류되지 않은 500은 더 이상 없다. 다만 **503도 5xx이므로
+`LOCK_TIMEOUT`·`CONCURRENCY_CONFLICT`·`CONNECTION_UNAVAILABLE`은 여전히
+Level 2·3 인수 기준에 걸린다.** 분류의 목적은 판정 통과가 아니라 원인 구분이다.
+20,000건 규모에서 "500이 몇 건"만 알면 풀 고갈인지 예상 못 한 결함인지 추적할 수 없다.
 
-- **커넥션 획득 실패**: 5절에서 실제로 재현됐다. 락 대기가 50초까지 이어지면 대기 요청이
-  커넥션 풀을 점유하고, 초과 요청은 3초 만에 실패한다. 전략은
-  `PessimisticLockingFailureException`과 `QueryTimeoutException`만 잡으므로 그대로 500이 나간다.
+라벨 없는 500은 "예상하지 못한 일이 일어났다"는 신호로 남겨둔다. 알려진 실패를 전부
+도메인 코드로 바꾸면 그 신호가 사라진다.
 
-교착도 `PessimisticLockingFailureException`으로 올라와 `LOCK_TIMEOUT`(503)이 된다.
-즉 이 코드 하나에 성격이 다른 세 가지(대기 초과, 쿼리 타임아웃, 교착)가 섞여 있다.
-Level 2에서 `LOCK_TIMEOUT`이 관측되면 원인을 구분하려면 MySQL의
-`SHOW ENGINE INNODB STATUS` 또는 `innodb_row_lock_waits` 지표를 함께 봐야 한다.
+### 6.1 교착이 전략 내부에서 잡히지 않는 이유
+
+`save()`는 즉시 SQL을 발행하지 않고 트랜잭션 커밋 시점에 flush된다. `@Transactional` 프록시는
+메서드가 **반환된 뒤에** 커밋하므로, 커밋 중 발생하는 교착은 전략 안의 `try/catch` 범위를
+이미 벗어나 있다. 따라서 `GlobalExceptionHandler`에서
+`PessimisticLockingFailureException`을 받아 `CONCURRENCY_CONFLICT`로 분류한다.
+
+이 처리가 없으면 교착이 `handleUnexpected`를 거쳐 500이 되고, k6에서 `coupon_5xx`에 묻혀
+건수를 셀 수 없다. "동시성 오류가 발생해도 결과를 측정하고 기록할 수 있어야 한다"를 충족하려면 이 분리가 필요하다.
+
+`LOCK_TIMEOUT`과 `CONCURRENCY_CONFLICT`는 같은 예외 타입에서 나오지만 발생 지점이 다르다.
+전자는 V1이 `FOR UPDATE`로 락을 기다리다 한계를 넘긴 경우이고, 후자는 커밋 단계의 교착이다.
+V0에서 관측되는 것은 후자다.
+
+### 6.2 실측 (NoLock, 재고 10 / 동시 30건, 로컬 API 호출)
+
+```text
+200 ISSUED                10건
+409 OUT_OF_STOCK          18건
+503 CONCURRENCY_CONFLICT   2건
+500                        0건
+```
+
+응답 30건이 빠짐없이 세 갈래로 분류됐고, 최종 상태는 쿠폰 10장·잔여 재고 0으로 유실이 없었다.
+
+**같은 조건의 JUnit 동시성 테스트에서는 교착이 22~24건이었다.** API 경로에서는 HTTP 왕복 때문에
+요청 도착 시점이 분산되어 경합 강도가 크게 낮아진다. Level 1의 교착 건수를 Level 2 예측에
+그대로 사용하지 않는다.
 
 ## 7. Level 2에서 함께 볼 지표
 
@@ -225,15 +266,18 @@ TPS는 락 경합 비용이 아니라 풀 크기 제약을 측정한 값이다. 
 
 ## 9. 락 대기 대응 방안 (미결)
 
-5절 검증 결과에 대한 대응이 필요하다. 네 가지 선택지가 있으며 어느 것도 단독으로
+5절 검증 결과에 대한 대응이 필요하다. 세 가지 선택지가 있으며 어느 것도 단독으로
 Level 2 인수 기준을 충족시키지 못한다. 4번과 협의해 결정한다.
 
 | 방안 | 효과 | 한계 |
 | --- | --- | --- |
-| `innodb_lock_wait_timeout` 하향 (예: 3초) | 대기가 짧아져 커넥션 회전이 빨라지고 500이 줄어든다 | MySQL 서버 전역 설정이다. `LOCK_TIMEOUT`은 여전히 발생하며 그 자체가 판정 실패 사유다 |
+| `innodb_lock_wait_timeout` 하향 (예: 3초) | 대기가 짧아져 커넥션 회전이 빨라지고 `CONNECTION_UNAVAILABLE`이 줄어든다 | MySQL 서버 전역 설정이다. `LOCK_TIMEOUT`은 여전히 발생하며 그 자체가 판정 실패 사유다 |
 | `@Lock` + `NOWAIT` | 대기 없이 즉시 실패해 커넥션 점유가 사라진다 | `LOCK_TIMEOUT`이 대량 발생한다 |
-| HikariCP 풀 확대 | 500이 줄어든다 | 튜닝이므로 전략 비교 중에 바꾸면 §6.3 위반이다. 별도 회차로 기록해야 한다 |
-| catch 절에 `CannotGetJdbcConnectionException` 추가 | 500이 503 `LOCK_TIMEOUT`으로 분류된다 | 오류 분류만 정확해질 뿐 판정 실패는 그대로다 |
+| HikariCP 풀 확대 | 커넥션 획득 실패가 줄어든다 | 튜닝이므로 전략 비교 중에 바꾸면 §6.3 위반이다. 별도 회차로 기록해야 한다 |
+
+오류 분류(6절)는 이미 적용했다. 커넥션 획득 실패가 라벨 없는 500 대신
+`CONNECTION_UNAVAILABLE`(503)로 나가므로 원인 추적은 가능해졌지만, 503도 5xx이므로
+판정 실패라는 사실은 달라지지 않는다.
 
 근본적으로는 **동일 재고 행에 요청이 집중되는 한 직렬 구간의 길이가 처리량 상한을 정한다**는
 V1의 구조적 특성이다. 이것이 V1 가설("락 대기와 DB 커넥션 점유가 증가할 것이다")의 실체이며,
