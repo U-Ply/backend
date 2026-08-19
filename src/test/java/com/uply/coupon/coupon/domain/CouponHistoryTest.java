@@ -50,6 +50,19 @@ class CouponHistoryTest {
     }
 
     @Test
+    void createsRevokedHistory() {
+        String idempotencyKey = "revoke-1-550e8400-e29b-41d4-a716-446655440004";
+
+        CouponHistory history = CouponHistory.revoked(COUPON_ID, idempotencyKey, EVENT_AT);
+
+        assertThat(history.getCouponId()).isEqualTo(COUPON_ID);
+        assertThat(history.getFromStatus()).isEqualTo(CouponStatus.ISSUED);
+        assertThat(history.getToStatus()).isEqualTo(CouponStatus.CANCELLED);
+        assertThat(history.getIdempotencyKey()).isEqualTo(idempotencyKey);
+        assertThat(history.getEventAt()).isEqualTo(EVENT_AT);
+    }
+
+    @Test
     void createsExpiredHistory() {
         String idempotencyKey = "550e8400-e29b-41d4-a716-446655440003";
 
