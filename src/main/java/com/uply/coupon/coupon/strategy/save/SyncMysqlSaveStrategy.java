@@ -10,6 +10,7 @@ import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,9 +48,12 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
         } catch (CouponIssueException e) {
             // 재고 부족은 그대로 재전파
             throw e;
+        } catch (DataIntegrityViolationException e) {
+            // Unique 제약조건 위반 등 데이터 정합성 예외 (원인 e 포함)
+            throw new CouponIssueException(IssueFailReason.ALREADY_ISSUED, e);
         } catch (Exception e) {
-            // DB Lock Timeout, Unique 제약조건 위반, Connection 고갈 등 RDB 예외 추상화
-            throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED);
+            // DB Lock Timeout, Connection 고갈 등 시스템/인프라 예외 (원인 e 포함)
+            throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED, e);
         }
     }
 }

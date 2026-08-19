@@ -231,13 +231,44 @@ class LuaScriptIssueStrategyUnitTest {
                 .isEqualTo(IssueFailReason.KAFKA_PUBLISH_FAILED);
 
         // 4. Redis 보상 로직 실행 검증 (선점 1회 + 보상 1회 = 총 2회 execute 호출)
-        // 최초 차감용 Lua Script 호출 검증 (1회)
+        verify(redisTemplate, times(2))
+                .execute(any(DefaultRedisScript.class), anyList(), anyString());
+    }
+    
+    @Test
+    @DisplayName("Kafka 저장 전략 실행 중 KAFKA_PUBLISH_UNKNOWN 발생 시 Redis 보상 로직을 실행하지 않고 예외를 그대로 전파한다")
+    void issue_KafkaPublishUnknown_DoesNotRollbackRedisAndThrowsException() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+
+        // 1. Redis 선점 성공 설정
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(1L));
+
+        // 2. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
+        willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_UNKNOWN))
+                .given(couponSaveStrategy)
+                .save(anyLong(), eq(userId), eq(campaignId), eq(stockId), eq(idempotencyKey));
+
+        // when & then
+        // 3. 예외가 상위로 그대로 전파되는지 검증
+        assertThatThrownBy(
+                        () ->
+                                luaScriptIssueStrategy.issue(
+                                        campaignId, userId, stockId, idempotencyKey))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.KAFKA_PUBLISH_UNKNOWN);
+
+        // 4. Redis 보상 로직이 절대 실행되지 않았음을 검증
+        // - 최초 차감용 Lua Script만 1회 실행됨
         verify(redisTemplate, times(1))
                 .execute(any(DefaultRedisScript.class), anyList(), anyString());
-        // 2. 보상 로직(opsFor...) 호출 검증
-        verify(redisTemplate, times(1)).execute(any(SessionCallback.class));
-        //		verify(redisTemplate.opsForValue()).increment(anyString());
-        //		verify(redisTemplate.opsForSet()).remove(anyString(), anyString());
-
     }
 }

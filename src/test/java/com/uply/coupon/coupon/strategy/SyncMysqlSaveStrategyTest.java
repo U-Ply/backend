@@ -18,10 +18,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
-import org.springframework.transaction.annotation.Transactional;
 
-@Transactional
 @ExtendWith(MockitoExtension.class)
 class SyncMysqlSaveStrategyTest {
 
@@ -79,14 +78,41 @@ class SyncMysqlSaveStrategyTest {
     }
 
     @Test
-    @DisplayName("DB 접근 중 DataAccessException 발생 시 DB_SAVE_FAILED 예외로 변환된다")
-    void save_DataAccessException_ThrowsException() {
+    @DisplayName("DataIntegrityViolationException 발생 시 ALREADY_ISSUED 예외로 변환되며 원인 예외가 유지된다")
+    void save_DataIntegrityViolationException_ThrowsAlreadyIssued() {
         // given
         Long couponId = 1000L;
         Long userId = 100L;
         Long campaignId = 1L;
         Long stockId = 10L;
         String idempotencyKey = "idempotency-key-123";
+
+        given(campaignStockRepository.decreaseRemainingStockIfAvailable(stockId, campaignId))
+                .willReturn(1);
+        given(couponRepository.save(any(Coupon.class)))
+                .willThrow(new DataIntegrityViolationException("Duplicate entry for key 'UK_coupon'"));
+
+        // when & then
+        assertThatThrownBy(
+                        () ->
+                                syncMysqlSaveStrategy.save(
+                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                .isInstanceOf(CouponIssueException.class)
+                .hasCauseInstanceOf(DataIntegrityViolationException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.ALREADY_ISSUED);
+    }
+
+    @Test
+    @DisplayName("기타 DB 인프라 예외 발생 시 DB_SAVE_FAILED 예외로 변환되며 원인 예외가 유지된다")
+    void save_GeneralException_ThrowsDbSaveFailed() {
+        // given
+        Long couponId = 1000L;
+        Long userId = 100L;
+        Long campaignId = 1L;
+        Long stockId = 10L;
+        String idempotencyKey = "idempotency-key-123";
+
         given(campaignStockRepository.decreaseRemainingStockIfAvailable(stockId, campaignId))
                 .willThrow(new PessimisticLockingFailureException("Lock Timeout"));
 
@@ -96,6 +122,7 @@ class SyncMysqlSaveStrategyTest {
                                 syncMysqlSaveStrategy.save(
                                         couponId, userId, campaignId, stockId, idempotencyKey))
                 .isInstanceOf(CouponIssueException.class)
+                .hasCauseInstanceOf(PessimisticLockingFailureException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.DB_SAVE_FAILED);
     }
