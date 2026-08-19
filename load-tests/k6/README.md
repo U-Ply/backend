@@ -115,12 +115,22 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 - `coupon_out_of_stock`
 - `coupon_already_issued`
 - `coupon_lock_timeout`
+- `coupon_concurrency_conflict`
+- `coupon_connection_unavailable`
 - `coupon_other_4xx`
 - `coupon_5xx`
 - `coupon_unexpected_response`
 - `http_reqs`, `http_req_duration`, `iterations`
 
-`coupon_lock_timeout`은 비관적 락을 제한 시간 안에 획득하지 못해 반환된 `503 LOCK_TIMEOUT`만 별도로 집계한다. 이 값은 일반 `coupon_5xx`에 중복 집계되지 않으며 Level 2 통과 기준은 0건이다.
+503으로 응답하는 세 항목은 발생 지점이 서로 다르므로 각각 집계한다. 셋 다 일반 `coupon_5xx`에 중복 집계되지 않는다.
+
+| 항목 | 발생 지점 | Level 2 판정 |
+| --- | --- | --- |
+| `coupon_lock_timeout` | `SELECT ... FOR UPDATE`로 락을 기다리다 한계 초과 | 0건 |
+| `coupon_concurrency_conflict` | 트랜잭션 커밋 단계의 DB 교착 | V1은 0건. **V0은 정상 관측값** |
+| `coupon_connection_unavailable` | 트랜잭션 시작 단계에서 커넥션 풀 획득 실패 | 0건 |
+
+`coupon_concurrency_conflict`는 V0(NoLock)에서 발생하는 것이 정상이다. 동시성 제어가 없을 때 무엇이 깨지는지 재현하는 것이 V0의 목적이므로, 이 값을 오류로 취급하면 기준선 측정이 성립하지 않는다. 그래서 threshold를 두지 않고 수치만 기록한다.
 
 결과 건수는 다음 식으로 전체 요청 수와 일치해야 한다.
 
@@ -130,6 +140,8 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 + coupon_out_of_stock
 + coupon_already_issued
 + coupon_lock_timeout
++ coupon_concurrency_conflict
++ coupon_connection_unavailable
 + coupon_other_4xx
 + coupon_5xx
 + coupon_unexpected_response
