@@ -7,6 +7,8 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.RedisOperations;
+import org.springframework.data.redis.core.SessionCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scripting.support.ResourceScriptSource;
@@ -72,8 +74,27 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
-        // #6. DB 저장 전략 선택
-        couponSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey);
+        // #6. DB 저장 전략 선택 : 동기 / Kafka 비동기
+        try {
+            couponSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey);
+
+        } catch (Exception e) {
+            // MySQL 동기 저장 실패 또는 Kafka 발행 실패 -> Redis 재고 차감 복구
+            redisTemplate.execute(
+                    new SessionCallback<Object>() {
+                        @Override
+                        public Object execute(RedisOperations operations) {
+                            operations.multi(); // 트랜잭션 시작
+                            operations.opsForValue().increment("stock:" + campaignId);
+                            operations
+                                    .opsForSet()
+                                    .remove("issued:" + campaignId, String.valueOf(userId));
+                            return operations.exec(); // 원자적 일괄 실행
+                        }
+                    });
+
+            throw e; // 예외 재전파 -> 서비스 레이어 catch(Exception e) 멱등성 키도 삭제됨
+        }
 
         // #7. 성공 결과 반환 (IssueResult)
         return IssueResult.success(couponId);
