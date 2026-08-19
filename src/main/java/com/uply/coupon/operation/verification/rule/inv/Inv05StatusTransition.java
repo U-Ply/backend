@@ -33,7 +33,8 @@ public class Inv05StatusTransition implements InvariantRule {
                       'NULL->ISSUED',
                       'ISSUED->USED',
                       'ISSUED->CANCELLED',
-                      'ISSUED->EXPIRED')
+                      'ISSUED->EXPIRED',
+                      'USED->CANCELLED')
             """;
     }
 }
