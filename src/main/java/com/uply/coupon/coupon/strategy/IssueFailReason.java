@@ -5,7 +5,7 @@ public enum IssueFailReason {
     ALREADY_ISSUED, // 중복 발급 시도
     LOCK_TIMEOUT, // 락 대기 타임아웃 (비관적 락 전략에서 주로 발생)
     CAMPAIGN_NOT_OPEN, // 오픈 시각 이전 요청
-    CAMPAIGN_EXPIRED,
+    CAMPAIGN_EXPIRED, // 만료 시각이 지난 캠페인에 대한 발급 요청
 
     // 추가
     DUPLICATE_REQUEST, // 동일 HTTP Request 중복 진입 (idempotencyKey 기준)

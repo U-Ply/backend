@@ -147,8 +147,6 @@ class PessimisticLockIssueStrategyTest {
 
         assertThat(result.success()).isTrue();
 
-        // @BeforeEach 가 캠페인을 NOW(3) + 30일로 만들어 두었다.
-        // 하드코딩된 "발급일 + 7일" 이 아니라 이 값이 그대로 쿠폰에 실려야 한다.
         LocalDateTime campaignExpireAt =
                 jdbcTemplate.queryForObject(
                         "SELECT expire_at FROM campaigns WHERE campaign_id = ?",
@@ -161,6 +159,25 @@ class PessimisticLockIssueStrategyTest {
                         result.couponId());
 
         assertThat(couponExpireAt).isEqualTo(campaignExpireAt);
+    }
+
+    @Test
+    @DisplayName("만료된 캠페인에는 CAMPAIGN_EXPIRED로 거부한다")
+    void 만료_캠페인_거부() {
+        jdbcTemplate.update(
+                "UPDATE campaigns SET open_at = DATE_SUB(NOW(3), INTERVAL 30 DAY), "
+                        + "expire_at = DATE_SUB(NOW(3), INTERVAL 1 DAY) "
+                        + "WHERE campaign_id = ?",
+                CAMPAIGN_ID);
+
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "expired-key");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_EXPIRED);
+
+        // 검증 단계에서 막혔으므로 재고와 쿠폰에 영향이 없어야 한다.
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK);
+        assertThat(couponCount()).isZero();
     }
 
     @Test

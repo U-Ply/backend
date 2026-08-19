@@ -114,33 +114,65 @@ Level 2에서 전략을 비교할 때 위 값은 전부 고정한다. 하나라�
 결정한다. V0에는 락이 없어 직렬 구간이 없지만, 대신 커밋 시점의 flush 순서 때문에
 DB 수준 교착이 발생한다(Level 1 결과 문서 3.1 참고).
 
-## 5. 락 대기 값이 두 개인 문제
+## 5. 락 대기 값 검증 결과
 
-JPA 힌트(3초)와 MySQL 서버 설정(50초)이 서로 다르다. **어느 쪽이 실제로 적용되는지 확인이 필요하다.**
+JPA 힌트(3초)와 MySQL 서버 설정(50초)이 서로 다르다.
+**실측 결과 JPA 힌트는 적용되지 않으며, 실제 대기 한계는 `innodb_lock_wait_timeout` 50초다.**
 
 `jakarta.persistence.lock.timeout` 힌트는 방언이 지원할 때만 SQL로 번역된다.
-Oracle·PostgreSQL은 `FOR UPDATE WAIT n` 형태를 지원하지만, **MySQL 8은 `FOR UPDATE NOWAIT`와
-`SKIP LOCKED`만 지원하고 대기 시간을 지정하는 문법이 없다.** Hibernate의 MySQL 방언이
-숫자 타임아웃을 무시하고 평범한 `FOR UPDATE`를 생성한다면, 실제 대기 한계는
-`innodb_lock_wait_timeout`인 50초가 된다.
+Oracle·PostgreSQL은 `FOR UPDATE WAIT n` 형태를 지원하지만, MySQL 8은 `FOR UPDATE NOWAIT`와
+`SKIP LOCKED`만 지원하고 대기 시간을 지정하는 문법이 없다. Hibernate의 MySQL 방언은
+숫자 타임아웃을 무시하고 평범한 `FOR UPDATE`를 생성한다.
 
-이 경우 나타나는 결과는 다음과 같다.
+### 5.1 검증 방법
 
-- 요청이 3초가 아니라 최대 50초까지 락을 기다린다
-- 대기하는 요청이 그동안 DB 커넥션을 붙잡고 있다
-- 커넥션 풀이 10개뿐이므로 곧 고갈되고, 뒤이은 요청은 커넥션 획득 단계에서 3초 만에 실패한다
-- 그 실패는 `CannotGetJdbcConnectionException`이며 **전략의 catch 절에 걸리지 않는다**
+`COUPON_STRATEGY=PESSIMISTIC_LOCK`으로 애플리케이션을 띄운 뒤, 다른 MySQL 세션에서
+재고 행을 잡아둔 채 발급 요청을 보내고 응답 시간을 측정했다.
 
-### 검증 방법
+```sql
+BEGIN; SELECT * FROM campaign_stocks WHERE stock_id = 1 FOR UPDATE;
+```
 
-Level 2 전에 다음 중 하나로 확인한다.
+### 5.2 검증 결과
 
-1. `spring.jpa.properties.hibernate.show_sql=true`로 실행해 생성된 `SELECT ... FOR UPDATE` 문에
-   대기 시간 관련 절이 붙는지 본다.
-2. 재고 행을 다른 세션에서 `FOR UPDATE`로 잡아둔 채 발급 요청을 보내고, 응답이 3초 근처에
-   돌아오는지 50초 근처에 돌아오는지 측정한다.
+**단일 요청**
 
-Level 1 규모(재고 10 / 사용자 30)에서는 락 timeout이 0건이라 이 차이가 드러나지 않았다.
+```text
+HTTP 503 LOCK_TIMEOUT / 50.47초
+```
+
+3초가 아니라 50초다. JPA 힌트가 무시되고 `innodb_lock_wait_timeout`이 적용된 것이다.
+
+**동시 요청 15건 (같은 조건)**
+
+| 요청 | 결과 | 소요 |
+| --- | --- | ---: |
+| 10건 | 503 `LOCK_TIMEOUT` | 50.3 ~ 50.6초 |
+| 5건 | **500** | 정확히 3.0초 |
+
+애플리케이션 로그에 남은 원인이다.
+
+```text
+Connection is not available, request timed out after 3002ms   (5건)
+Unhandled exception                                           (5건)
+```
+
+커넥션 풀(10개)을 락 대기 요청이 전부 점유하고, 초과분은 `connection-timeout` 3초에 걸려
+`CannotGetJdbcConnectionException`으로 실패한다. 이 예외는 전략의 catch 절
+(`PessimisticLockingFailureException`, `QueryTimeoutException`)에 걸리지 않으므로
+`GlobalExceptionHandler.handleUnexpected`를 거쳐 500으로 나간다.
+
+### 5.3 Level 2에 미치는 영향
+
+**락 경합이 길어지면 커넥션 풀 크기를 넘는 요청은 전부 500이 된다.**
+Level 2·3 인수 기준 "기타 5xx 0건"과 "20,000건이 모두 성공 또는 재고 소진으로 끝나야 한다"를
+동시에 만족할 수 없는 구조다.
+
+다만 이 실험은 락을 인위적으로 50초간 붙잡은 극단적 조건이다. 실제 Level 2에서는 재고 10,000장이
+소진된 뒤 나머지 요청이 빠르게 `OUT_OF_STOCK`으로 끝나므로 경합 지속 시간이 훨씬 짧을 수 있다.
+발생 여부와 규모는 실제 측정으로 확인해야 한다.
+
+Level 1 규모(재고 10 / 사용자 30)에서는 락 timeout이 0건이라 이 문제가 드러나지 않았다.
 
 ## 6. 실패가 응답으로 바뀌는 경로
 
@@ -151,14 +183,13 @@ Level 1 규모(재고 10 / 사용자 30)에서는 락 timeout이 0건이라 이 
 | InnoDB 교착 | `PessimisticLockingFailureException` | `LOCK_TIMEOUT` | 503 |
 | **커넥션 획득 실패** | `CannotGetJdbcConnectionException` | **처리 없음** | **500** |
 | 캠페인–재고 조합 불일치 | `CampaignNotFoundException` | 처리 없음(전파) | 404 |
-| 캠페인 만료 | `IllegalStateException` | 처리 없음(전파) | **500** |
+| 캠페인 만료 | — | `CAMPAIGN_EXPIRED` | 409 |
 
-굵게 표시한 두 줄이 Level 2·3 인수 기준 "기타 5xx 0건"에 직접 걸린다.
+굵게 표시한 한 줄이 Level 2·3 인수 기준 "기타 5xx 0건"에 직접 걸린다.
 
-- **커넥션 획득 실패**: 5절의 락 대기 문제가 현실화되면 발생한다. 전략은
+- **커넥션 획득 실패**: 5절에서 실제로 재현됐다. 락 대기가 50초까지 이어지면 대기 요청이
+  커넥션 풀을 점유하고, 초과 요청은 3초 만에 실패한다. 전략은
   `PessimisticLockingFailureException`과 `QueryTimeoutException`만 잡으므로 그대로 500이 나간다.
-- **캠페인 만료**: 대응하는 도메인 오류 코드가 없어 임시로 `IllegalStateException`을 던지고 있다.
-  `CAMPAIGN_EXPIRED` 추가 여부를 2번과 협의 중이며 별도 이슈로 처리한다.
 
 교착도 `PessimisticLockingFailureException`으로 올라와 `LOCK_TIMEOUT`(503)이 된다.
 즉 이 코드 하나에 성격이 다른 세 가지(대기 초과, 쿼리 타임아웃, 교착)가 섞여 있다.
@@ -191,3 +222,20 @@ TPS는 락 경합 비용이 아니라 풀 크기 제약을 측정한 값이다. 
 - **run 3 코드부터 요청당 쿼리가 2개 늘었다**(`currentDatabaseTime`, `findCouponExpireAt`).
   둘 다 락 획득 이전이라 직렬 구간에는 포함되지 않지만 전체 처리량에는 반영된다.
   이전 커밋의 수치와 직접 비교하지 않는다.
+
+## 9. 락 대기 대응 방안 (미결)
+
+5절 검증 결과에 대한 대응이 필요하다. 네 가지 선택지가 있으며 어느 것도 단독으로
+Level 2 인수 기준을 충족시키지 못한다. 4번과 협의해 결정한다.
+
+| 방안 | 효과 | 한계 |
+| --- | --- | --- |
+| `innodb_lock_wait_timeout` 하향 (예: 3초) | 대기가 짧아져 커넥션 회전이 빨라지고 500이 줄어든다 | MySQL 서버 전역 설정이다. `LOCK_TIMEOUT`은 여전히 발생하며 그 자체가 판정 실패 사유다 |
+| `@Lock` + `NOWAIT` | 대기 없이 즉시 실패해 커넥션 점유가 사라진다 | `LOCK_TIMEOUT`이 대량 발생한다 |
+| HikariCP 풀 확대 | 500이 줄어든다 | 튜닝이므로 전략 비교 중에 바꾸면 §6.3 위반이다. 별도 회차로 기록해야 한다 |
+| catch 절에 `CannotGetJdbcConnectionException` 추가 | 500이 503 `LOCK_TIMEOUT`으로 분류된다 | 오류 분류만 정확해질 뿐 판정 실패는 그대로다 |
+
+근본적으로는 **동일 재고 행에 요청이 집중되는 한 직렬 구간의 길이가 처리량 상한을 정한다**는
+V1의 구조적 특성이다. 이것이 V1 가설("락 대기와 DB 커넥션 점유가 증가할 것이다")의 실체이며,
+Redis Lua와 비교하는 근거가 된다. 대응 방안 선택은 이 특성을 없애는 것이 아니라
+측정 가능한 형태로 만드는 것이 목적이다.
