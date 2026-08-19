@@ -25,7 +25,7 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
 
     private static final String TOPIC_NAME = "coupon-issued";
 
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
     /** Kafka 쿠폰 발행 이벤트 전송 */

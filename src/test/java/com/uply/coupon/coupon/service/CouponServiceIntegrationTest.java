@@ -1,10 +1,10 @@
 package com.uply.coupon.coupon.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.then;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
 
 import com.uply.coupon.campaign.domain.Campaign;
@@ -16,7 +16,6 @@ import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.repository.CouponRepository;
-import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.LocalDateTime;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
@@ -56,8 +55,6 @@ class CouponServiceIntegrationTest {
         @Autowired private CouponRepository couponRepository;
         @Autowired private StringRedisTemplate redisTemplate;
         @Autowired JdbcTemplate jdbcTemplate;
-
-        @MockBean private KafkaTemplate<String, Object> kafkaTemplate;
 
         private Long userId = 100L;
         private Long campaignId;
@@ -149,7 +146,7 @@ class CouponServiceIntegrationTest {
         @Autowired private StringRedisTemplate redisTemplate;
         @Autowired JdbcTemplate jdbcTemplate;
 
-        @MockBean private KafkaTemplate<String, Object> kafkaTemplate;
+        @MockBean private KafkaTemplate<String, String> kafkaTemplate;
 
         private Long userId = 100L;
         private Long campaignId;
@@ -161,6 +158,10 @@ class CouponServiceIntegrationTest {
             TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
             LocalDateTime now = LocalDateTime.now();
 
+            // ★ [추가] MockBean인 kafkaTemplate.send() 호출 시 CompletableFuture를 반환하도록 스터빙
+            given(kafkaTemplate.send(anyString(), anyString(), anyString()))
+                    .willReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+            
             // 1. 엔티티 없이 SQL로 users 테이블에 FK 충족용 더미 데이터 삽입
             jdbcTemplate.update(
                     "INSERT INTO users (user_id, email, name) VALUES (?,?,?) ON DUPLICATE KEY UPDATE user_id = user_id",
@@ -213,7 +214,7 @@ class CouponServiceIntegrationTest {
             // 1. Kafka 이벤트 발행 검증 (KafkaTemplate.send 호출 확인)
             then(kafkaTemplate)
                     .should(times(1))
-                    .send(eq("coupon-issued"), anyString(), any(CouponIssuedEvent.class));
+                    .send(eq("coupon-issued"), anyString(), anyString());
 
             // 2. RDB 검증 (비동기 처리이므로 요청 시점에는 DB에 0건 저장되어야 함)
             long count = couponRepository.count();
@@ -270,7 +271,7 @@ class CouponServiceIntegrationTest {
 
             then(kafkaTemplate)
                     .should(times(1))
-                    .send(eq("coupon-issued"), anyString(), any(CouponIssuedEvent.class));
+                    .send(eq("coupon-issued"), anyString(), anyString());
         }
     }
 }
