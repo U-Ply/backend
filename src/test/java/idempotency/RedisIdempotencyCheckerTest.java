@@ -10,6 +10,7 @@ import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyCache;
 import com.uply.coupon.common.idempotency.RedisIdempotencyChecker;
@@ -49,6 +50,7 @@ class RedisIdempotencyCheckerTest {
     @DisplayName("getCachedResponse 메서드 테스트")
     class GetCachedResponseTest {
 
+        // 멱등성 키가 없거나 공백이면 Redis에 접근하지 않고 빈 결과를 반환하는지 확인
         @Test
         @DisplayName("key가 null이거나 공백이면 Optional.empty()를 반환한다")
         void getCachedResponse_nullOrBlankKey_returnsEmpty() {
@@ -59,6 +61,7 @@ class RedisIdempotencyCheckerTest {
             verifyNoInteractions(redisTemplate);
         }
 
+        // 최초 요청이 Redis PROCESSING 키 선점에 성공하고 비즈니스 로직 진행 신호를 받는지 확인
         @Test
         @DisplayName("최초 요청 시 SETNX 선점에 성공하고 Optional.empty()를 반환한다")
         void getCachedResponse_firstRequest_returnsEmpty() throws Exception {
@@ -79,6 +82,7 @@ class RedisIdempotencyCheckerTest {
             verify(valueOperations, never()).get(anyString());
         }
 
+        // 동일한 키의 요청이 처리 중이면 중복 실행을 막는 전용 예외가 발생하는지 확인
         @Test
         @DisplayName("중복 요청 시 상태가 PROCESSING이면 전용 예외를 던진다")
         void getCachedResponse_processingState_throwsException() throws Exception {
@@ -102,6 +106,7 @@ class RedisIdempotencyCheckerTest {
                     .hasMessageContaining("already in progress");
         }
 
+        // 동일한 키의 처리가 완료됐다면 비즈니스 로직을 재실행하지 않고 최초 응답을 반환하는지 확인
         @Test
         @DisplayName("중복 요청 시 상태가 COMPLETED이면 캐시된 응답 body를 반환한다")
         void getCachedResponse_completedState_returnsCachedBody() throws Exception {
@@ -130,6 +135,29 @@ class RedisIdempotencyCheckerTest {
             assertThat(result).isPresent().contains("{\"couponId\":\"100\"}");
         }
 
+        // 같은 멱등성 키의 requestHash가 다르면 다른 요청으로 판단하여 재사용 예외를 발생시키는지 확인
+        @Test
+        @DisplayName("같은 키가 다른 요청에 재사용되면 전용 예외를 던진다")
+        void getCachedResponse_differentRequestHash_throwsReusedException() throws Exception {
+            String cachedJson = "{\"status\":\"PROCESSING\",\"requestHash\":\"hash-a\"}";
+            IdempotencyCache processingCache =
+                    IdempotencyCache.builder().status("PROCESSING").requestHash("hash-a").build();
+
+            given(objectMapper.writeValueAsString(any())).willReturn(cachedJson);
+            given(
+                            valueOperations.setIfAbsent(
+                                    eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
+                    .willReturn(false);
+            given(valueOperations.get(REDIS_KEY)).willReturn(cachedJson);
+            given(objectMapper.readValue(cachedJson, IdempotencyCache.class))
+                    .willReturn(processingCache);
+
+            assertThatThrownBy(
+                            () -> idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, "hash-b"))
+                    .isInstanceOf(IdempotencyKeyReusedException.class);
+        }
+
+        // Redis의 캐시 데이터 복원에 실패하면 예외를 전파하지 않고 빈 결과를 반환하는지 확인
         @Test
         @DisplayName("역직렬화 실패 시 예외를 던지지 않고 Optional.empty()를 반환한다")
         void getCachedResponse_jsonException_returnsEmpty() throws Exception {
@@ -157,6 +185,7 @@ class RedisIdempotencyCheckerTest {
     @DisplayName("cacheResponse 메서드 테스트")
     class CacheResponseTest {
 
+        // 완료 응답을 Redis에 COMPLETED 상태와 10분 TTL로 저장하는지 확인
         @Test
         @DisplayName("정상 호출 시 10분 TTL과 함께 COMPLETED 데이터를 Redis에 저장한다")
         void cacheResponse_success() throws Exception {
@@ -175,6 +204,25 @@ class RedisIdempotencyCheckerTest {
                     .set(eq(REDIS_KEY), eq(cacheJson), eq(Duration.ofMinutes(10)));
         }
 
+        // 완료 응답을 저장할 때 최초 요청의 requestHash와 상태 코드·본문을 함께 저장하는지 확인
+        @Test
+        @DisplayName("완료 응답을 저장할 때 최초 요청의 requestHash도 함께 저장한다")
+        void cacheResponse_withRequestHash_savesHash() throws Exception {
+            String responseBody = "{\"campaignId\":10,\"revokedCount\":2}";
+            String cacheJson = "{\"status\":\"COMPLETED\"}";
+            org.mockito.ArgumentCaptor<IdempotencyCache> cacheCaptor =
+                    org.mockito.ArgumentCaptor.forClass(IdempotencyCache.class);
+            given(objectMapper.writeValueAsString(cacheCaptor.capture())).willReturn(cacheJson);
+
+            idempotencyChecker.cacheResponse(IDEMPOTENCY_KEY, "request-hash", responseBody, 200);
+
+            assertThat(cacheCaptor.getValue().getRequestHash()).isEqualTo("request-hash");
+            assertThat(cacheCaptor.getValue().getBody()).isEqualTo(responseBody);
+            assertThat(cacheCaptor.getValue().getHttpStatus()).isEqualTo(200);
+            verify(valueOperations).set(eq(REDIS_KEY), eq(cacheJson), eq(Duration.ofMinutes(10)));
+        }
+
+        // 멱등성 키가 null이면 완료 응답을 Redis에 저장하지 않는지 확인
         @Test
         @DisplayName("key가 null이면 Redis에 저장하지 않는다")
         void cacheResponse_nullKey_doesNothing() {
@@ -190,6 +238,7 @@ class RedisIdempotencyCheckerTest {
     @DisplayName("clearProgress 메서드 테스트")
     class ClearProgressTest {
 
+        // 처리 실패 후 재시도를 허용하기 위해 Redis PROCESSING 키를 삭제하는지 확인
         @Test
         @DisplayName("키 삭제 요청 시 redisTemplate.delete를 호출한다")
         void clearProgress_success() {
@@ -200,6 +249,7 @@ class RedisIdempotencyCheckerTest {
             verify(redisTemplate, times(1)).delete(REDIS_KEY);
         }
 
+        // 멱등성 키가 null이면 Redis 삭제를 실행하지 않는지 확인
         @Test
         @DisplayName("key가 null이면 delete를 호출하지 않는다")
         void clearProgress_nullKey_doesNothing() {

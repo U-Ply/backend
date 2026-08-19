@@ -3,6 +3,7 @@ package com.uply.coupon.coupon.repository;
 import com.uply.coupon.coupon.domain.Coupon;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -41,8 +42,13 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
               from Coupon c
              where c.campaignId = :campaignId
                and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
+               and c.couponId > :lastCouponId
+             order by c.couponId
             """)
-    List<Long> findIssuedCouponIdsByCampaignId(@Param("campaignId") Long campaignId);
+    List<Long> findIssuedCouponIdsByCampaignIdAfter(
+            @Param("campaignId") Long campaignId,
+            @Param("lastCouponId") Long lastCouponId,
+            Pageable pageable);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(

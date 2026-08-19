@@ -20,6 +20,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -48,8 +49,10 @@ class CouponRepositoryTest {
     }
 
     @Test
-    void findsOnlyIssuedCouponsOfCampaign() {
-        Coupon issuedCoupon = createCoupon(campaign, stock, CouponStatus.ISSUED);
+    void findsIssuedCouponsOfCampaignInCouponIdOrderWithKeysetPagination() {
+        Coupon firstIssuedCoupon = createCoupon(campaign, stock, CouponStatus.ISSUED);
+        Coupon secondIssuedCoupon = createCoupon(campaign, stock, CouponStatus.ISSUED);
+        Coupon thirdIssuedCoupon = createCoupon(campaign, stock, CouponStatus.ISSUED);
         createCoupon(campaign, stock, CouponStatus.USED);
 
         Campaign otherCampaign = createCampaign("다른 캠페인");
@@ -58,9 +61,16 @@ class CouponRepositoryTest {
 
         entityManager.clear();
 
-        List<Long> couponIds = couponRepository.findIssuedCouponIdsByCampaignId(campaign.getId());
+        List<Long> firstPage =
+                couponRepository.findIssuedCouponIdsByCampaignIdAfter(
+                        campaign.getId(), 0L, PageRequest.of(0, 2));
+        List<Long> secondPage =
+                couponRepository.findIssuedCouponIdsByCampaignIdAfter(
+                        campaign.getId(), secondIssuedCoupon.getCouponId(), PageRequest.of(0, 2));
 
-        assertThat(couponIds).containsExactly(issuedCoupon.getCouponId());
+        assertThat(firstPage)
+                .containsExactly(firstIssuedCoupon.getCouponId(), secondIssuedCoupon.getCouponId());
+        assertThat(secondPage).containsExactly(thirdIssuedCoupon.getCouponId());
     }
 
     @Test

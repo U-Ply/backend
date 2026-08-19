@@ -1,19 +1,22 @@
 package com.uply.coupon.coupon.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.repository.CouponRepository;
-import jakarta.persistence.EntityManager;
 import java.sql.Statement;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,11 +27,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @DataJpaTest
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(CampaignCouponRevokeService.class)
+@Import({CampaignCouponRevokeService.class, CampaignCouponRevokeChunkProcessor.class})
+@Transactional(propagation = Propagation.NOT_SUPPORTED)
 class CampaignCouponRevokeIntegrationTest {
 
     private static final AtomicLong COUPON_ID_SEQUENCE = new AtomicLong(8_100_000_000_000L);
@@ -39,10 +45,10 @@ class CampaignCouponRevokeIntegrationTest {
     @Autowired private CampaignRepository campaignRepository;
     @Autowired private CampaignStockRepository campaignStockRepository;
     @Autowired private JdbcTemplate jdbcTemplate;
-    @Autowired private EntityManager entityManager;
 
     private Campaign campaign;
     private CampaignStock stock;
+    private final List<Long> createdUserIds = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -66,6 +72,36 @@ class CampaignCouponRevokeIntegrationTest {
         stock = campaignStockRepository.saveAndFlush(stock);
     }
 
+    @AfterEach
+    void tearDown() {
+        if (campaign != null && campaign.getId() != null) {
+            jdbcTemplate.update(
+                    "DELETE FROM coupon_history WHERE coupon_id IN "
+                            + "(SELECT coupon_id FROM coupons WHERE campaign_id = ?)",
+                    campaign.getId());
+            jdbcTemplate.update("DELETE FROM coupons WHERE campaign_id = ?", campaign.getId());
+            jdbcTemplate.update(
+                    "DELETE FROM campaign_stocks WHERE campaign_id = ?", campaign.getId());
+            jdbcTemplate.update("DELETE FROM campaigns WHERE campaign_id = ?", campaign.getId());
+        }
+        for (Long userId : createdUserIds) {
+            jdbcTemplate.update("DELETE FROM users WHERE user_id = ?", userId);
+        }
+    }
+
+    // 실제 MySQL에서 존재하지 않는 캠페인의 일괄 취소 요청을 예외로 차단하는지 확인
+    @Test
+    void rejectsUnknownCampaign() {
+        assertThatThrownBy(() -> service.revoke(Long.MAX_VALUE, IDEMPOTENCY_KEY))
+                .isInstanceOf(CampaignNotFoundException.class);
+    }
+
+    // 실제 MySQL에서 캠페인은 존재하지만 ISSUED 쿠폰이 없으면 성공 건수 0을 반환하는지 확인
+    @Test
+    void returnsZeroWhenCampaignExistsWithoutIssuedCoupons() {
+        assertThat(service.revoke(campaign.getId(), IDEMPOTENCY_KEY)).isZero();
+    }
+
     // 실제 MySQL에서 ISSUED만 취소되고 이력은 성공 건수만 저장되며 재고는 유지되는지 확인
     @Test
     void revokesOnlyIssuedCouponsAndKeepsStockUnchanged() {
@@ -77,10 +113,10 @@ class CampaignCouponRevokeIntegrationTest {
         int stockBefore = findRemainingStock();
 
         int revokedCount = service.revoke(campaign.getId(), IDEMPOTENCY_KEY);
-        entityManager.flush();
-        entityManager.clear();
+        int retriedRevokedCount = service.revoke(campaign.getId(), IDEMPOTENCY_KEY);
 
         assertThat(revokedCount).isEqualTo(2);
+        assertThat(retriedRevokedCount).isEqualTo(2);
         assertCouponStatus(firstIssued.getCouponId(), CouponStatus.CANCELLED);
         assertCouponStatus(secondIssued.getCouponId(), CouponStatus.CANCELLED);
         assertCouponStatus(used.getCouponId(), CouponStatus.USED);
@@ -148,7 +184,9 @@ class CampaignCouponRevokeIntegrationTest {
         if (generatedKey == null) {
             throw new IllegalStateException("테스트 사용자 ID 생성에 실패했습니다.");
         }
-        return generatedKey.longValue();
+        Long userId = generatedKey.longValue();
+        createdUserIds.add(userId);
+        return userId;
     }
 
     private Coupon findCoupon(Long couponId) {
@@ -184,7 +222,7 @@ class CampaignCouponRevokeIntegrationTest {
                                 resultSet.getLong("coupon_id"),
                                 resultSet.getString("from_status"),
                                 resultSet.getString("to_status")),
-                "revoke-%-" + IDEMPOTENCY_KEY);
+                "revoke-" + IDEMPOTENCY_KEY + "-%");
     }
 
     private record HistoryRow(Long couponId, String fromStatus, String toStatus) {}

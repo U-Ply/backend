@@ -43,7 +43,11 @@ import org.springframework.transaction.annotation.Transactional;
 @DataJpaTest
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({CampaignCouponRevokeService.class, CouponStateTransitionService.class})
+@Import({
+    CampaignCouponRevokeService.class,
+    CampaignCouponRevokeChunkProcessor.class,
+    CouponStateTransitionService.class
+})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class CampaignCouponRevokeConsistencyIntegrationTest {
 
@@ -190,7 +194,7 @@ class CampaignCouponRevokeConsistencyIntegrationTest {
     @Test
     void rollsBackCouponUpdateWhenHistoryInsertFails() {
         int stockBefore = findRemainingStock();
-        String duplicatedHistoryKey = "revoke-" + couponId + "-" + REVOKE_IDEMPOTENCY_KEY;
+        String duplicatedHistoryKey = "revoke-" + REVOKE_IDEMPOTENCY_KEY + "-" + couponId;
         couponHistoryRepository.saveAndFlush(
                 CouponHistory.issued(couponId, duplicatedHistoryKey, LocalDateTime.now()));
 

@@ -1,51 +1,56 @@
 package com.uply.coupon.coupon.service;
 
-import com.uply.coupon.common.exception.CouponNotFoundException;
-import com.uply.coupon.coupon.domain.Coupon;
-import com.uply.coupon.coupon.domain.CouponHistory;
+import com.uply.coupon.campaign.repository.CampaignRepository;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
 public class CampaignCouponRevokeService {
 
     private static final String HISTORY_KEY_PREFIX = "revoke-";
+    static final int CHUNK_SIZE = 500;
 
+    private final CampaignRepository campaignRepository;
     private final CouponRepository couponRepository;
     private final CouponHistoryRepository couponHistoryRepository;
+    private final CampaignCouponRevokeChunkProcessor chunkProcessor;
 
-    @Transactional
     public int revoke(Long campaignId, String idempotencyKey) {
-        List<Long> couponIds = couponRepository.findIssuedCouponIdsByCampaignId(campaignId);
-        int revokedCount = 0;
-
-        for (Long couponId : couponIds) {
-            int updatedRows = couponRepository.revokeIfIssued(couponId);
-            if (updatedRows == 0) {
-                continue;
-            }
-
-            Coupon coupon =
-                    couponRepository
-                            .findById(couponId)
-                            .orElseThrow(() -> new CouponNotFoundException(couponId));
-            couponHistoryRepository.save(
-                    CouponHistory.revoked(
-                            couponId,
-                            createHistoryIdempotencyKey(couponId, idempotencyKey),
-                            coupon.getCancelledAt()));
-            revokedCount++;
+        if (!campaignRepository.existsById(campaignId)) {
+            throw new CampaignNotFoundException(campaignId);
         }
 
-        return revokedCount;
+        String historyKeyPrefix = createHistoryKeyPrefix(idempotencyKey);
+        int totalRevokedCount =
+                Math.toIntExact(
+                        couponHistoryRepository.countCampaignRevocationsByHistoryKeyPrefix(
+                                campaignId, historyKeyPrefix));
+        long lastCouponId = 0L;
+        Pageable chunkPage = PageRequest.of(0, CHUNK_SIZE);
+
+        while (true) {
+            List<Long> couponIds =
+                    couponRepository.findIssuedCouponIdsByCampaignIdAfter(
+                            campaignId, lastCouponId, chunkPage);
+            if (couponIds.isEmpty()) {
+                break;
+            }
+
+            totalRevokedCount += chunkProcessor.revokeChunk(couponIds, historyKeyPrefix);
+            lastCouponId = couponIds.get(couponIds.size() - 1);
+        }
+
+        return totalRevokedCount;
     }
 
-    private String createHistoryIdempotencyKey(Long couponId, String idempotencyKey) {
-        return HISTORY_KEY_PREFIX + couponId + "-" + idempotencyKey;
+    private String createHistoryKeyPrefix(String idempotencyKey) {
+        return HISTORY_KEY_PREFIX + idempotencyKey + "-";
     }
 }
