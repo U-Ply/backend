@@ -15,7 +15,7 @@ public class CampaignNotFoundException extends RuntimeException {
     public CampaignNotFoundException(Long campaignId, Long stockId) {
         super("Campaign stock not found: campaignId=" + campaignId + ", stockId=" + stockId);
     }
-    
+
     public CampaignNotFoundException(Long campaignId) {
         super("Campaign stock not found: campaignId=" + campaignId);
     }

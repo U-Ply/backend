@@ -12,6 +12,9 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.coupon.strategy.save.SyncMysqlSaveStrategy;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,6 +35,10 @@ class SyncMysqlSaveStrategyTest {
 
     @InjectMocks private SyncMysqlSaveStrategy syncMysqlSaveStrategy;
 
+    private long expireAtEpochMillis = 1780000000000L;
+    private LocalDateTime expireAt =
+            LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
+
     @Test
     @DisplayName("SyncMysqlSaveStrategy 호출 시 Coupon과 CouponHistory가 정상 저장된다")
     void save_Success() {
@@ -46,7 +53,7 @@ class SyncMysqlSaveStrategyTest {
                 .willReturn(1);
 
         // when
-        syncMysqlSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey);
+        syncMysqlSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
 
         // then
         verify(campaignStockRepository).decreaseRemainingStockIfAvailable(stockId, campaignId);
@@ -71,7 +78,12 @@ class SyncMysqlSaveStrategyTest {
         assertThatThrownBy(
                         () ->
                                 syncMysqlSaveStrategy.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.OUT_OF_STOCK);
@@ -90,13 +102,19 @@ class SyncMysqlSaveStrategyTest {
         given(campaignStockRepository.decreaseRemainingStockIfAvailable(stockId, campaignId))
                 .willReturn(1);
         given(couponRepository.save(any(Coupon.class)))
-                .willThrow(new DataIntegrityViolationException("Duplicate entry for key 'UK_coupon'"));
+                .willThrow(
+                        new DataIntegrityViolationException("Duplicate entry for key 'UK_coupon'"));
 
         // when & then
         assertThatThrownBy(
                         () ->
                                 syncMysqlSaveStrategy.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .hasCauseInstanceOf(DataIntegrityViolationException.class)
                 .extracting("reason")
@@ -120,7 +138,12 @@ class SyncMysqlSaveStrategyTest {
         assertThatThrownBy(
                         () ->
                                 syncMysqlSaveStrategy.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .hasCauseInstanceOf(PessimisticLockingFailureException.class)
                 .extracting("reason")

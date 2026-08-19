@@ -16,6 +16,9 @@ import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
@@ -39,6 +42,10 @@ class CouponIssuedProducerTest {
 
     @InjectMocks private CouponIssuedProducer couponIssuedProducer;
 
+    private long expireAtEpochMillis = 1780000000000L;
+    private LocalDateTime expireAt =
+            LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
+
     @Test
     @DisplayName("JSON 직렬화 및 Kafka 동기 발행에 성공한다")
     void save_Success() throws Exception {
@@ -60,7 +67,7 @@ class CouponIssuedProducerTest {
                 .willReturn(CompletableFuture.completedFuture(null));
 
         // when
-        couponIssuedProducer.save(couponId, userId, campaignId, stockId, idempotencyKey);
+        couponIssuedProducer.save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
 
         // then
         verify(objectMapper).writeValueAsString(any(CouponIssuedEvent.class));
@@ -85,7 +92,12 @@ class CouponIssuedProducerTest {
         assertThatThrownBy(
                         () ->
                                 couponIssuedProducer.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.KAFKA_PUBLISH_FAILED);
@@ -122,7 +134,12 @@ class CouponIssuedProducerTest {
         assertThatThrownBy(
                         () ->
                                 couponIssuedProducer.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.KAFKA_PUBLISH_UNKNOWN);
@@ -159,7 +176,12 @@ class CouponIssuedProducerTest {
         assertThatThrownBy(
                         () ->
                                 couponIssuedProducer.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.KAFKA_PUBLISH_UNKNOWN);
@@ -178,7 +200,8 @@ class CouponIssuedProducerTest {
 
         CompletableFuture<org.springframework.kafka.support.SendResult<String, String>> future =
                 new CompletableFuture<>();
-        future.completeExceptionally(new ExecutionException("Broker Error", new RuntimeException()));
+        future.completeExceptionally(
+                new ExecutionException("Broker Error", new RuntimeException()));
 
         given(objectMapper.writeValueAsString(any(CouponIssuedEvent.class)))
                 .willReturn(expectedJson);
@@ -193,12 +216,17 @@ class CouponIssuedProducerTest {
         assertThatThrownBy(
                         () ->
                                 couponIssuedProducer.save(
-                                        couponId, userId, campaignId, stockId, idempotencyKey))
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.KAFKA_PUBLISH_FAILED);
     }
-    
+
     @Test
     @DisplayName("Kafka 발행 성공 시 성공 카운트 메트릭이 1 증가한다")
     void save_Success_IncrementsSuccessMetric() throws Exception {
@@ -208,17 +236,23 @@ class CouponIssuedProducerTest {
 
         given(objectMapper.writeValueAsString(any(CouponIssuedEvent.class)))
                 .willReturn(expectedJson);
-        given(kafkaTemplate.send(eq("coupon-issued"), eq(String.valueOf(couponId)), eq(expectedJson)))
+        given(
+                        kafkaTemplate.send(
+                                eq("coupon-issued"),
+                                eq(String.valueOf(couponId)),
+                                eq(expectedJson)))
                 .willReturn(CompletableFuture.completedFuture(null));
 
         // when
-        couponIssuedProducer.save(couponId, 100L, 1L, 10L, "idempotency-key-123");
+        couponIssuedProducer.save(couponId, 100L, 1L, 10L, "idempotency-key-123", expireAt);
 
         // then: SimpleMeterRegistry에 기록된 카운터 값 직접 검증
-        double count = meterRegistry.get("kafka.producer.publish.count")
-                .tag("result", "success")
-                .counter()
-                .count();
+        double count =
+                meterRegistry
+                        .get("kafka.producer.publish.count")
+                        .tag("result", "success")
+                        .counter()
+                        .count();
 
         assertThat(count).isEqualTo(1.0);
     }
@@ -231,22 +265,29 @@ class CouponIssuedProducerTest {
         String expectedJson = "{\"couponId\":1000}";
 
         @SuppressWarnings("unchecked")
-        CompletableFuture<org.springframework.kafka.support.SendResult<String, String>> future = mock(CompletableFuture.class);
+        CompletableFuture<org.springframework.kafka.support.SendResult<String, String>> future =
+                mock(CompletableFuture.class);
 
-        given(objectMapper.writeValueAsString(any(CouponIssuedEvent.class))).willReturn(expectedJson);
+        given(objectMapper.writeValueAsString(any(CouponIssuedEvent.class)))
+                .willReturn(expectedJson);
         given(kafkaTemplate.send(any(), any(), any())).willReturn(future);
         given(future.get(anyLong(), any())).willThrow(new TimeoutException("Timeout"));
 
         // when & then
-        assertThatThrownBy(() -> couponIssuedProducer.save(couponId, 100L, 1L, 10L, "key-123"))
+        assertThatThrownBy(
+                        () ->
+                                couponIssuedProducer.save(
+                                        couponId, 100L, 1L, 10L, "key-123", expireAt))
                 .isInstanceOf(CouponIssueException.class);
 
         // then: 실패 메트릭 검증
-        double count = meterRegistry.get("kafka.producer.publish.count")
-                .tag("result", "failure")
-                .tag("cause", "timeout")
-                .counter()
-                .count();
+        double count =
+                meterRegistry
+                        .get("kafka.producer.publish.count")
+                        .tag("result", "failure")
+                        .tag("cause", "timeout")
+                        .counter()
+                        .count();
 
         assertThat(count).isEqualTo(1.0);
     }

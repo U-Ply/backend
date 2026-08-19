@@ -1,7 +1,6 @@
 package com.uply.coupon.messaging.event;
 
 import java.time.Instant;
-import java.time.LocalDateTime;
 
 public record CouponIssuedEvent(
         Long couponId,
@@ -9,5 +8,6 @@ public record CouponIssuedEvent(
         Long campaignId,
         Long stockId,
         String idempotencyKey,
-        Instant issuedAt,
-        LocalDateTime expireAt) {}
+        Instant issuedAt
+        // LocalDateTime expireAt
+        ) {}

@@ -5,7 +5,6 @@ import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import jakarta.annotation.PostConstruct;
-
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -37,10 +36,11 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         issueScript.setScriptSource(
                 new ResourceScriptSource(new ClassPathResource("scripts/issue_coupon.lua")));
         issueScript.setResultType(List.class);
-        
+
         // 보상 전용 스크립트 실행 (1회만 반영되도록 멱등성 보장)
         rollbackScript = new DefaultRedisScript<>();
-        rollbackScript.setScriptSource(new ResourceScriptSource(new ClassPathResource("scripts/rollback_coupon.lua")));
+        rollbackScript.setScriptSource(
+                new ResourceScriptSource(new ClassPathResource("scripts/rollback_coupon.lua")));
         rollbackScript.setResultType(Long.class);
     }
 
@@ -86,10 +86,11 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
         // Redis 캐싱된 expireAt 조회
         LocalDateTime expireAt = getExpireAt(campaignId);
-        
+
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {
-            couponSaveStrategy.save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
+            couponSaveStrategy.save(
+                    couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
 
         } catch (CouponIssueException e) {
             // 결과가 불명확한 타임아웃(KAFKA_PUBLISH_UNKNOWN) 발생 시 Redis 보상 유예 (초과 발급 방지)
@@ -99,7 +100,10 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             }
 
             // 확실한 실패(DB_SAVE_FAILED, KAFKA_PUBLISH_FAILED 등) 시에만 멱등한 Redis 보상 실행
-            log.error("[쿠폰 저장/발행 확정 실패] Redis 보상 로직을 실행합니다. couponId: {}, reason: {}", couponId, e.getReason());
+            log.error(
+                    "[쿠폰 저장/발행 확정 실패] Redis 보상 로직을 실행합니다. couponId: {}, reason: {}",
+                    couponId,
+                    e.getReason());
             rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
             throw e;
 
@@ -109,8 +113,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
             throw e;
         }
-        
-        
 
         // #6. 성공 결과 반환 (IssueResult)
         return IssueResult.success(couponId);
@@ -120,22 +122,21 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     public String name() {
         return "LUA_SCRIPT";
     }
-    
-    /**
-     * expireAt 조회 헬퍼 메소드
-     */
+
+    /** expireAt 조회 헬퍼 메소드 */
     private LocalDateTime getExpireAt(Long campaignId) {
-    	String key = String.format("campaign:%d:expireAt", campaignId);
+        String key = String.format("campaign:%d:expireAt", campaignId);
         String expireAtStr = redisTemplate.opsForValue().get(key);
 
         if (expireAtStr == null) {
             throw new CampaignNotFoundException(campaignId, campaignId);
         }
-    	
+
         // 파싱 과정에서 에러 발생 가능 -> 쿠폰 발급 실패 예외에 담아서 전파
         try {
             long expireAtEpochMillis = Long.parseLong(expireAtStr);
-            return LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
+            return LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
         } catch (NumberFormatException e) {
             throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
         }
@@ -144,11 +145,9 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     /** Redis 롤백 전용 헬퍼 메소드 */
     private void rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
         redisTemplate.execute(
-                rollbackScript,
-                List.of(stockIdKey, issuedCampaignKey),
-                String.valueOf(userId));
+                rollbackScript, List.of(stockIdKey, issuedCampaignKey), String.valueOf(userId));
     }
-    
+
     private IssueFailReason matchFailReason(long resultCode) {
         return switch ((int) resultCode) {
             case -1 -> IssueFailReason.ALREADY_ISSUED;

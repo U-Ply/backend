@@ -68,7 +68,7 @@ public class CampaignCacheWarmupService {
                         String.valueOf(openAtEpochMillis),
                         CACHE_TTL_HOURS,
                         TimeUnit.HOURS);
-        
+
         // [추가] campaign:{campaignId}:expireAt -> 만료 시각 (UTC epoch millis)
         long expireAtEpochMillis =
                 stocks.get(0).getCampaign().getExpireAt().toInstant(ZoneOffset.UTC).toEpochMilli();

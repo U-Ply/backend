@@ -50,11 +50,11 @@ public class CouponServiceImpl implements CouponService {
                 return parseCachedResponse(cachedBody.get());
             }
         }
-        
+
         // #2. 최초 요청 처리 (예외 발생 시 PROCESSING 락 해제를 위한 try-catch)
         try {
-        	// [승인 시점 측정] try 진입 직후 측정하여 예외 발생 시 catch문에서 락 해제 보장
-        	Instant now = Instant.now();
+            // [승인 시점 측정] try 진입 직후 측정하여 예외 발생 시 catch문에서 락 해제 보장
+            Instant now = Instant.now();
 
             // 캠페인 메타데이터(오픈/만료 시각) Redis 조회
             Instant openAt = campaignCacheRepository.getOpenAt(request.campaignId());
@@ -67,7 +67,7 @@ public class CouponServiceImpl implements CouponService {
             if (now.isAfter(expireAt)) {
                 throw new CouponIssueException(IssueFailReason.CAMPAIGN_EXPIRED);
             }
-        	
+
             CouponIssueStrategy issueStrategy = strategySelector.current();
 
             // DB 전략은 MySQL, Lua 전략은 Redis에서 stockId를 조회한다.
