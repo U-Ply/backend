@@ -1,7 +1,14 @@
 package com.uply.coupon.coupon.strategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 
+import com.uply.coupon.coupon.domain.CouponHistory;
+import com.uply.coupon.coupon.repository.CouponHistoryRepository;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -12,6 +19,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -22,6 +31,8 @@ class NoLockIssueStrategyTest {
     @Autowired NoLockIssueStrategy strategy;
 
     @Autowired JdbcTemplate jdbcTemplate;
+
+    @SpyBean CouponHistoryRepository couponHistoryRepository;
 
     private static final long CAMPAIGN_ID = 1L;
     private static final long STOCK_ID = 1L;
@@ -69,6 +80,12 @@ class NoLockIssueStrategyTest {
     private int couponCount() {
         return jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM coupons WHERE stock_id = ?", Integer.class, STOCK_ID);
+    }
+
+    private int historyCount() {
+        // coupon_history 에는 stock_id 가 없으므로 전체를 센다
+        // @BeforeEach 가 매번 테이블을 비우므로 다른 테스트의 데이터가 섞이지 않음
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM coupon_history", Integer.class);
     }
 
     @Test
@@ -125,6 +142,82 @@ class NoLockIssueStrategyTest {
     }
 
     @Test
+    @DisplayName("쿠폰 만료 시각은 캠페인의 expire_at을 그대로 따른다")
+    void 만료시각은_캠페인_기준() {
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "expire-key");
+
+        assertThat(result.success()).isTrue();
+
+        LocalDateTime campaignExpireAt =
+                jdbcTemplate.queryForObject(
+                        "SELECT expire_at FROM campaigns WHERE campaign_id = ?",
+                        LocalDateTime.class,
+                        CAMPAIGN_ID);
+        LocalDateTime couponExpireAt =
+                jdbcTemplate.queryForObject(
+                        "SELECT expire_at FROM coupons WHERE coupon_id = ?",
+                        LocalDateTime.class,
+                        result.couponId());
+
+        assertThat(couponExpireAt).isEqualTo(campaignExpireAt);
+    }
+
+    @Test
+    @DisplayName("만료된 캠페인에는 CAMPAIGN_EXPIRED로 거부한다")
+    void 만료_캠페인_거부() {
+        jdbcTemplate.update(
+                "UPDATE campaigns SET open_at = DATE_SUB(NOW(3), INTERVAL 30 DAY), "
+                        + "expire_at = DATE_SUB(NOW(3), INTERVAL 1 DAY) "
+                        + "WHERE campaign_id = ?",
+                CAMPAIGN_ID);
+
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "expired-key");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_EXPIRED);
+
+        // 검증 단계에서 막혔으므로 재고와 쿠폰에 영향이 없어야 한다.
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK);
+        assertThat(couponCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("발급 시각은 JVM이 아니라 DB의 NOW(3)를 따른다")
+    void 발급시각은_DB_기준() {
+        IssueResult result = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "issued-at-key");
+
+        assertThat(result.success()).isTrue();
+
+        LocalDateTime issuedAt =
+                jdbcTemplate.queryForObject(
+                        "SELECT issued_at FROM coupons WHERE coupon_id = ?",
+                        LocalDateTime.class,
+                        result.couponId());
+        LocalDateTime databaseTime =
+                jdbcTemplate.queryForObject("SELECT NOW(3)", LocalDateTime.class);
+
+        // JVM은 UTC, MySQL 서버는 KST로 돌기 때문에 JVM 시각을 쓰면 9시간이 어긋난다.
+        // DB 시각을 썼다면 방금 발급했으므로 차이가 몇 초 이내여야 한다.
+        assertThat(Duration.between(issuedAt, databaseTime).abs())
+                .isLessThan(Duration.ofMinutes(1));
+    }
+
+    @Test
+    @DisplayName("락이 없어도 한 요청 안에서는 원자적이라 이력 저장 실패 시 전부 롤백된다")
+    void 트랜잭션_롤백() {
+        doThrow(new DataIntegrityViolationException("테스트용 강제 예외"))
+                .when(couponHistoryRepository)
+                .save(any(CouponHistory.class));
+
+        assertThatThrownBy(() -> strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "rollback-key"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK); // 차감이 되돌려졌는지 확인
+        assertThat(couponCount()).isZero(); // 쿠폰이 남지 않았는지 확인
+        assertThat(historyCount()).isZero(); // 이력이 남지 않았는지 확인
+    }
+
+    @Test
     @DisplayName("락이 없으면 재고 차감이 유실되어 쿠폰 수와 재고가 어긋난다")
     void 락이_없으면_재고차감이_유실된다() throws InterruptedException {
         ExecutorService executor = Executors.newFixedThreadPool(USER_COUNT);
@@ -171,12 +264,16 @@ class NoLockIssueStrategyTest {
 
         int issued = couponCount(); // 실제 발급된 쿠폰 수
         int consumed = TOTAL_STOCK - remainingStock(); // 재고가 줄어든 양
+        int overIssued = Math.max(0, issued - TOTAL_STOCK); // 초기 재고를 넘겨 발급된 수
 
         System.out.printf(
-                "발급 %d건 / 재고 차감 %d건 → 유실 %d건" + " (재고소진 %d건, 중복 %d건, 락 경합 실패 %d건, 기타 예외 %d건)%n",
+                "성공 응답 %d건 / 실제 쿠폰 %d건 / 재고 차감 %d건 → 유실 %d건, 초과 발급 %d건"
+                        + " (재고소진 %d건, 중복 %d건, 락 경합 실패 %d건, 기타 예외 %d건)%n",
+                success.get(),
                 issued,
                 consumed,
                 issued - consumed,
+                overIssued,
                 outOfStock.get(),
                 alreadyIssued.get(),
                 deadlock.get(),

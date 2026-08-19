@@ -64,3 +64,5 @@ coupon:
   idempotency:
     # Level 2의 순수 전략 비교에서만 false로 설정한다. 일반 실행에서는 Redis 멱등성을 사용한다.
     enabled: ${COUPON_IDEMPOTENCY_ENABLED:true}
+  save:
+    strategy: ${COUPON_SAVE_STRATEGY:sync-db} # sync-db 또는 kafka

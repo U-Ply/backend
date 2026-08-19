@@ -30,10 +30,9 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
                set c.status = com.uply.coupon.coupon.domain.CouponStatus.CANCELLED,
                    c.cancelledAt = CURRENT_TIMESTAMP
              where c.couponId = :couponId
-               and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
-               and c.expireAt > CURRENT_TIMESTAMP
+               and c.status = com.uply.coupon.coupon.domain.CouponStatus.USED
             """)
-    int cancelIfIssued(@Param("couponId") Long couponId);
+    int cancelIfUsed(@Param("couponId") Long couponId);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(

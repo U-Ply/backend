@@ -2,6 +2,7 @@ package com.uply.coupon.coupon.strategy;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponHistory;
@@ -30,6 +31,18 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
     public IssueResult issue(Long campaignId, Long userId, Long stockId, String idempotencyKey) {
 
         try {
+
+            LocalDateTime databaseTime = campaignStockRepository.currentDatabaseTime();
+
+            LocalDateTime expireAt =
+                    campaignStockRepository
+                            .findCouponExpireAt(stockId, campaignId)
+                            .orElseThrow(() -> new CampaignNotFoundException(campaignId, stockId));
+
+            if (!expireAt.isAfter(databaseTime)) {
+                return IssueResult.fail(IssueFailReason.CAMPAIGN_EXPIRED);
+            }
+
             CampaignStock stock =
                     campaignStockRepository
                             .findByIdForUpdate(stockId)
@@ -64,7 +77,8 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
                             userId,
                             campaignId,
                             stockId,
-                            LocalDateTime.now().plusDays(7));
+                            databaseTime,
+                            expireAt);
             couponRepository.save(coupon);
 
             // 발급 이력 저장
@@ -74,7 +88,6 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
             return IssueResult.success(coupon.getCouponId());
 
         } catch (PessimisticLockingFailureException | QueryTimeoutException e) {
-            // 락 대기 timeout (3초) 초과
             return IssueResult.fail(IssueFailReason.LOCK_TIMEOUT);
         }
     }
