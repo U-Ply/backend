@@ -40,7 +40,7 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
                             .orElseThrow(() -> new CampaignNotFoundException(campaignId, stockId));
 
             if (!expireAt.isAfter(databaseTime)) {
-                throw new IllegalStateException("쿠폰 만료 시각은 발급 시각보다 이후여야 합니다. expireAt=" + expireAt);
+                return IssueResult.fail(IssueFailReason.CAMPAIGN_EXPIRED);
             }
 
             CampaignStock stock =

@@ -56,6 +56,7 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
     int decreaseRemainingStockIfAvailable(
             @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
 
+    // 실제 대기 한계는 innodb_lock_wait_timeout(50초)이다.
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000"))
     @Query("SELECT s FROM CampaignStock s WHERE s.id = :stockId")
