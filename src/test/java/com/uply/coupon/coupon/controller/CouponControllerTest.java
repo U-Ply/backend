@@ -20,6 +20,7 @@ import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,7 +48,7 @@ class CouponControllerTest {
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CouponController(couponService, couponStateTransitionService))
-                        .setControllerAdvice(new GlobalExceptionHandler())
+                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
                         .build();
     }
 

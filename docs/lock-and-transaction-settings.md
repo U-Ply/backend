@@ -153,6 +153,10 @@ HTTP 503 LOCK_TIMEOUT / 50.47초
 | 10건 | 503 `LOCK_TIMEOUT` | 50.3 ~ 50.6초 |
 | 5건 | **500** | 정확히 3.0초 |
 
+이 측정은 오류 분류를 적용하기 전의 결과다. 현재는 같은 상황이
+503 `CONNECTION_UNAVAILABLE`로 응답된다(6절 참고). 응답 코드만 바뀌었을 뿐
+발생 조건과 소요 시간은 동일하다.
+
 애플리케이션 로그에 남은 원인이다.
 
 ```text
@@ -179,9 +183,10 @@ HikariPool-1 - Connection is not available, request timed out after 3014ms
 
 ### 5.3 Level 2에 미치는 영향
 
-**락 경합이 길어지면 커넥션 풀 크기를 넘는 요청은 전부 500이 된다.**
-Level 2·3 인수 기준 "기타 5xx 0건"과 "20,000건이 모두 성공 또는 재고 소진으로 끝나야 한다"를
-동시에 만족할 수 없는 구조다.
+**락 경합이 길어지면 커넥션 풀 크기를 넘는 요청은 전부 503 `CONNECTION_UNAVAILABLE`이 된다.**
+오류 분류로 원인은 알 수 있게 됐지만 503도 5xx이므로, Level 2·3 인수 기준
+"기타 5xx 0건"과 "20,000건이 모두 성공 또는 재고 소진으로 끝나야 한다"를
+동시에 만족할 수 없는 구조라는 사실은 달라지지 않는다.
 
 다만 이 실험은 락을 인위적으로 50초간 붙잡은 극단적 조건이다. 실제 Level 2에서는 재고 10,000장이
 소진된 뒤 나머지 요청이 빠르게 `OUT_OF_STOCK`으로 끝나므로 경합 지속 시간이 훨씬 짧을 수 있다.
@@ -245,7 +250,8 @@ V0에서 관측되는 것은 후자다.
 | --- | --- |
 | `innodb_lock_wait_timeout`, 락 경합 | `innodb_row_lock_waits`, `innodb_row_lock_time_avg` |
 | HikariCP `maximum-pool-size` | `hikaricp.connections.active`, `hikaricp.connections.pending` |
-| HikariCP `connection-timeout` | `coupon_5xx` 증가, `hikaricp.connections.timeout` |
+| HikariCP `connection-timeout` | `coupon_connection_unavailable`, `hikaricp.connections.timeout` |
+| 커밋 시점 교착 / 커넥션 획득 실패 | `coupon.issue.failure{reason="concurrency_conflict"}`, `{reason="connection_unavailable"}` |
 | 트랜잭션 직렬 구간 길이 | p95·p99 지연, TPS |
 | Tomcat 스레드 200 | `tomcat.threads.busy` |
 

@@ -1,6 +1,8 @@
 package com.uply.coupon.common.exception;
 
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.PessimisticLockingFailureException;
@@ -15,6 +17,22 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private final Counter concurrencyConflictCounter;
+    private final Counter connectionUnavailableCounter;
+
+    public GlobalExceptionHandler(MeterRegistry meterRegistry) {
+        this.concurrencyConflictCounter =
+                Counter.builder("coupon.issue.failure")
+                        .tag("reason", "concurrency_conflict")
+                        .description("발급 요청이 DB 수준 경합으로 실패한 횟수")
+                        .register(meterRegistry);
+        this.connectionUnavailableCounter =
+                Counter.builder("coupon.issue.failure")
+                        .tag("reason", "connection_unavailable")
+                        .description("발급 요청이 DB 커넥션 획득 실패로 종료된 횟수")
+                        .register(meterRegistry);
+    }
 
     @ExceptionHandler(CouponIssueException.class)
     public ResponseEntity<ApiErrorResponse> handleCouponIssue(CouponIssueException exception) {
@@ -86,7 +104,13 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(CannotCreateTransactionException.class)
     public ResponseEntity<ApiErrorResponse> handleConnectionUnavailable(
             CannotCreateTransactionException exception) {
-        log.warn("Connection unavailable on issue", exception);
+        connectionUnavailableCounter.increment();
+        log.warn(
+                "Connection unavailable on issue: type={}, message={}",
+                exception.getClass().getSimpleName(),
+                exception.getMessage());
+        // 스택 트레이스는 부하 테스트 중 I/O 비용이 크므로 디버그 레벨에서만 남긴다.
+        log.debug("Connection unavailable detail", exception);
         return response(
                 HttpStatus.SERVICE_UNAVAILABLE, "CONNECTION_UNAVAILABLE", "일시적으로 요청을 처리할 수 없습니다.");
     }
@@ -94,7 +118,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(PessimisticLockingFailureException.class)
     public ResponseEntity<ApiErrorResponse> handleConcurrencyConflict(
             PessimisticLockingFailureException exception) {
-        log.warn("Concurrency conflict on issue", exception);
+        concurrencyConflictCounter.increment();
+        log.warn(
+                "Concurrency conflict on issue: type={}, message={}",
+                exception.getClass().getSimpleName(),
+                exception.getMessage());
+        log.debug("Concurrency conflict detail", exception);
         return response(
                 HttpStatus.SERVICE_UNAVAILABLE, "CONCURRENCY_CONFLICT", "동시 요청 경합으로 처리하지 못했습니다.");
     }
