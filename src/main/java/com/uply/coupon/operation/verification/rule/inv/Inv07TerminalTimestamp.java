@@ -40,7 +40,10 @@ public class Inv07TerminalTimestamp implements InvariantRule {
               OR (status = 'CANCELLED'
                       AND used_at IS NULL AND cancelled_at IS NOT NULL AND expired_at IS NULL)
               OR (status = 'EXPIRED'
-                      AND used_at IS NULL AND cancelled_at IS NULL AND expired_at IS NOT NULL))
+                      AND used_at IS NULL AND cancelled_at IS NULL AND expired_at IS NOT NULL)
+              OR (status = 'CANCELLED'
+                      AND cancelled_at IS NOT NULL AND expired_at IS NULL)
+                      )
             """;
     }
 }

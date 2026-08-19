@@ -69,6 +69,14 @@ public class DummyDataGenerator implements CommandLineRunner {
 
     private static final int CHANGE_WINDOW_DAYS = 14;
 
+    /**
+     * 종료 캠페인의 기간. ISSUE_SPREAD_DAYS + CHANGE_WINDOW_DAYS(=28일)보다 커야 사용·취소가 유효기간 안에서 일어나 논리가 맞는다.
+     */
+    private static final int CLOSED_CAMPAIGN_DAYS = 30;
+
+    /** 진행 중 캠페인의 기간. 오늘보다 확실히 미래여야 발급이 거부되지 않는다. */
+    private static final int OPEN_CAMPAIGN_DAYS = 365;
+
     private final DataSource dataSource;
     private final ApplicationArguments appArgs;
 
@@ -214,6 +222,27 @@ public class DummyDataGenerator implements CommandLineRunner {
         return inserted;
     }
 
+    // ────────────────────────── 캠페인 기간 ──────────────────────────
+
+    /** 캠페인의 절반은 이미 끝난 기간, 절반은 진행 중으로 둔다. */
+    private boolean isClosedCampaign(long campaignId) {
+        return campaignId % 2 == 0;
+    }
+
+    private LocalDateTime campaignOpenAt(long campaignId) {
+        return baseTime;
+    }
+
+    /**
+     * 쿠폰의 만료 시각은 여기서만 나온다 insertCampaigns 와 insertCoupons 가 같은 함수를 부르게 해서, 두 곳에 같은 계산을 복사해두었다가 한쪽만
+     * 고치는 일이 없게 한다.
+     */
+    private LocalDateTime campaignExpireAt(long campaignId) {
+        return isClosedCampaign(campaignId)
+                ? baseTime.plusDays(CLOSED_CAMPAIGN_DAYS)
+                : baseTime.plusDays(OPEN_CAMPAIGN_DAYS);
+    }
+
     // ────────────────────────── campaigns ──────────────────────────
 
     /** ck_campaign_period CHECK (expire_at > open_at) 이 걸려 있으므로 순서에 주의. */
@@ -221,18 +250,34 @@ public class DummyDataGenerator implements CommandLineRunner {
         final String sql =
                 "INSERT INTO campaigns (campaign_id, name, open_at, expire_at, created_at) "
                         + "VALUES (?, ?, ?, ?, ?)";
-
+        long closed = 0;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (long c = 1; c <= campaignCount; c++) {
                 ps.setLong(1, c);
                 ps.setString(2, "특가 캠페인 " + c + "회차");
-                ps.setObject(3, baseTime);
-                ps.setObject(4, baseTime.plusDays(60));
+                ps.setObject(3, campaignOpenAt(c));
+                ps.setObject(4, campaignExpireAt(c));
                 ps.setObject(5, baseTime);
                 ps.addBatch();
+                if (isClosedCampaign(c)) {
+                    closed++;
+                }
             }
             int inserted = ps.executeBatch().length;
             conn.commit();
+
+            System.out.printf("  진행 중 %,d개 / 종료 %,d개%n", inserted - closed, closed);
+
+            // 종료 캠페인의 만료 시각이 아직 미래면 만료 배치가 처리할 게 없다.
+            // 데이터가 아니라 안내에만 쓰는 값이라 재현성에는 영향이 없다.
+            LocalDateTime closedExpireAt = baseTime.plusDays(CLOSED_CAMPAIGN_DAYS);
+            if (closed > 0 && closedExpireAt.isAfter(LocalDateTime.now())) {
+                System.out.println("  [경고] 종료 캠페인의 만료 시각이 " + closedExpireAt + " 로 아직 미래입니다.");
+                System.out.println(
+                        "         만료 배치가 처리할 대상이 없습니다. --base-time 을 "
+                                + CLOSED_CAMPAIGN_DAYS
+                                + "일 이상 과거로 잡으세요.");
+            }
             return inserted;
         } catch (SQLException e) {
             conn.rollback();
@@ -298,13 +343,6 @@ public class DummyDataGenerator implements CommandLineRunner {
         final long perCampaign = perPool * poolsPerCampaign;
         final long actualTotal = perPool * poolCount;
 
-        LocalDateTime maxEventAt = baseTime.plusDays(ISSUE_SPREAD_DAYS + CHANGE_WINDOW_DAYS);
-        if (maxEventAt.isAfter(LocalDateTime.now())) {
-            System.out.println("  [경고] 생성될 최대 이벤트 시각이 " + maxEventAt + " 로 미래입니다.");
-            System.out.println("         검증 쿼리의 created_at <= NOW() 필터에 걸려 INV-03/04 가 오검출됩니다.");
-            System.out.println("         --base-time 을 더 과거로 잡으세요.");
-        }
-
         if (perPool < 1) {
             throw new IllegalArgumentException(
                     "--coupons(" + couponCount + ") 가 재고 풀 수(" + poolCount + ") 보다 적습니다");
@@ -355,42 +393,57 @@ public class DummyDataGenerator implements CommandLineRunner {
                         couponId++;
                         userInCampaign++;
 
-                        // ① 발급 — 항상 여기서 시작한다
+                        // ① 발급 — 캠페인 오픈 이후, ISSUE_SPREAD_DAYS 안에서
                         LocalDateTime issuedAt =
-                                baseTime.plusSeconds(rnd.nextInt(ISSUE_SPREAD_DAYS * 24 * 3600));
+                                campaignOpenAt(c)
+                                        .plusSeconds(rnd.nextInt(ISSUE_SPREAD_DAYS * 24 * 3600));
 
-                        // ② 최종 상태를 분포에서 뽑되, 허용된 전이만 밟는다
+                        // ② 만료 시각은 캠페인에서 상속한다 (정책 C-1 / 인수 기준 E-4).
+                        //    발급 시각 기준 상대값으로 계산하면 같은 캠페인 쿠폰끼리 만료일이 달라진다.
+                        LocalDateTime expireAt = campaignExpireAt(c);
 
+                        // ③ 최종 상태를 분포에서 뽑되, 허용된 전이만 밟는다
                         CouponStatus status = pickStatus(rnd);
-                        LocalDateTime expireAt;
+
+                        // 아직 기간이 남은 캠페인의 쿠폰은 만료될 수 없다.
+                        // 억지로 EXPIRED 로 만들면 expired_at 이 expire_at 보다 앞서게 되어
+                        // INV-06(시각 순서)을 위반한다.
+                        if (status == CouponStatus.EXPIRED && !isClosedCampaign(c)) {
+                            status = CouponStatus.ISSUED;
+                        }
+
                         LocalDateTime usedAt = null;
                         LocalDateTime cancelledAt = null;
                         LocalDateTime expiredAt = null;
-                        LocalDateTime changedAt = null;
+
+                        final int halfWindow = CHANGE_WINDOW_DAYS / 2 * 24 * 3600;
 
                         if (status == CouponStatus.EXPIRED) {
-                            // 만료된 쿠폰은 유효기간이 짧고 이미 지나 있어야 논리가 맞는다
-                            expireAt = issuedAt.plusDays(1 + rnd.nextInt(10));
-                            changedAt = expireAt.plusMinutes(1 + rnd.nextInt(60));
-                            expiredAt = changedAt;
-                        } else {
-                            // expire_at 은 "앞으로의 마감"이라 미래여도 된다. 이벤트가 아니라서
-                            // snapshot 필터와 무관하다.
-                            expireAt = issuedAt.plusDays(7 + rnd.nextInt(84));
+                            // 만료 처리는 유효기간이 지난 뒤에 일어난다 (INV-06)
+                            expiredAt = expireAt.plusMinutes(1 + rnd.nextInt(60));
 
-                            if (status != CouponStatus.ISSUED) {
-                                // ★ 상태 변경은 발급 후 CHANGE_WINDOW_DAYS 안에서만 일어나게 한다.
-                                //    유효기간 전체로 흩으면 이벤트가 미래로 새어나가고,
-                                //    검증 쿼리의 created_at <= snapshot_at 에 걸려 제외되면서
-                                //    "마지막 이력 = ISSUED" 로 보여 INV-04 가 오검출된다.
-                                changedAt =
+                        } else if (status == CouponStatus.USED) {
+                            // 사용은 발급 후 CHANGE_WINDOW_DAYS 안에서 일어난다.
+                            // 발급 창(14일) + 변경 창(14일) = 28일 < 종료 캠페인 기간(30일)이라
+                            // 유효기간이 지난 뒤에 사용되는 일은 생기지 않는다.
+                            usedAt =
+                                    issuedAt.plusSeconds(
+                                            60 + rnd.nextInt(CHANGE_WINDOW_DAYS * 24 * 3600));
+
+                        } else if (status == CouponStatus.CANCELLED) {
+                            // 취소에는 두 경로가 있다 (팀 정책).
+                            //   항공사 일괄 취소 : ISSUED -> CANCELLED         (used_at 없음)
+                            //   예매 취소        : ISSUED -> USED -> CANCELLED (used_at 유지)
+                            // 둘 다 만들어야 INV-05 의 USED->CANCELLED 전이와
+                            // INV-07 의 완화된 CANCELLED 분기가 실제 데이터로 검증된다.
+                            // 한쪽만 만들면 규칙이 "통과" 해도 그 경로를 한 번도 안 본 것이다.
+                            if (rnd.nextBoolean()) {
+                                usedAt = issuedAt.plusSeconds(60 + rnd.nextInt(halfWindow));
+                                cancelledAt = usedAt.plusSeconds(60 + rnd.nextInt(halfWindow));
+                            } else {
+                                cancelledAt =
                                         issuedAt.plusSeconds(
                                                 60 + rnd.nextInt(CHANGE_WINDOW_DAYS * 24 * 3600));
-                                if (status == CouponStatus.USED) {
-                                    usedAt = changedAt;
-                                } else {
-                                    cancelledAt = changedAt;
-                                }
                             }
                         }
                         pc.setLong(1, couponId);
@@ -418,14 +471,39 @@ public class DummyDataGenerator implements CommandLineRunner {
                         ph.addBatch();
                         historyRows++;
 
-                        // 상태 변경 이력
-                        if (status != CouponStatus.ISSUED) {
+                        // 사용 이력 — USED 이거나, 예매 취소(USED 를 거친 CANCELLED)
+                        if (usedAt != null) {
                             ph.setLong(1, couponId);
                             ph.setString(2, CouponStatus.ISSUED.name());
-                            ph.setString(3, status.name());
+                            ph.setString(3, CouponStatus.USED.name());
                             ph.setString(4, "dummy-" + couponId + "-2");
-                            ph.setObject(5, changedAt);
-                            ph.setObject(6, changedAt);
+                            ph.setObject(5, usedAt);
+                            ph.setObject(6, usedAt);
+                            ph.addBatch();
+                            historyRows++;
+                        }
+
+                        // 종료 이력 — 취소 또는 만료. from_status 는 직전 상태를 따른다.
+                        if (cancelledAt != null) {
+                            ph.setLong(1, couponId);
+                            ph.setString(
+                                    2,
+                                    usedAt != null
+                                            ? CouponStatus.USED.name()
+                                            : CouponStatus.ISSUED.name());
+                            ph.setString(3, CouponStatus.CANCELLED.name());
+                            ph.setString(4, "dummy-" + couponId + "-3");
+                            ph.setObject(5, cancelledAt);
+                            ph.setObject(6, cancelledAt);
+                            ph.addBatch();
+                            historyRows++;
+                        } else if (expiredAt != null) {
+                            ph.setLong(1, couponId);
+                            ph.setString(2, CouponStatus.ISSUED.name());
+                            ph.setString(3, CouponStatus.EXPIRED.name());
+                            ph.setString(4, "dummy-" + couponId + "-3");
+                            ph.setObject(5, expiredAt);
+                            ph.setObject(6, expiredAt);
                             ph.addBatch();
                             historyRows++;
                         }
