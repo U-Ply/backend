@@ -1,0 +1,7 @@
+# 배치 단독 실행용.
+spring:
+  main:
+    web-application-type: none
+
+
+coupon.kafka.consumer.enabled: false
