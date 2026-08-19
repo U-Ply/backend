@@ -39,9 +39,8 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
                         .findCouponExpireAt(stockId, campaignId)
                         .orElseThrow(() -> new CampaignNotFoundException(campaignId, stockId));
 
-        // TODO: CAMPAIGN_EXPIRED 오류 코드 추가 여부를 2번과 협의 중이라 임시로 IllegalStateException 을 던진다.
         if (!expireAt.isAfter(databaseTime)) {
-            throw new IllegalStateException("쿠폰 만료 시각은 발급 시각보다 이후여야 합니다. expireAt=" + expireAt);
+            return IssueResult.fail(IssueFailReason.CAMPAIGN_EXPIRED);
         }
 
         CampaignStock stock =

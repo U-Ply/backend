@@ -22,6 +22,7 @@ public class GlobalExceptionHandler {
             case OUT_OF_STOCK -> conflict("OUT_OF_STOCK", "쿠폰 재고가 소진되었습니다.");
             case ALREADY_ISSUED -> conflict("ALREADY_ISSUED", "이미 발급받은 쿠폰입니다.");
             case CAMPAIGN_NOT_OPEN -> conflict("CAMPAIGN_NOT_OPEN", "아직 오픈되지 않은 캠페인입니다.");
+            case CAMPAIGN_EXPIRED -> conflict("CAMPAIGN_EXPIRED", "이미 종료된 캠페인입니다.");
             case DUPLICATE_REQUEST ->
                     conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS", "동일한 요청이 처리 중입니다.");
             case LOCK_TIMEOUT ->
