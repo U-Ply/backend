@@ -48,6 +48,10 @@ public class VerificationJobConfig {
         return (contribution, chunkContext) -> {
             VerificationRun run = runner.runAll(runId);
             writer.write(run);
+            // 리포트는 위에서 이미 커밋됐으므로 진단 정보는 남는다.
+            if (!run.clockValid()) {
+                throw new IllegalStateException("앱·DB 시계 이상으로 이 회차의 검증 결과를 신뢰할 수 없다.");
+            }
 
             contribution
                     .getStepExecution()
