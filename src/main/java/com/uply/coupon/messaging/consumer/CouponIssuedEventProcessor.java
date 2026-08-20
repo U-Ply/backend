@@ -23,18 +23,18 @@ public class CouponIssuedEventProcessor {
         validate(event);
 
         if (isDuplicate(event)) {
-            progressRepository.clear(event.couponId());
+            clearPendingSafely(event.couponId());
             log.info("중복 쿠폰 발급 이벤트를 건너뜁니다. couponId={}", event.couponId());
             return false;
         }
 
         try {
             persistenceService.persist(event);
-            progressRepository.clear(event.couponId());
+            clearPendingSafely(event.couponId());
             return true;
         } catch (DataIntegrityViolationException exception) {
             if (isDuplicate(event)) {
-                progressRepository.clear(event.couponId());
+                clearPendingSafely(event.couponId());
                 log.info("동시 처리된 중복 쿠폰 발급 이벤트를 건너뜁니다. couponId={}", event.couponId());
                 return false;
             }
@@ -46,6 +46,16 @@ public class CouponIssuedEventProcessor {
         return couponRepository.existsById(event.couponId())
                 || couponRepository.existsByCampaignIdAndUserId(event.campaignId(), event.userId())
                 || couponHistoryRepository.existsByIdempotencyKey(event.idempotencyKey());
+    }
+
+    private void clearPendingSafely(Long couponId) {
+        try {
+            progressRepository.clear(couponId);
+        } catch (RuntimeException exception) {
+            // DB 반영은 이미 커밋됐다. Redis 정리 실패를 Kafka 처리 실패로 전파하면
+            // 정상 저장된 이벤트가 불필요하게 재시도되거나 DLT로 이동하므로 TTL 정리에 맡긴다.
+            log.warn("pending 키 삭제에 실패했습니다. TTL 만료로 정리됩니다. couponId={}", couponId, exception);
+        }
     }
 
     private void validate(CouponIssuedEvent event) {

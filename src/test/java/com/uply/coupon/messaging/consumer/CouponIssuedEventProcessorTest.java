@@ -47,10 +47,35 @@ class CouponIssuedEventProcessorTest {
         verify(progressRepository).clear(EVENT.couponId());
     }
 
+    @Test
+    void pendingCleanupFailureDoesNotFailPersistedEvent() {
+        doThrow(new RuntimeException("Redis unavailable"))
+                .when(progressRepository)
+                .clear(EVENT.couponId());
+
+        assertThat(eventProcessor.process(EVENT)).isTrue();
+
+        verify(persistenceService).persist(EVENT);
+        verify(progressRepository).clear(EVENT.couponId());
+    }
+
     // 이미 처리한 Kafka 이벤트가 다시 들어와도 쿠폰/이력/재고를 다시 변경하지 않는지 확인하는 테스트
     @Test
     void alreadyStoredCouponIsSkipped() {
         when(couponRepository.existsById(EVENT.couponId())).thenReturn(true);
+
+        assertThat(eventProcessor.process(EVENT)).isFalse();
+
+        verify(persistenceService, never()).persist(EVENT);
+        verify(progressRepository).clear(EVENT.couponId());
+    }
+
+    @Test
+    void pendingCleanupFailureDoesNotFailDuplicateEvent() {
+        when(couponRepository.existsById(EVENT.couponId())).thenReturn(true);
+        doThrow(new RuntimeException("Redis unavailable"))
+                .when(progressRepository)
+                .clear(EVENT.couponId());
 
         assertThat(eventProcessor.process(EVENT)).isFalse();
 
