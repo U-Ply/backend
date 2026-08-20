@@ -8,6 +8,7 @@
 - 캠페인, 재고 풀과 서로 다른 테스트 사용자들이 DB에 적재되어 있어야 한다.
 - `USER_ID_START`부터 `TOTAL_REQUESTS`만큼의 사용자 ID가 연속해서 존재해야 한다.
 - Redis 전략은 `stock:{stockId}`와 `issued:{campaignId}`가 공통 초기 상태로 준비되어 있어야 한다.
+- Redis 전략은 `stockId:{campaignId}:{routeId}:{fareClass}`와 `campaign:{campaignId}:openAt`도 준비되어 있어야 한다.
 - 각 실행 전 쿠폰, 이력, DB 재고, Redis 재고와 멱등성 키를 초기화해야 한다.
 
 ## 공통 시드와 초기화
@@ -28,6 +29,12 @@ routeId      = JEJU
 fareClass    = ECONOMY
 totalStock   = 10000
 remaining    = 10000
+
+Redis keys:
+stock:1                              = 10000
+stockId:1:JEJU:ECONOMY               = 1
+campaign:1:openAt                    = DB open_at의 UTC epoch milliseconds
+issued:1                             = 비어 있음
 ```
 
 전략 또는 실행 회차를 바꾸기 전에는 다음 명령으로 실행 결과만 초기화한다.
@@ -62,6 +69,7 @@ COUPON_IDEMPOTENCY_ENABLED=false \
 mkdir -p load-tests/results
 
 k6 run \
+  -e TEST_STRATEGY=V1 \
   -e BASE_URL=http://localhost:8081 \
   -e TOTAL_REQUESTS=200 \
   -e VUS=20 \
@@ -77,6 +85,7 @@ k6 run \
 
 ```bash
 k6 run \
+  -e TEST_STRATEGY=V1 \
   -e BASE_URL=http://localhost:8081 \
   -e TOTAL_REQUESTS=20000 \
   -e VUS=500 \
@@ -106,6 +115,7 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 | `ROUTE_ID` | `JEJU` | 노선 ID |
 | `FARE_CLASS` | `ECONOMY` | 좌석 등급 |
 | `MAX_DURATION` | `10m` | 테스트 최대 실행 시간 |
+| `TEST_STRATEGY` | 필수 | 판정 대상 전략: `V0`, `V1`, `V2`, `V3` |
 
 ## 결과 확인
 
@@ -130,7 +140,11 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 | `coupon_concurrency_conflict` | 트랜잭션 커밋 단계의 DB 교착 | V1은 0건. **V0은 정상 관측값** |
 | `coupon_connection_unavailable` | 트랜잭션 시작 단계에서 커넥션 풀 획득 실패 | 0건 |
 
-`coupon_concurrency_conflict`는 V0(NoLock)에서 발생하는 것이 정상이다. 동시성 제어가 없을 때 무엇이 깨지는지 재현하는 것이 V0의 목적이므로, 이 값을 오류로 취급하면 기준선 측정이 성립하지 않는다. 그래서 threshold를 두지 않고 수치만 기록한다.
+`TEST_STRATEGY=V0`일 때 `CONCURRENCY_CONFLICT`는 예상 응답으로 check에 포함하고 threshold를 두지 않아 수치만 기록한다. `V1`~`V3`에서는 `coupon_concurrency_conflict`에 `count==0` threshold를 적용한다. `TEST_STRATEGY`를 실제 실행 전략과 다르게 지정하면 판정이 왜곡되므로 애플리케이션 설정과 반드시 맞춘다.
+
+V0 실행에는 `-e TEST_STRATEGY=V0`, 비관적 락에는 `V1`, Redis Lua + MySQL 동기 저장에는 `V2`, Redis Lua + Kafka에는 `V3`를 사용한다.
+
+V0의 `CONCURRENCY_CONFLICT`는 HTTP 상태가 503이므로 k6 기본 지표인 `http_req_failed`에는 실패로 집계된다. V0 판정에서는 `http_req_failed`만 보지 않고 `coupon_concurrency_conflict`와 전략별 check를 함께 확인한다.
 
 결과 건수는 다음 식으로 전체 요청 수와 일치해야 한다.
 
