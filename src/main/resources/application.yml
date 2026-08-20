@@ -72,7 +72,7 @@ coupon:
     scheduler-enabled: ${RECONCILIATION_SCHEDULER_ENABLED:false}
     initial-delay: ${RECONCILIATION_INITIAL_DELAY:PT1M}
     fixed-delay: ${RECONCILIATION_FIXED_DELAY:PT5M}
-    verification:
+  verification:
         # CLOCK-02 의 Redis-DB 시계 허용 오차.
         # INV-04(이력 순서) · INV-06(시각 순서) · INV-11(캠페인 기간)의 경계가 밀리초라
         # 1.0초는 너무 느슨했다. 같은 호스트의 컨테이너면 실제 drift 는 거의 0 이다.

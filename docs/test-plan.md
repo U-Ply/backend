@@ -300,10 +300,12 @@ Kafka를 사용하지 않는 전략의 Kafka 항목과 Redis를 사용하지 않
 
 비동기 경로는 Consumer lag가 0이 될 때까지 기다린 뒤 DB 정합성을 판정한다.
 
-검증 배치가 구현된 이후에는 다음 조건도 만족해야 한다.
+검증 배치가 구현된 이후에는 다음 조건도 만족해야 한다. 실행 방법은 §14를 따른다.
 
-- INV-01~INV-10 위반 0건
+- INV-01~INV-12 위반 0건
+- CLOCK-01(애플리케이션↔DB 시계) 위반 0건
 - Redis 전략은 REC-01 불일치 0건
+- Redis 시계로 발급 시각을 기록하는 회차는 CLOCK-02 위반 0건
 
 ## 8. 공통 실행 환경
 
@@ -438,7 +440,7 @@ DLT = 0건
 10. 워밍업을 실행한다.
 11. 본 테스트를 실행한다.
 12. 비동기 경로는 Consumer lag가 0이 될 때까지 기다린다.
-13. DB·Redis·Kafka 최종 상태를 검증한다.
+13. DB·Redis·Kafka 최종 상태를 검증하고, 검증 배치를 실행한다(§14).
 14. 결과와 관측 지표를 저장한다.
 15. 다음 실행 전 초기화한다.
 
@@ -453,6 +455,7 @@ DLT = 0건
   "gitCommit": "f27786d",
   "environmentId": "LOCAL-DOCKER-01",
   "strategy": "PESSIMISTIC_LOCK",
+  "round": "V1",
   "appInstances": 1,
   "totalRequests": 20000,
   "initialStock": 10000,
@@ -467,6 +470,8 @@ DLT = 0건
 | --- | ---: | ---: | ---: | ---: |
 | Git commit |  |  |  |  |
 | 환경 ID |  |  |  |  |
+| 검증 runId |  |  |  |  |
+| 검증 결과(위반 규칙) |  |  |  |  |
 | 전체 요청 |  |  |  |  |
 | 성공 |  |  |  |  |
 | `OUT_OF_STOCK` |  |  |  |  |
@@ -523,7 +528,56 @@ load-tests/results/pessimistic-vu500-run1.json
 | 1-A | NoLock·비관적 락 비교군과 관련 Level 1 테스트 |
 | 1-B | Redis Lua·Redis 동기 저장 비교군·Kafka Producer |
 | 2번 | 동기 저장과 Kafka Consumer의 DB 최종 결과 검증 |
-| 3번 | 테스트 데이터, 검증 SQL·배치, INV-01~10 및 REC-01 |
+| 3번 | 테스트 데이터, 검증 SQL·배치, INV-01~12 / CLOCK-01·02 / REC-01, 만료 배치, 관리자 API |
 | 4번 | 공통 실행 환경, k6, 모니터링, 결과 수집 및 비교표 |
 
 테스트 결과의 최종 판정은 한 담당자의 자체 기준이 아니라 이 문서의 공통 기준으로 수행한다.
+
+## 14. 검증 배치 실행
+
+### 14.1 실행 API
+
+```text
+POST /api/admin/batch/verification?runId=L2-V3-01&round=V3
+```
+
+| 파라미터 | 필수 | 허용값 | 설명 |
+| --- | --- | --- | --- |
+| runId | N | 문자열 | 미지정 시 서버가 생성한다 |
+| failOnViolation | N | true / false | 위반 시 Job 을 FAILED 로 끝낼지 결정한다 |
+| round | **Y** | V0, V1, V2, V3 | 검증 대상 회차. verification 배치에서만 필수다 |
+
+`round` 를 빠뜨리거나 허용값 밖의 값을 주면 `400 INVALID_REQUEST` 로 거절한다.
+expiration·reconcile 배치는 `round` 를 받지 않으며 응답의 `round` 는 null 이다.
+
+`runId` 는 §11 의 결과 기록과 이어지도록 `<레벨>-<회차>-<실행번호>` 형식을 쓴다.
+
+```text
+L2-V3-01
+```
+
+### 14.2 결과 조회
+
+```text
+GET /api/admin/batch/executions/{jobExecutionId}
+GET /api/admin/batch/verification/runs
+GET /api/admin/batch/verification/runs/{runId}
+GET /api/admin/batch/verification/runs/{runId}/violations?ruleCode=INV-03
+```
+
+### 14.3 회차가 판정에 영향을 주는 지점
+
+CLOCK-02(Redis↔DB 시계 드리프트)는 해당 회차가 Redis 시계로 발급 시각을 기록할 때만 판정한다.
+그렇지 않은 회차에서는 N/A 로 PASS 하며, 결과 detail 에 "Redis 경로 회차 아님 (N/A)" 을 남긴다.
+검사하지 않은 것을 통과로 기록하지 않기 위해서다.
+
+2026-08-20 기준 V0~V3 은 모두 JVM 시계로 issued_at 을 기록하므로 CLOCK-02 는 전부 N/A 다.
+Lua 가 성공 시 nowMillis 를 반환해 IssueResult → CouponSaveStrategy → Kafka 이벤트 → DB 까지
+같은 시각을 전달하는 구현이 합쳐지면 해당 회차를 usesRedisClock=true 로 올린다.
+그 전까지 실제 기록 시계는 CLOCK-01 이 검사한다.
+
+### 14.4 실행 시점
+
+§10 공통 실행 순서의 13단계(최종 상태 검증)에서 실행한다.
+비동기 경로는 Consumer lag 가 0 이 된 뒤에 실행해야 한다.
+lag 가 남은 상태로 실행하면 아직 DB 에 도착하지 않은 쿠폰 때문에 재고 불일치가 오검출된다.

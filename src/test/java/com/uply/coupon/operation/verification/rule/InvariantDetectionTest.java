@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.uply.coupon.operation.verification.InvariantFixture;
 import com.uply.coupon.operation.verification.batch.VerificationRunner;
+import com.uply.coupon.operation.verification.domain.RoundVersion;
 import com.uply.coupon.operation.verification.domain.RuleResult;
 import com.uply.coupon.operation.verification.domain.VerificationRun;
 import java.util.Arrays;
@@ -45,7 +46,7 @@ class InvariantDetectionTest {
 
     /** 미탐(해당 규칙이 잡히는가)과 오탐(다른 규칙이 안 잡히는가)을 한 번에 단정한다. */
     private void assertOnlyViolated(String runId, String... expected) {
-        VerificationRun run = runner.runAll(runId);
+        VerificationRun run = runner.runAll(runId, RoundVersion.V1);
         List<String> actual =
                 run.results().stream()
                         .filter(RuleResult::isInvariant) // CLOCK-* 은 실제 시계라 제외

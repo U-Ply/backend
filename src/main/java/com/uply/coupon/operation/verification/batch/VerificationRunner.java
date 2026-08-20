@@ -2,6 +2,7 @@ package com.uply.coupon.operation.verification.batch;
 
 import com.uply.coupon.operation.verification.domain.*;
 import com.uply.coupon.operation.verification.rule.InvariantRule;
+import jakarta.annotation.PostConstruct;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -32,17 +33,18 @@ public class VerificationRunner {
     @Value("${coupon.verification.redis-clock-tolerance-sec:0.1}")
     private double redisClockToleranceSec;
 
+    /** 설정 경로가 틀려도 @Value 기본값으로 조용히 돌아간다. 실제 적용값을 기동 시 남긴다. */
+    @PostConstruct
+    void logConfig() {
+        log.info("[검증 설정] redis-clock-tolerance-sec={}", redisClockToleranceSec);
+    }
+
     private static final int SAMPLE_LIMIT = 1000;
     private static final double CLOCK_SKEW_TOLERANCE_SEC = 5.0;
     private final ObjectProvider<RedisConnectionFactory> redisConnectionFactory;
 
     private final JdbcTemplate jdbcTemplate;
     private final List<InvariantRule> rules;
-
-    /** 기존 호출부와 규칙 검출력 테스트를 위해 남긴다. 회차 미지정 = Redis 경로 아님. */
-    public VerificationRun runAll(String runId) {
-        return runAll(runId, null);
-    }
 
     /** 모든 규칙을 하나의 일관 스냅샷 위에서 실행한다. */
     @Transactional(
@@ -176,8 +178,8 @@ public class VerificationRunner {
             double driftSec = redisMillis / 1000.0 - dbEpoch;
 
             boolean violated = Math.abs(driftSec) > redisClockToleranceSec;
-            String detail = String.format("redis_drift=%.3fs", driftSec);
-
+            String detail =
+                    String.format("redis_drift=%.3fs tol=%.3fs", driftSec, redisClockToleranceSec);
             if (violated) {
                 log.error("[CLOCK-02] Redis·DB 시계가 {} 어긋났다. 이 회차의 시각 기록을 믿을 수 없다.", detail);
             } else {

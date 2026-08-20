@@ -13,7 +13,7 @@ public enum RoundVersion {
     V1("PessimisticLock", false),
     // issued_at 이 아직 JVM 시계다. Redis TIME 통일이 확정되면 true 로 바꾼다.
     V2("Lua + MySQL 동기 저장", false),
-    V3("Lua + Kafka", true);
+    V3("Lua + Kafka", false);
 
     private final String description;
     private final boolean usesRedisClock;
