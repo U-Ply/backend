@@ -2,6 +2,7 @@ package com.uply.coupon;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 // @EnableBatchProcessing 를 붙이면 안 된다.
 // Boot 3 에서는 이 어노테이션이 Batch 자동 설정을 꺼버려서
@@ -9,6 +10,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 // 생성되지 않는다. Job 첫 실행에서 Table doesn't exist 로 죽는다.
 
 @SpringBootApplication
+@EnableScheduling
 // @EnableBatchProcessing
 public class CouponApplication {
 
