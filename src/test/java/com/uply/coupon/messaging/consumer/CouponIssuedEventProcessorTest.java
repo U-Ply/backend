@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
+import com.uply.coupon.coupon.repository.CouponIssuanceProgressRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.Instant;
@@ -33,6 +34,7 @@ class CouponIssuedEventProcessorTest {
     @Mock private CouponRepository couponRepository;
     @Mock private CouponHistoryRepository couponHistoryRepository;
     @Mock private CouponIssuedPersistenceService persistenceService;
+    @Mock private CouponIssuanceProgressRepository progressRepository;
 
     @InjectMocks private CouponIssuedEventProcessor eventProcessor;
 
@@ -42,6 +44,7 @@ class CouponIssuedEventProcessorTest {
         assertThat(eventProcessor.process(EVENT)).isTrue();
 
         verify(persistenceService).persist(EVENT);
+        verify(progressRepository).clear(EVENT.couponId());
     }
 
     // 이미 처리한 Kafka 이벤트가 다시 들어와도 쿠폰/이력/재고를 다시 변경하지 않는지 확인하는 테스트
@@ -52,6 +55,7 @@ class CouponIssuedEventProcessorTest {
         assertThat(eventProcessor.process(EVENT)).isFalse();
 
         verify(persistenceService, never()).persist(EVENT);
+        verify(progressRepository).clear(EVENT.couponId());
     }
 
     // 동시에 들어온 정보 중 먼저 성공한 처리만 인정하고 늦게 들어온 중복 처리는 추가 반영 없이 정상 종료한는 확인하는 테스트
@@ -63,6 +67,7 @@ class CouponIssuedEventProcessorTest {
                 .persist(EVENT);
 
         assertThat(eventProcessor.process(EVENT)).isFalse();
+        verify(progressRepository).clear(EVENT.couponId());
     }
 
     // 멱등성 키가 비어 있는 이벤트를 DB 저장 전에 차단하는지 확인
@@ -74,6 +79,7 @@ class CouponIssuedEventProcessorTest {
 
         assertThatThrownBy(() -> eventProcessor.process(EVENT))
                 .isInstanceOf(DataIntegrityViolationException.class);
+        verify(progressRepository, never()).clear(EVENT.couponId());
     }
 
     // 필수 값이 잘못된 이벤트를 저장 전 차단하는지 확인하는 테스트
@@ -87,5 +93,6 @@ class CouponIssuedEventProcessorTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("idempotencyKey");
         verify(persistenceService, never()).persist(invalidEvent);
+        verify(progressRepository, never()).clear(invalidEvent.couponId());
     }
 }

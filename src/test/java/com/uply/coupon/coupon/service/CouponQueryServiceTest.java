@@ -9,12 +9,14 @@ import static org.mockito.Mockito.verify;
 
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository.RouteFareProjection;
+import com.uply.coupon.common.exception.CouponNotFoundException;
 import com.uply.coupon.common.exception.CouponNotReadyException;
 import com.uply.coupon.common.exception.UserNotFoundException;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.response.CouponDetailResponse;
 import com.uply.coupon.coupon.dto.response.UserCouponListResponse;
+import com.uply.coupon.coupon.repository.CouponIssuanceProgressRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.user.repository.UserRepository;
 import java.time.LocalDateTime;
@@ -41,13 +43,18 @@ class CouponQueryServiceTest {
     @Mock private CampaignStockRepository campaignStockRepository;
     @Mock private RouteFareProjection routeFareProjection;
     @Mock private UserRepository userRepository;
+    @Mock private CouponIssuanceProgressRepository progressRepository;
 
     private CouponQueryService couponQueryService;
 
     @BeforeEach
     void setUp() {
         couponQueryService =
-                new CouponQueryService(couponRepository, campaignStockRepository, userRepository);
+                new CouponQueryService(
+                        couponRepository,
+                        campaignStockRepository,
+                        userRepository,
+                        progressRepository);
     }
 
     // 쿠폰 단건 조회 시 현재 상태, 재고 정보, 미발생 상태 시각이 응답에 올바르게 매핑되는지 검증한다.
@@ -104,6 +111,7 @@ class CouponQueryServiceTest {
         given(couponRepository.findById(COUPON_ID))
                 .willReturn(Optional.empty())
                 .willReturn(Optional.of(coupon));
+        given(progressRepository.isPending(COUPON_ID)).willReturn(true);
         given(campaignStockRepository.findRouteFareByStockIdAndCampaignId(STOCK_ID, CAMPAIGN_ID))
                 .willReturn(Optional.of(routeFareProjection));
         given(routeFareProjection.getRouteId()).willReturn("ICN-JEJ");
@@ -119,11 +127,41 @@ class CouponQueryServiceTest {
     @Test
     void couponMissingAfterFourLookupsReturnsNotReady() {
         given(couponRepository.findById(COUPON_ID)).willReturn(Optional.empty());
+        given(progressRepository.isPending(COUPON_ID)).willReturn(true);
 
         assertThatThrownBy(() -> couponQueryService.getCoupon(COUPON_ID))
                 .isInstanceOf(CouponNotReadyException.class)
                 .hasMessageContaining(String.valueOf(COUPON_ID));
         verify(couponRepository, times(4)).findById(COUPON_ID);
+    }
+
+    // DB와 Redis pending 키에 모두 없는 couponId는 COUPON_NOT_FOUND로 처리하는지 검증한다.
+    @Test
+    void couponMissingWithoutPendingStateReturnsNotFound() {
+        given(couponRepository.findById(COUPON_ID)).willReturn(Optional.empty());
+        given(progressRepository.isPending(COUPON_ID)).willReturn(false);
+
+        assertThatThrownBy(() -> couponQueryService.getCoupon(COUPON_ID))
+                .isInstanceOf(CouponNotFoundException.class)
+                .hasMessageContaining(String.valueOf(COUPON_ID));
+        verify(couponRepository, times(2)).findById(COUPON_ID);
+    }
+
+    // 첫 조회 직후 Consumer가 커밋하고 pending 키를 삭제한 경우 DB 재확인으로 쿠폰을 반환하는지 검증한다.
+    @Test
+    void couponCommittedWhilePendingStateIsClearedIsReturned() {
+        Coupon coupon = coupon();
+        given(couponRepository.findById(COUPON_ID))
+                .willReturn(Optional.empty())
+                .willReturn(Optional.of(coupon));
+        given(progressRepository.isPending(COUPON_ID)).willReturn(false);
+        given(campaignStockRepository.findRouteFareByStockIdAndCampaignId(STOCK_ID, CAMPAIGN_ID))
+                .willReturn(Optional.of(routeFareProjection));
+
+        CouponDetailResponse response = couponQueryService.getCoupon(COUPON_ID);
+
+        assertThat(response.couponId()).isEqualTo(String.valueOf(COUPON_ID));
+        verify(couponRepository, times(2)).findById(COUPON_ID);
     }
 
     // 요청한 사용자의 쿠폰만 목록 응답 DTO로 변환하고 단건 조회는 실행하지 않는지 검증한다.

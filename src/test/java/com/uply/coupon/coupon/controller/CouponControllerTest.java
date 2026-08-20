@@ -229,6 +229,17 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_READY"));
     }
 
+    // DB와 Redis 발급 진행 기록에 모두 없는 쿠폰은 404 COUPON_NOT_FOUND를 반환하는지 검증한다.
+    @Test
+    void couponNotFoundReturns404() throws Exception {
+        given(couponQueryService.getCoupon(COUPON_ID))
+                .willThrow(new CouponNotFoundException(COUPON_ID));
+
+        mockMvc.perform(get("/api/coupons/{couponId}", COUPON_ID))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_FOUND"));
+    }
+
     private String validRequest() {
         return """
                 {
