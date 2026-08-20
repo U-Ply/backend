@@ -8,4 +8,6 @@ public record CouponIssuedEvent(
         Long campaignId,
         Long stockId,
         String idempotencyKey,
-        Instant issuedAt) {}
+        Instant issuedAt
+        // LocalDateTime expireAt
+        ) {}
