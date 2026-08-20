@@ -88,6 +88,10 @@ load-tests/results/<strategy>-vu<vus>-run<run>.json
 | Kafka 종료 시 Consumer lag | N/A 또는 0 |  |  |
 | Kafka DLT | N/A 또는 0 |  |  |
 | Kafka DB 최종 반영 시간 | N/A |  |  |
+| verificationJob 상태 | COMPLETED |  |  |
+| INV-01~12 실패 규칙 수 | 0 |  |  |
+| CLOCK-01 | PASS |  |  |
+| CLOCK-02 | PASS 또는 N/A |  |  |
 | REC-01 불일치 | N/A 또는 0 |  |  |
 
 검증 명령:
@@ -97,6 +101,15 @@ docker exec -i coupon-mysql mysql -uroot -proot1234 < load-tests/sql/verify-leve
 docker exec coupon-redis redis-cli GET stock:1
 docker exec coupon-redis redis-cli SCARD issued:1
 ```
+
+검증 배치 기록:
+
+| 항목 | 값 |
+| --- | --- |
+| verification runId |  |
+| verification jobExecutionId |  |
+| reconcile jobExecutionId |  |
+| 검증 결과 조회 또는 캡처 링크 |  |
 
 ## 5. 관측 지표
 

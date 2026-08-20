@@ -1,6 +1,6 @@
 # k6 부하 테스트
 
-`issue-level2.js`는 NoLock, 비관적 락, Redis Lua + MySQL 동기 저장 전략에 공통으로 사용하는 Level 2 발급 스크립트다. 전략은 애플리케이션의 `COUPON_STRATEGY` 설정으로 변경하며 k6 스크립트는 변경하지 않는다.
+`issue-level2.js`는 V0 NoLock부터 V3 Redis Lua + Kafka까지 네 전략에 공통으로 사용하는 Level 2 발급 스크립트다. 발급 및 저장 전략은 애플리케이션 설정으로 변경하며 k6 스크립트는 변경하지 않는다.
 
 ## 사전 조건
 
@@ -8,7 +8,7 @@
 - 캠페인, 재고 풀과 서로 다른 테스트 사용자들이 DB에 적재되어 있어야 한다.
 - `USER_ID_START`부터 `TOTAL_REQUESTS`만큼의 사용자 ID가 연속해서 존재해야 한다.
 - Redis 전략은 `stock:{stockId}`와 `issued:{campaignId}`가 공통 초기 상태로 준비되어 있어야 한다.
-- Redis 전략은 `stockId:{campaignId}:{routeId}:{fareClass}`와 `campaign:{campaignId}:openAt`도 준비되어 있어야 한다.
+- Redis 전략은 `stockId:{campaignId}:{routeId}:{fareClass}`, `campaign:{campaignId}:openAt`, `campaign:{campaignId}:expireAt`도 준비되어 있어야 한다.
 - 각 실행 전 쿠폰, 이력, DB 재고, Redis 재고와 멱등성 키를 초기화해야 한다.
 
 ## 공통 시드와 초기화
@@ -34,6 +34,7 @@ Redis keys:
 stock:1                              = 10000
 stockId:1:JEJU:ECONOMY               = 1
 campaign:1:openAt                    = DB open_at의 UTC epoch milliseconds
+campaign:1:expireAt                  = DB expire_at의 UTC epoch milliseconds
 issued:1                             = 비어 있음
 ```
 
@@ -147,12 +148,16 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 3. V2 환경변수로 애플리케이션을 실행한다.
 4. `TEST_STRATEGY=V2`로 k6를 실행한다.
 5. k6가 끝나면 바로 MySQL과 Redis 정합성을 확인한다. V2는 MySQL 동기 저장이므로 별도 정착 대기가 필요 없다.
-6. REC-01을 실행하고 결과를 저장한다.
+6. `round=V2`로 verificationJob을 실행해 MySQL 내부 정합성을 검증한다.
+7. REC-01을 실행해 Redis와 MySQL 재고를 대사하고 두 배치 결과를 저장한다.
 
 ```bash
 docker exec -i coupon-mysql mysql -uroot -proot1234 < load-tests/sql/verify-level2.sql
 docker exec coupon-redis redis-cli GET stock:1
 docker exec coupon-redis redis-cli SCARD issued:1
+
+curl -X POST \
+  "http://localhost:8081/api/admin/batch/verification?runId=L2-V2-01&round=V2&failOnViolation=true"
 
 curl -X POST "http://localhost:8081/api/admin/batch/reconcile?failOnViolation=true"
 ```
@@ -172,7 +177,9 @@ curl "http://localhost:8081/api/admin/batch/executions/{jobExecutionId}"
 5. `TEST_STRATEGY=V3`로 k6를 실행한다.
 6. k6 종료 시각부터 MySQL 쿠폰 수가 성공 응답 수에 도달할 때까지 걸린 시간을 기록한다.
 7. Consumer lag가 0이고 DLT가 0건인지 확인한다.
-8. MySQL과 Redis 정합성을 확인한 뒤 REC-01을 실행한다.
+8. MySQL과 Redis의 기초 정합성 수치를 확인한다.
+9. `round=V3`로 verificationJob을 실행해 MySQL 내부 정합성을 검증한다.
+10. REC-01을 실행해 Redis와 MySQL 재고를 대사하고 두 배치 결과를 저장한다.
 
 Consumer lag 확인:
 
@@ -201,7 +208,23 @@ docker exec coupon-mysql mysql -ucoupon -pcoupon1234 coupon_db \
   -Nse "SELECT COUNT(*) FROM coupons WHERE stock_id = 1;"
 ```
 
-쿠폰 수가 k6의 `coupon_issued`와 같고 lag와 DLT가 모두 0이 된 후에만 최종 검증 및 REC-01 결과를 판정한다.
+쿠폰 수가 k6의 `coupon_issued`와 같고 lag와 DLT가 모두 0이 된 후에만 다음 검증 배치를 실행한다.
+
+```bash
+curl -X POST \
+  "http://localhost:8081/api/admin/batch/verification?runId=L2-V3-01&round=V3&failOnViolation=true"
+
+curl -X POST "http://localhost:8081/api/admin/batch/reconcile?failOnViolation=true"
+```
+
+각 실행 응답의 `jobExecutionId`로 배치 완료 여부를 확인하고, verificationJob의 `runId`로 규칙별 결과를 조회한다.
+
+```bash
+curl "http://localhost:8081/api/admin/batch/executions/{jobExecutionId}"
+curl "http://localhost:8081/api/admin/batch/verification/runs/L2-V3-01"
+```
+
+V2에서는 마지막 URL의 `runId`를 `L2-V2-01`로 바꾼다. 재실행할 때는 DB의 `uk_run_rule(run_id, rule_code)`와 충돌하지 않도록 실행 번호를 올린다.
 
 ## 환경변수
 
