@@ -3,12 +3,14 @@ package com.uply.coupon.messaging.consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.uply.coupon.coupon.repository.CouponIssuanceProgressRepository;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -22,6 +24,7 @@ class CouponIssuedEventProcessorIntegrationTest {
 
     @Autowired private CouponIssuedEventProcessor eventProcessor;
     @Autowired private JdbcTemplate jdbcTemplate;
+    @MockBean private CouponIssuanceProgressRepository progressRepository;
 
     // 각 테스트 전에 기존 데이터를 삭제하고 사용자/캠페인/재고 시드 생성
     @BeforeEach

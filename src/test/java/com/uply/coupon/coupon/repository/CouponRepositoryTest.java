@@ -8,6 +8,7 @@ import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
+import com.uply.coupon.user.repository.UserRepository;
 import jakarta.persistence.EntityManager;
 import java.sql.Statement;
 import java.time.LocalDateTime;
@@ -20,6 +21,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -29,6 +31,7 @@ import org.springframework.test.context.ActiveProfiles;
 @DataJpaTest
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Import(UserRepository.class)
 class CouponRepositoryTest {
 
     private static final AtomicLong COUPON_ID_SEQUENCE = new AtomicLong(8_000_000_000_000L);
@@ -36,6 +39,7 @@ class CouponRepositoryTest {
     @Autowired private CouponRepository couponRepository;
     @Autowired private CampaignRepository campaignRepository;
     @Autowired private CampaignStockRepository campaignStockRepository;
+    @Autowired private UserRepository userRepository;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private EntityManager entityManager;
 
@@ -101,6 +105,52 @@ class CouponRepositoryTest {
         assertThat(unchangedCoupon.getStatus()).isEqualTo(currentStatus);
     }
 
+    // 특정 사용자의 쿠폰만 발급 시각과 쿠폰 ID 기준 최신순으로 조회되는지 검증한다.
+    @Test
+    void findsOnlyRequestedUsersCouponsInLatestOrder() {
+        Long targetUserId = createUser();
+        LocalDateTime now = LocalDateTime.now();
+        Coupon olderCoupon =
+                createCoupon(
+                        campaign, stock, targetUserId, CouponStatus.ISSUED, now.minusMinutes(1));
+
+        Campaign otherCampaign = createCampaign("사용자 쿠폰 목록 테스트 캠페인");
+        CampaignStock otherStock = createStock(otherCampaign);
+        Coupon newerCoupon =
+                createCoupon(otherCampaign, otherStock, targetUserId, CouponStatus.ISSUED, now);
+        createCoupon(campaign, stock, CouponStatus.ISSUED);
+
+        entityManager.clear();
+
+        List<Coupon> coupons =
+                couponRepository.findAllByUserIdOrderByIssuedAtDescCouponIdDesc(targetUserId);
+
+        assertThat(coupons)
+                .extracting(Coupon::getCouponId)
+                .containsExactly(newerCoupon.getCouponId(), olderCoupon.getCouponId());
+    }
+
+    // 재고 ID와 캠페인 ID로 노선과 좌석 등급 Projection을 조회하는지 검증한다.
+    @Test
+    void findsRouteAndFareByStockAndCampaign() {
+        CampaignStockRepository.RouteFareProjection routeFare =
+                campaignStockRepository
+                        .findRouteFareByStockIdAndCampaignId(stock.getId(), campaign.getId())
+                        .orElseThrow();
+
+        assertThat(routeFare.getRouteId()).isEqualTo("ICN-JEJ");
+        assertThat(routeFare.getFareClass()).isEqualTo("ECONOMY");
+    }
+
+    // users 테이블의 기본키를 기준으로 사용자 존재 여부를 정확히 확인하는지 검증한다.
+    @Test
+    void checksWhetherUserExists() {
+        Long existingUserId = createUser();
+
+        assertThat(userRepository.existsById(existingUserId)).isTrue();
+        assertThat(userRepository.existsById(Long.MAX_VALUE)).isFalse();
+    }
+
     private Campaign createCampaign(String name) {
         LocalDateTime now = LocalDateTime.now();
         return campaignRepository.saveAndFlush(
@@ -124,22 +174,31 @@ class CouponRepositoryTest {
     private Coupon createCoupon(
             Campaign targetCampaign, CampaignStock targetStock, CouponStatus status) {
         LocalDateTime now = LocalDateTime.now();
+        return createCoupon(targetCampaign, targetStock, createUser(), status, now);
+    }
+
+    private Coupon createCoupon(
+            Campaign targetCampaign,
+            CampaignStock targetStock,
+            Long userId,
+            CouponStatus status,
+            LocalDateTime issuedAt) {
         Coupon coupon =
                 Coupon.issue(
                         COUPON_ID_SEQUENCE.incrementAndGet(),
-                        createUser(),
+                        userId,
                         targetCampaign.getId(),
                         targetStock.getId(),
-                        now,
-                        now.plusDays(7));
+                        issuedAt,
+                        issuedAt.plusDays(7));
 
         switch (status) {
             case ISSUED -> {
                 // 발급 상태를 그대로 유지한다.
             }
-            case USED -> coupon.use(now.plusMinutes(1));
-            case CANCELLED -> coupon.cancel(now.plusMinutes(1));
-            case EXPIRED -> coupon.expire(now.plusMinutes(1));
+            case USED -> coupon.use(issuedAt.plusMinutes(1));
+            case CANCELLED -> coupon.cancel(issuedAt.plusMinutes(1));
+            case EXPIRED -> coupon.expire(issuedAt.plusMinutes(1));
         }
 
         return couponRepository.saveAndFlush(coupon);

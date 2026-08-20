@@ -13,6 +13,8 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
 
     boolean existsByCampaignIdAndUserId(Long campaignId, Long userId);
 
+    List<Coupon> findAllByUserIdOrderByIssuedAtDescCouponIdDesc(Long userId);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             """
