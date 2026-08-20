@@ -42,7 +42,7 @@ class AdminBatchControllerTest {
 
     @Test
     void runningBatchReturnsCommonConflictResponse() throws Exception {
-        given(launchService.launch("verificationJob", null, null))
+        given(launchService.launch("verificationJob", null, null, null))
                 .willThrow(new BatchConflictException("verificationJob 이 이미 실행 중이다."));
 
         mockMvc.perform(post("/api/admin/batch/verification"))
@@ -54,7 +54,7 @@ class AdminBatchControllerTest {
 
     @Test
     void unsupportedBatchReturnsCommonNotImplementedResponse() throws Exception {
-        given(launchService.launch("stockReconcileJob", null, null))
+        given(launchService.launch("stockReconcileJob", null, null, null))
                 .willThrow(new BatchNotImplementedException("stockReconcileJob 은 아직 구현되지 않았다."));
 
         mockMvc.perform(post("/api/admin/batch/reconcile"))

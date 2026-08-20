@@ -81,7 +81,14 @@ tasks.named('test') {
     environment 'DB_NAME', 'coupon_db_test'
     // 시각 판정을 DB NOW(3)와 맞추기 위해 테스트 JVM도 UTC로 고정한다.
     systemProperty 'user.timezone', 'UTC'
+
+      testLogging {                                  // ← 추가
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+    }
 }
+
+
 
 tasks.named('bootRun') {
     systemProperty 'user.timezone', 'UTC'
