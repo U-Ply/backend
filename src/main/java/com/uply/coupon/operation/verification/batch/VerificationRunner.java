@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -20,21 +21,35 @@ import org.springframework.transaction.annotation.*;
 @Component
 @RequiredArgsConstructor
 public class VerificationRunner {
+    /**
+     * Redis-DB 시계 허용 오차.
+     *
+     * <p>INV-04(이력 순서) · INV-06(시각 순서) · INV-11(캠페인 기간)의 경계가 밀리초라 1.0초는 너무 느슨했다. 같은 호스트의 컨테이너면 실제
+     * drift 는 거의 0 이다.
+     *
+     * <p>측정값은 순수 시계 차이가 아니다. Redis TIME 과 NOW(3) 를 순차로 읽으므로 왕복 2회가 섞인다. 허용치는 그 잡음보다 크게 잡는다.
+     */
+    @Value("${coupon.verification.redis-clock-tolerance-sec:0.1}")
+    private double redisClockToleranceSec;
 
     private static final int SAMPLE_LIMIT = 1000;
     private static final double CLOCK_SKEW_TOLERANCE_SEC = 5.0;
-    private static final double REDIS_CLOCK_TOLERANCE_SEC = 1.0;
     private final ObjectProvider<RedisConnectionFactory> redisConnectionFactory;
 
     private final JdbcTemplate jdbcTemplate;
     private final List<InvariantRule> rules;
+
+    /** 기존 호출부와 규칙 검출력 테스트를 위해 남긴다. 회차 미지정 = Redis 경로 아님. */
+    public VerificationRun runAll(String runId) {
+        return runAll(runId, null);
+    }
 
     /** 모든 규칙을 하나의 일관 스냅샷 위에서 실행한다. */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
             isolation = Isolation.REPEATABLE_READ,
             readOnly = true)
-    public VerificationRun runAll(String runId) {
+    public VerificationRun runAll(String runId, RoundVersion round) {
 
         // read view 는 '첫 consistent read' 에 열린다. SELECT NOW() 는 InnoDB 테이블을
         // 읽지 않아 뷰를 고정하지 못한다. 그래서 작은 테이블을 한 번 읽어 시점을 못박는다.
@@ -46,7 +61,7 @@ public class VerificationRunner {
 
         List<RuleResult> results = new ArrayList<>();
         results.add(checkClock());
-        results.add(checkRedisClock());
+        results.add(checkRedisClock(round != null && round.usesRedisClock()));
 
         List<InvariantRule> ordered =
                 rules.stream().sorted(Comparator.comparing(InvariantRule::code)).toList();
@@ -134,16 +149,24 @@ public class VerificationRunner {
     /**
      * Redis 와 DB 의 시계 오차를 잰다.
      *
-     * <p>Lua 경로는 오픈/만료를 Redis TIME 으로, DB 경로는 NOW(3) 로 판정한다. 두 시계가 어긋나면 같은 요청에 전략마다 다른 답이 나온다. 인수
-     * 기준 E-2(만료 정각) / E-3(만료 1초 후)이 1초 경계를 재므로, 허용 오차를 그보다 크게 잡으면 그 테스트가 의미를 잃는다.
+     * <p>Redis 경로 회차(V3)는 coupons.issued_at 과 coupon_history.event_at 을 Redis 시계로 기록한다. Redis-DB
+     * drift 가 곧 INV-04 · INV-06 · INV-11 의 오차가 되므로 그 회차에서만 판정 대상으로 올린다.
      *
-     * <p>Redis 가 없거나 닿지 않으면 위반이 아니라 N/A 로 기록한다. INV 규칙은 MySQL 만으로 성립하므로, Redis 를 쓰지 않는 V0/V1 회차에서
-     * 없는 문제를 만들면 안 된다.
+     * <p>Redis 컨테이너는 V0/V1 회차에도 떠 있다. 연결 가능 여부로 판단하면 Redis 를 쓰지 않는 회차에서 없는 문제를 만든다. 그래서 회차 버전으로
+     * 가른다.
+     *
+     * <p>측정값은 순수 시계 차이가 아니다. Redis TIME 과 NOW(3) 를 순차로 읽으므로 왕복 2회가 섞인다.
      */
-    private RuleResult checkRedisClock() {
+    private RuleResult checkRedisClock(boolean applicable) {
+
+        if (!applicable) {
+            return clockResult("CLOCK-02", "Redis 경로 회차 아님 (N/A)", false);
+        }
+
         RedisConnectionFactory factory = redisConnectionFactory.getIfAvailable();
         if (factory == null) {
-            return clockResult("CLOCK-02", "Redis 미구성 (N/A)", false);
+            // Redis 경로 회차라고 선언했는데 Redis 가 없다 = 설정 오류. 통과가 아니라 위반이다.
+            return clockResult("CLOCK-02", "Redis 필요한 회차인데 미구성", true);
         }
 
         try (RedisConnection connection = factory.getConnection()) {
@@ -152,21 +175,19 @@ public class VerificationRunner {
                     jdbcTemplate.queryForObject("SELECT UNIX_TIMESTAMP(NOW(3))", Double.class);
             double driftSec = redisMillis / 1000.0 - dbEpoch;
 
-            boolean violated = Math.abs(driftSec) > REDIS_CLOCK_TOLERANCE_SEC;
+            boolean violated = Math.abs(driftSec) > redisClockToleranceSec;
             String detail = String.format("redis_drift=%.3fs", driftSec);
 
             if (violated) {
-                log.error(
-                        "[CLOCK-02] Redis·DB 시계가 {} 어긋났다. " + "Lua 경로와 DB 경로의 만료 판정이 갈릴 수 있다.",
-                        detail);
+                log.error("[CLOCK-02] Redis·DB 시계가 {} 어긋났다. 이 회차의 시각 기록을 믿을 수 없다.", detail);
             } else {
                 log.info("[CLOCK-02] {}", detail);
             }
             return clockResult("CLOCK-02", detail, violated);
 
         } catch (Exception e) {
-            log.warn("[CLOCK-02] Redis 에 닿지 못했다 — {}", e.getMessage());
-            return clockResult("CLOCK-02", "Redis 연결 실패 (N/A)", false);
+            log.error("[CLOCK-02] Redis 경로 회차인데 Redis 에 닿지 못했다 — {}", e.getMessage());
+            return clockResult("CLOCK-02", "Redis 연결 실패", true);
         }
     }
 

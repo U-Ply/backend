@@ -51,7 +51,14 @@ class VerificationJobIntegrationTest {
     }
 
     private JobParameters params(String runId, String failOnViolation) {
-        var b = new JobParametersBuilder().addString("runId", runId);
+        return params(runId, failOnViolation, "V1");
+    }
+
+    private JobParameters params(String runId, String failOnViolation, String round) {
+        var b =
+                new JobParametersBuilder()
+                        .addString("runId", runId)
+                        .addString("round", round, false);
         if (failOnViolation != null) b.addString("failOnViolation", failOnViolation, false);
         return b.toJobParameters();
     }
@@ -124,5 +131,30 @@ class VerificationJobIntegrationTest {
                         "SELECT detail FROM verification_violation WHERE run_id='job-detail' AND rule_code='INV-03'",
                         String.class);
         assertThat(detail).contains("remaining=7").contains("expected=6");
+    }
+
+    @Test
+    @DisplayName("round 를 빠뜨리면 실패한다 - 조용히 넘어가면 안 된다")
+    void round_required() throws Exception {
+        var p = new JobParametersBuilder().addString("runId", "job-noround").toJobParameters();
+        assertThat(utils.launchJob(p).getStatus()).isEqualTo(BatchStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("알 수 없는 round 는 실패한다 - 오타가 N/A 로 새면 안 된다")
+    void round_typo_rejected() throws Exception {
+        assertThat(utils.launchJob(params("job-typo", null, "V9")).getStatus())
+                .isEqualTo(BatchStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("DB 경로 회차에서 CLOCK-02 는 N/A 다")
+    void clock02_na_on_db_round() throws Exception {
+        utils.launchJob(params("job-v1", null, "V1"));
+        String name =
+                jdbc.queryForObject(
+                        "SELECT rule_name FROM verification_report WHERE run_id='job-v1' AND rule_code='CLOCK-02'",
+                        String.class);
+        assertThat(name).contains("N/A");
     }
 }

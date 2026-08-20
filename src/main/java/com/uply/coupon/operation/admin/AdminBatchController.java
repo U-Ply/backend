@@ -38,7 +38,8 @@ public class AdminBatchController {
     public ResponseEntity<?> launch(
             @PathVariable String jobKey,
             @RequestParam(required = false) String runId,
-            @RequestParam(required = false) Boolean failOnViolation)
+            @RequestParam(required = false) Boolean failOnViolation,
+            @RequestParam(required = false) String round)
             throws Exception {
 
         String jobName = JOB_KEYS.get(jobKey);
@@ -46,7 +47,7 @@ public class AdminBatchController {
             throw new BatchInvalidRequestException("알 수 없는 배치: " + jobKey);
         }
 
-        JobExecution execution = launchService.launch(jobName, runId, failOnViolation);
+        JobExecution execution = launchService.launch(jobName, runId, failOnViolation, round);
         String assignedRunId = execution.getJobParameters().getString("runId");
 
         log.info(

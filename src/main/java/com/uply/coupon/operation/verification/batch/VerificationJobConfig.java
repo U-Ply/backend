@@ -32,7 +32,7 @@ public class VerificationJobConfig {
     @Bean
     public Step verificationStep() {
         return new StepBuilder("verificationStep", jobRepository)
-                .tasklet(verificationTasklet(null, null), transactionManager)
+                .tasklet(verificationTasklet(null, null, null), transactionManager)
                 .build();
     }
 
@@ -40,17 +40,23 @@ public class VerificationJobConfig {
     @StepScope
     public Tasklet verificationTasklet(
             @Value("#{jobParameters['runId']}") String runId,
-            @Value("#{jobParameters['failOnViolation']}") String failOnViolation) {
+            @Value("#{jobParameters['failOnViolation']}") String failOnViolation,
+            @Value("#{jobParameters['round']}") String roundParam) {
 
         // 기본은 실패시킨다. 명시적으로 false 를 넘긴 회차만 기록 전용이 된다.
         boolean shouldFail = !"false".equalsIgnoreCase(failOnViolation);
 
         return (contribution, chunkContext) -> {
-            VerificationRun run = runner.runAll(runId);
+            // 진입 경로가 API/커맨드라인 둘이라 여기서도 막는다.
+            // 빠뜨리면 CLOCK-02 가 N/A 로 조용히 넘어가 검사가 안 된 채 통과한다.
+            RoundVersion round = RoundVersion.parse(roundParam);
+
+            VerificationRun run = runner.runAll(runId, round);
             writer.write(run);
-            // 리포트는 위에서 이미 커밋됐으므로 진단 정보는 남는다.
+
             if (!run.clockValid()) {
-                throw new IllegalStateException("앱·DB 시계 이상으로 이 회차의 검증 결과를 신뢰할 수 없다.");
+                throw new IllegalStateException(
+                        "시계 정합성 위반으로 이 회차의 검증 결과를 신뢰할 수 없다. round=" + round);
             }
 
             contribution
