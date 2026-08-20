@@ -16,6 +16,10 @@ import static org.mockito.Mockito.verify;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -28,6 +32,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Answers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -41,6 +46,10 @@ class LuaScriptIssueStrategyUnitTest {
     @Mock private CouponIdGenerator couponIdGenerator;
 
     @Mock private CouponSaveStrategy couponSaveStrategy;
+    
+ // [추가] 인메모리 MeterRegistry를 @Spy로 선언하여 Mockito가 @InjectMocks에 자동 주입하도록 설정
+    @Spy
+    private MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @InjectMocks private LuaScriptIssueStrategy luaScriptIssueStrategy;
 
@@ -54,6 +63,10 @@ class LuaScriptIssueStrategyUnitTest {
         expireAt =
                 LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
 
+        // [추가] 모든 campaign expireAt 조회 요청에 대해 정상 EpochMilli 문자열을 반환하도록 공통 설정
+        given(redisTemplate.opsForValue().get(anyString()))
+                .willReturn(String.valueOf(expireAtEpochMillis));
+        
         luaScriptIssueStrategy.init();
     }
 
@@ -70,10 +83,6 @@ class LuaScriptIssueStrategyUnitTest {
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
                 .willReturn(List.of(1L));
-
-        // Redis expireAt 조회 설정
-        given(redisTemplate.opsForValue().get("campaign:" + campaignId + ":expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -230,11 +239,7 @@ class LuaScriptIssueStrategyUnitTest {
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
                 .willReturn(List.of(1L));
 
-        // 2. Redis expireAt 조회 설정
-        given(redisTemplate.opsForValue().get("campaign:" + campaignId + ":expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
-
-        // 3. Kafka 이벤트 발행 실패(KAFKA_PUBLISH_FAILED) 예외 발생 모킹
+        // 2. Kafka 이벤트 발행 실패(KAFKA_PUBLISH_FAILED) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED))
                 .given(couponSaveStrategy)
                 .save(
@@ -276,11 +281,7 @@ class LuaScriptIssueStrategyUnitTest {
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
                 .willReturn(List.of(1L));
 
-        // 2. Redis expireAt 조회 설정
-        given(redisTemplate.opsForValue().get("campaign:" + campaignId + ":expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
-
-        // 3. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
+        // 2. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN))
                 .given(couponSaveStrategy)
                 .save(
