@@ -98,6 +98,17 @@ public class GlobalExceptionHandler {
         return response(HttpStatus.NOT_FOUND, exception.getErrorCode(), exception.getMessage());
     }
 
+    @ExceptionHandler(CouponNotReadyException.class)
+    public ResponseEntity<ApiErrorResponse> handleCouponNotReady(
+            CouponNotReadyException exception) {
+        return conflict(exception.getErrorCode(), exception.getMessage());
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleUserNotFound(UserNotFoundException exception) {
+        return response(HttpStatus.NOT_FOUND, exception.getErrorCode(), exception.getMessage());
+    }
+
     @ExceptionHandler(InvalidStateTransitionException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidStateTransition(
             InvalidStateTransitionException exception) {

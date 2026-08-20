@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.uply.coupon.coupon.controller.CouponController;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
+import com.uply.coupon.coupon.service.CouponQueryService;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -35,7 +36,9 @@ class GlobalExceptionHandlerTest {
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CouponController(
-                                        couponService, mock(CouponStateTransitionService.class)))
+                                        couponService,
+                                        mock(CouponStateTransitionService.class),
+                                        mock(CouponQueryService.class)))
                         .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
                         .build();
     }

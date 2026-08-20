@@ -3,8 +3,10 @@ package com.uply.coupon.coupon.controller;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponCancelResponse;
+import com.uply.coupon.coupon.dto.response.CouponDetailResponse;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.dto.response.CouponUseResponse;
+import com.uply.coupon.coupon.service.CouponQueryService;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
 import jakarta.validation.Valid;
@@ -19,6 +21,7 @@ public class CouponController {
 
     private final CouponService couponService;
     private final CouponStateTransitionService couponStateTransitionService;
+    private final CouponQueryService couponQueryService;
 
     @PostMapping("/issue")
     public ResponseEntity<CouponIssueResponse> issueCoupon(
@@ -43,5 +46,10 @@ public class CouponController {
         CouponCancelResponse response =
                 CouponCancelResponse.of(coupon.getCouponId(), coupon.getCancelledAt());
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/{couponId}")
+    public ResponseEntity<CouponDetailResponse> getCoupon(@PathVariable Long couponId) {
+        return ResponseEntity.ok(couponQueryService.getCoupon(couponId));
     }
 }
