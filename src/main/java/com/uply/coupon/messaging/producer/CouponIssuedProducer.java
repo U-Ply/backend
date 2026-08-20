@@ -16,6 +16,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import org.apache.kafka.common.errors.DisconnectException;
+import org.apache.kafka.common.errors.NetworkException;
+import org.apache.kafka.common.errors.RetriableException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
@@ -79,7 +83,7 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
             recordFailureMetrics("interrupted");
             log.error("[Kafka 발행 결과 불명확 - 스레드 인터럽트] couponId: {}", couponId, e);
             // 발행 여부가 불분명하므로 즉시 Redis 복구를 수행하지 않는 예외 전파
-            throw new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_UNKNOWN, e);
+            throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
 
         } catch (TimeoutException e) {
             recordFailureMetrics("timeout");
@@ -89,16 +93,50 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
                     couponId,
                     e);
             // ACK만 유실되고 브로커에는 저장되었을 수 있으므로 즉시 Redis 복구 금지
-            throw new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_UNKNOWN, e);
+            throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
 
         } catch (ExecutionException e) {
-            recordFailureMetrics("execution_error");
-            log.error("[Kafka 메시지 발행 확정 실패] couponId: {}", couponId, e);
-            // 브로커에서 거절되었거나 전송 불가능한 상태가 확정된 경우 -> Redis 재고 복구 유도
+        	
+        	Throwable cause = e.getCause();
+
+            // e.getCause() 기반 예외 분류: 타임아웃/네트워크 계열 및 재시도 가능 예외는 결과 불명확(UNKNOWN)으로 처리
+            if (isUnknownCause(cause)) {
+                recordFailureMetrics("execution_unknown");
+                log.warn(
+                        "[Kafka 발행 결과 불명확 - 원인: {}] couponId: {}",
+                        cause != null ? cause.getClass().getSimpleName() : "null",
+                        couponId,
+                        e);
+                throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
+            }
+
+            // 확실한 실패 (직렬화 문제, 토픽 부재, 메시지 용량 초과 등 브로커 거절 확정)
+            recordFailureMetrics("execution_failed");
+            log.error(
+                    "[Kafka 메시지 발행 확정 실패 - 원인: {}] couponId: {}",
+                    cause != null ? cause.getClass().getSimpleName() : "null",
+                    couponId,
+                    e);
             throw new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED, e);
+        
+        } catch (Exception e) {
+        	log.error("[Kafka 발행 결과 불명확] couponId: {}", couponId, e);
+        	throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
         }
     }
 
+    /** ExecutionException 내부 cause가 결과 불명확(UNKNOWN)에 해당하는지 검사 */
+    private boolean isUnknownCause(Throwable cause) {
+        if (cause == null) {
+            return false;
+        }
+        return cause instanceof TimeoutException
+                || cause instanceof org.apache.kafka.common.errors.TimeoutException
+                || cause instanceof NetworkException
+                || cause instanceof DisconnectException
+                || cause instanceof RetriableException;
+    }
+    
     /** 이벤트 -> JSON 직렬화 헬퍼 메소드 (확실한 실패) */
     private String toJson(CouponIssuedEvent event) {
         try {

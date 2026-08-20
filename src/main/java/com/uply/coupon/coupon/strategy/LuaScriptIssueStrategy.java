@@ -62,6 +62,8 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         String issuedCampaignKey = String.format("issued:%d", campaignId);
         // 캠페인 오픈 시각 Key
         String campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
+        // Redis 캐싱된 expireAt 조회
+        LocalDateTime expireAt = getExpireAt(campaignId); // 실패 가능
 
         // #3. Lua Script 실행 (Atomic 연산)
         // Spring Data Redis의 execute() 메서드가 타입 정보가 없는 Raw Type List를 반환하기 때문에 발생하는 컴파일러 경고
@@ -84,8 +86,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
-        // Redis 캐싱된 expireAt 조회
-        LocalDateTime expireAt = getExpireAt(campaignId);
 
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {
@@ -93,13 +93,14 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                     couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
 
         } catch (CouponIssueException e) {
-            // 결과가 불명확한 타임아웃(KAFKA_PUBLISH_UNKNOWN) 발생 시 Redis 보상 유예 (초과 발급 방지)
-            if (e.getReason() == IssueFailReason.KAFKA_PUBLISH_UNKNOWN) {
+            // 결과가 불명확한 타임아웃(SAVE_RESULT_UNKNOWN) 발생 시 Redis 보상 유예 (초과 발급 방지)
+            if (e.getReason() == IssueFailReason.SAVE_RESULT_UNKNOWN) {
                 log.warn("[발행 결과 불명확] Redis 보상 로직을 실행하지 않고 예외를 전파합니다. couponId: {}", couponId, e);
                 throw e;
             }
 
             // 확실한 실패(DB_SAVE_FAILED, KAFKA_PUBLISH_FAILED 등) 시에만 멱등한 Redis 보상 실행
+            // 동기 DB 저장 실패 에러는 모두 여기서 걸린다.
             log.error(
                     "[쿠폰 저장/발행 확정 실패] Redis 보상 로직을 실행합니다. couponId: {}, reason: {}",
                     couponId,
@@ -108,10 +109,11 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             throw e;
 
         } catch (Exception e) {
-            // 기타 예상치 못한 인프라/시스템 예외 발생 시 안전하게 Redis 보상 실행
-            log.error("[예상치 못한 예외 발생] Redis 보상 로직을 실행합니다. couponId: {}", couponId, e);
-            rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
-            throw e;
+            // 기타 예상치 못한 인프라/시스템 예외 발생 시 보상 유예
+        	// 카프카 발행 중 처리되지 않은 예외
+            log.error("[알 수 없는 인프라 예외 발생] DB/Kafka 저장 상태가 불명확하므로 Redis 보상 없이 UNKNOWN 전파. couponId: {}", couponId, e);
+            //rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
+            throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
         }
 
         // #6. 성공 결과 반환 (IssueResult)
