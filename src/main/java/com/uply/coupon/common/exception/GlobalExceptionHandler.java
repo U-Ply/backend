@@ -69,6 +69,18 @@ public class GlobalExceptionHandler {
         return conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS", exception.getMessage());
     }
 
+    @ExceptionHandler(IdempotencyKeyReusedException.class)
+    public ResponseEntity<ApiErrorResponse> handleIdempotencyKeyReused(
+            IdempotencyKeyReusedException exception) {
+        return conflict("IDEMPOTENCY_KEY_REUSED", exception.getMessage());
+    }
+
+    @ExceptionHandler(InvalidIdempotencyKeyException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidIdempotencyKey(
+            InvalidIdempotencyKeyException exception) {
+        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", exception.getMessage());
+    }
+
     @ExceptionHandler({MethodArgumentNotValidException.class, MissingRequestHeaderException.class})
     public ResponseEntity<ApiErrorResponse> handleInvalidRequest(Exception exception) {
         return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "요청 값이 올바르지 않습니다.");

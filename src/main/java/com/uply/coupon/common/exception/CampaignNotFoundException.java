@@ -2,6 +2,10 @@ package com.uply.coupon.common.exception;
 
 public class CampaignNotFoundException extends RuntimeException {
 
+    public CampaignNotFoundException(Long campaignId) {
+        super("Campaign not found: campaignId=" + campaignId);
+    }
+
     public CampaignNotFoundException(Long campaignId, String routeId, String fareClass) {
         super(
                 "Campaign stock not found: campaignId="
