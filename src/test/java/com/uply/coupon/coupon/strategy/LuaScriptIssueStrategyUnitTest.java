@@ -16,10 +16,8 @@ import static org.mockito.Mockito.verify;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
-
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -46,10 +44,9 @@ class LuaScriptIssueStrategyUnitTest {
     @Mock private CouponIdGenerator couponIdGenerator;
 
     @Mock private CouponSaveStrategy couponSaveStrategy;
-    
- // [추가] 인메모리 MeterRegistry를 @Spy로 선언하여 Mockito가 @InjectMocks에 자동 주입하도록 설정
-    @Spy
-    private MeterRegistry meterRegistry = new SimpleMeterRegistry();
+
+    // [추가] 인메모리 MeterRegistry를 @Spy로 선언하여 Mockito가 @InjectMocks에 자동 주입하도록 설정
+    @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @InjectMocks private LuaScriptIssueStrategy luaScriptIssueStrategy;
 
@@ -66,7 +63,7 @@ class LuaScriptIssueStrategyUnitTest {
         // [추가] 모든 campaign expireAt 조회 요청에 대해 정상 EpochMilli 문자열을 반환하도록 공통 설정
         given(redisTemplate.opsForValue().get(anyString()))
                 .willReturn(String.valueOf(expireAtEpochMillis));
-        
+
         luaScriptIssueStrategy.init();
     }
 

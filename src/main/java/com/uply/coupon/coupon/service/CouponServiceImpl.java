@@ -113,8 +113,8 @@ public class CouponServiceImpl implements CouponService {
             }
             throw e;
         } catch (Exception e) {
-        	idempotencyChecker.clearProgress(idempotencyKey);
-        	throw e;
+            idempotencyChecker.clearProgress(idempotencyKey);
+            throw e;
         }
     }
 

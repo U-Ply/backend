@@ -90,7 +90,10 @@ public class CampaignCacheWarmupService {
                     .opsForValue()
                     .set(
                             String.format(
-                                    KEY_STOCK_ID, campaignId, stock.getRouteId(), stock.getFareClass()),
+                                    KEY_STOCK_ID,
+                                    campaignId,
+                                    stock.getRouteId(),
+                                    stock.getFareClass()),
                             String.valueOf(stock.getId()),
                             CACHE_TTL_HOURS,
                             TimeUnit.HOURS);

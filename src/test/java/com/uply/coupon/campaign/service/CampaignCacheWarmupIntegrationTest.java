@@ -163,7 +163,7 @@ class CampaignCacheWarmupIntegrationTest {
         assertThat(issuedUsers).isNotNull();
         assertThat(issuedUsers).containsExactlyInAnyOrder("100", "101", "102");
     }
-    
+
     @Test
     @DisplayName("기존 Redis에 고스트 유저가 남아있을 때 웜업 실행 시 RENAME을 통해 고스트 유저가 제거된다.")
     void warmupCampaign_RemovesGhostUser_ViaAtomicRename() {
