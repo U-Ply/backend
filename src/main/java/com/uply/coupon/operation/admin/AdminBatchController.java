@@ -43,7 +43,7 @@ public class AdminBatchController {
 
         String jobName = JOB_KEYS.get(jobKey);
         if (jobName == null) {
-            return ResponseEntity.badRequest().body(Map.of("error", "알 수 없는 배치: " + jobKey));
+            throw new BatchInvalidRequestException("알 수 없는 배치: " + jobKey);
         }
 
         JobExecution execution = launchService.launch(jobName, runId, failOnViolation);
@@ -70,7 +70,7 @@ public class AdminBatchController {
 
         JobExecution execution = launchService.findExecution(executionId);
         if (execution == null) {
-            return ResponseEntity.notFound().build();
+            throw new BatchExecutionNotFoundException(executionId);
         }
 
         List<Map<String, Object>> steps =
