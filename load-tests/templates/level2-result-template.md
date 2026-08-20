@@ -39,6 +39,8 @@
 | 재고 소진 (`coupon_out_of_stock`) |  |
 | 중복 발급 (`coupon_already_issued`) |  |
 | 락 대기 시간 초과 (`coupon_lock_timeout`) |  |
+| 동시성 경합 (`coupon_concurrency_conflict`) |  |
+| 커넥션 획득 실패 (`coupon_connection_unavailable`) |  |
 | 기타 4xx (`coupon_other_4xx`) |  |
 | 기타 5xx (`coupon_5xx`) |  |
 | 예상하지 못한 응답 (`coupon_unexpected_response`) |  |
@@ -56,10 +58,14 @@
 + 재고 소진
 + 중복 발급
 + LOCK_TIMEOUT
++ CONCURRENCY_CONFLICT
++ CONNECTION_UNAVAILABLE
 + 기타 4xx
 + 기타 5xx
 + 예상하지 못한 응답
 ```
+
+`CONCURRENCY_CONFLICT`는 V0(NoLock)에서 발생하는 것이 정상이다. V1~V3에서는 0건이어야 한다.
 
 원본 요약 JSON:
 

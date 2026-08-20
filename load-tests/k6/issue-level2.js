@@ -17,6 +17,8 @@ const outOfStock = new Counter('coupon_out_of_stock');
 const alreadyIssued = new Counter('coupon_already_issued');
 const clientErrors = new Counter('coupon_other_4xx');
 const lockTimeout = new Counter('coupon_lock_timeout');
+const concurrencyConflict = new Counter('coupon_concurrency_conflict');
+const connectionUnavailable = new Counter('coupon_connection_unavailable');
 const serverErrors = new Counter('coupon_5xx');
 const unexpectedResponses = new Counter('coupon_unexpected_response');
 
@@ -35,6 +37,10 @@ export const options = {
   thresholds: {
     checks: ['rate>0.99'],
     coupon_lock_timeout: ['count==0'],
+    // 커넥션 획득 실패는 어느 전략에서도 정상이 아니므로 0건을 요구한다.
+    // coupon_concurrency_conflict 는 V0(NoLock)에서 정상 관측값이라 threshold 를 두지 않고
+    // 수치만 기록한다. V1 에서 0이어야 한다는 판정은 결과 문서에서 수행한다.
+    coupon_connection_unavailable: ['count==0'],
     coupon_5xx: ['count==0'],
     coupon_other_4xx: ['count==0'],
     coupon_unexpected_response: ['count==0'],
@@ -74,6 +80,10 @@ export default function () {
     alreadyIssued.add(1);
   } else if (response.status === 503 && body?.errorCode === 'LOCK_TIMEOUT') {
     lockTimeout.add(1);
+  } else if (response.status === 503 && body?.errorCode === 'CONCURRENCY_CONFLICT') {
+    concurrencyConflict.add(1);
+  } else if (response.status === 503 && body?.errorCode === 'CONNECTION_UNAVAILABLE') {
+    connectionUnavailable.add(1);
   } else if (response.status >= 500) {
     serverErrors.add(1);
   } else if (response.status >= 400 && response.status < 500) {

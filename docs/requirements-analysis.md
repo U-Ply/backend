@@ -360,12 +360,24 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 | `OUT_OF_STOCK` | 409 | 재고 소진 |
 | `ALREADY_ISSUED` | 409 | 동일 캠페인 중복 발급 |
 | `CAMPAIGN_NOT_OPEN` | 409 | 캠페인 오픈 전 요청 |
+| `CAMPAIGN_EXPIRED` | 409 | 만료 시각이 지난 캠페인에 대한 발급 요청 |
 | `INVALID_STATE_TRANSITION` | 409 | 허용되지 않은 상태 변경 |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | 같은 키가 다른 요청에 사용됨 |
 | `IDEMPOTENCY_REQUEST_IN_PROGRESS` | 409 | 동일 키의 최초 요청 처리 중 |
 | `COUPON_NOT_READY` | 409 | 발급 이벤트의 MySQL 반영 대기 중 |
 | `COUPON_NOT_FOUND` | 404 | 존재하지 않는 쿠폰 |
 | `CAMPAIGN_NOT_FOUND` | 404 | 존재하지 않는 캠페인 또는 재고 풀 |
+| `LOCK_TIMEOUT` | 503 | 비관적 락 대기 시간 초과 (재시도 가능) |
+| `CONCURRENCY_CONFLICT` | 503 | DB 교착 등 동시성 경합으로 처리 실패 (재시도 가능) |
+| `CONNECTION_UNAVAILABLE` | 503 | DB 커넥션 획득 실패 (재시도 가능) |
+
+503으로 응답하는 세 코드는 **재시도 가능한 일시적 실패**다. 요청 자체는 유효하며 서버 상태가
+회복되면 같은 요청이 성공할 수 있다. 4xx와 달리 클라이언트가 요청을 고칠 필요가 없다.
+
+세 코드는 발생 지점이 서로 다르다. `LOCK_TIMEOUT`은 `SELECT ... FOR UPDATE`로 락을 기다리다
+한계를 넘긴 경우, `CONCURRENCY_CONFLICT`는 트랜잭션 커밋 단계의 DB 교착,
+`CONNECTION_UNAVAILABLE`은 트랜잭션 시작 단계에서 커넥션 풀을 얻지 못한 경우다.
+자세한 내용은 `docs/lock-and-transaction-settings.md` 6절에 있다.
 
 ## 13. Redis 키
 
