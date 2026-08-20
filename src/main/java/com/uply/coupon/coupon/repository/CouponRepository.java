@@ -3,7 +3,7 @@ package com.uply.coupon.coupon.repository;
 import com.uply.coupon.coupon.domain.Coupon;
 import java.time.LocalDateTime;
 import java.util.List;
-
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -35,6 +35,31 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
                and c.status = com.uply.coupon.coupon.domain.CouponStatus.USED
             """)
     int cancelIfUsed(@Param("couponId") Long couponId);
+
+    @Query(
+            """
+            select c.couponId
+              from Coupon c
+             where c.campaignId = :campaignId
+               and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
+               and c.couponId > :lastCouponId
+             order by c.couponId
+            """)
+    List<Long> findIssuedCouponIdsByCampaignIdAfter(
+            @Param("campaignId") Long campaignId,
+            @Param("lastCouponId") Long lastCouponId,
+            Pageable pageable);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(
+            """
+            update Coupon c
+               set c.status = com.uply.coupon.coupon.domain.CouponStatus.CANCELLED,
+                   c.cancelledAt = CURRENT_TIMESTAMP
+             where c.couponId = :couponId
+               and c.status = com.uply.coupon.coupon.domain.CouponStatus.ISSUED
+            """)
+    int revokeIfIssued(@Param("couponId") Long couponId);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(

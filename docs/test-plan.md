@@ -203,7 +203,7 @@ Level 2는 로컬 PC 성능이 아니라 팀이 합의한 동일한 AWS 환경�
 
 | 구분 | 항목 |
 | --- | --- |
-| 요청 결과 | 전체 요청, 성공, `OUT_OF_STOCK`, `ALREADY_ISSUED`, `LOCK_TIMEOUT`, 기타 4xx, 기타 5xx |
+| 요청 결과 | 전체 요청, 성공, `OUT_OF_STOCK`, `ALREADY_ISSUED`, `LOCK_TIMEOUT`, `CONCURRENCY_CONFLICT`, `CONNECTION_UNAVAILABLE`, 기타 4xx, 기타 5xx |
 | 정합성 | 초과 발급, 중복 발급, DB 쿠폰 수, DB 잔여 재고 |
 | API 성능 | TPS, 평균 지연, p95, p99, 최대 지연 |
 | MySQL | lock wait, 활성 커넥션, HikariCP pending, CPU |
@@ -227,6 +227,10 @@ V1~V3의 필수 정합성 조건:
 
 `LOCK_TIMEOUT`은 비관적 락 획득 제한 시간을 초과한 `503` 응답이다. 트랜잭션이 롤백되어 재고 정합성을 직접 깨뜨리지는 않더라도, 정상 성공 또는 재고 소진으로 처리되지 못한 요청이므로 Level 2 실패로 판정한다.
 
+`CONCURRENCY_CONFLICT`와 `CONNECTION_UNAVAILABLE`도 `503` 응답이며 발생 지점이 서로 다르다. 전자는 트랜잭션 커밋 단계의 DB 교착, 후자는 트랜잭션 시작 단계의 커넥션 풀 획득 실패다. 세 코드 모두 일반 `기타 5xx`에 중복 집계하지 않고 각각 센다.
+
+`CONCURRENCY_CONFLICT`는 V0에서 발생하는 것이 정상이다. 동시성 제어 부재를 재현하는 것이 V0의 목적이므로 5.4의 NoLock 예외 규정과 같은 취지로 실패로 처리하지 않고 수치로 기록한다. V1~V3에서는 0건이어야 한다.
+
 응답 분류 합계는 전체 요청 수와 일치해야 한다.
 
 ```text
@@ -235,6 +239,8 @@ V1~V3의 필수 정합성 조건:
 + OUT_OF_STOCK
 + ALREADY_ISSUED
 + LOCK_TIMEOUT
++ CONCURRENCY_CONFLICT
++ CONNECTION_UNAVAILABLE
 + 기타 4xx
 + 기타 5xx
 + 예상하지 못한 응답
@@ -281,6 +287,8 @@ V0은 문제 재현용이므로 위 정합성 조건을 만족하지 않을 수 
 | 초과 발급 | 0건 |
 | 중복 발급 | 0건 |
 | `LOCK_TIMEOUT` | 0건 |
+| `CONCURRENCY_CONFLICT` | 0건 |
+| `CONNECTION_UNAVAILABLE` | 0건 |
 | 기타 5xx | 0건 |
 | Kafka 최종 lag | 0 |
 | DLT | 0건 |
@@ -464,6 +472,8 @@ DLT = 0건
 | `OUT_OF_STOCK` |  |  |  |  |
 | `ALREADY_ISSUED` |  |  |  |  |
 | `LOCK_TIMEOUT` |  |  |  |  |
+| `CONCURRENCY_CONFLICT` |  |  |  |  |
+| `CONNECTION_UNAVAILABLE` |  |  |  |  |
 | 기타 5xx |  |  |  |  |
 | 초과 발급 |  |  |  |  |
 | 중복 발급 |  |  |  |  |

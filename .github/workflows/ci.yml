@@ -30,7 +30,11 @@ jobs:
       - name: Spotless check
         run: ./gradlew spotlessCheck
 
-      # 지금은 컴파일 검증만.
+       # build -x test 는 compileTestJava 까지 함께 스킵한다.
+      # 테스트 코드가 컴파일조차 안 되는 상태로 머지된 적이 있어 별도 스텝으로 분리한다.
       # 실제 테스트가 생기면 -x test 를 빼고 services 로 mysql/redis 를 추가한다.
       - name: Build
         run: ./gradlew build -x test
+
+      - name: Compile tests          # ← 추가
+        run: ./gradlew testClasses

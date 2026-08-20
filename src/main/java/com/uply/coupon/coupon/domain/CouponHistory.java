@@ -67,6 +67,13 @@ public class CouponHistory {
                 couponId, CouponStatus.USED, CouponStatus.CANCELLED, idempotencyKey, eventAt);
     }
 
+    // 항공사 미사용 쿠폰 회수 이력 기록
+    public static CouponHistory revoked(
+            Long couponId, String idempotencyKey, LocalDateTime eventAt) {
+        return transitioned(
+                couponId, CouponStatus.ISSUED, CouponStatus.CANCELLED, idempotencyKey, eventAt);
+    }
+
     // 만료 이력 기록
     public static CouponHistory expired(
             Long couponId, String idempotencyKey, LocalDateTime eventAt) {

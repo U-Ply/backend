@@ -2,8 +2,10 @@ package com.uply.coupon.common.idempotency;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import java.time.Duration;
+import java.util.Objects;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,13 +31,18 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
 
     @Override
     public Optional<String> getCachedResponse(String idempotencyKey) {
+        return getCachedResponse(idempotencyKey, "");
+    }
+
+    @Override
+    public Optional<String> getCachedResponse(String idempotencyKey, String requestHash) {
         // #1. idempotencyKey 가 없으면
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             return Optional.empty();
         }
 
         String redisKey = "idempotency:" + idempotencyKey;
-        String processingValue = createProcessingJson();
+        String processingValue = createProcessingJson(requestHash);
 
         // SETNX (setIfAbsent) 수행: 키가 없을 때만 "PROCESSING"을 원자적으로 저장
         Boolean isNewRequest =
@@ -62,6 +69,11 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
             // String -> DTO 역직렬화
             IdempotencyCache cache = objectMapper.readValue(cachedData, IdempotencyCache.class);
 
+            if (!Objects.equals(
+                    normalizeHash(requestHash), normalizeHash(cache.getRequestHash()))) {
+                throw new IdempotencyKeyReusedException();
+            }
+
             // 1. 선행 요청이 아직 처리 중인 경우 (동시성 요청 차단)
             if ("PROCESSING".equals(cache.getStatus())) {
                 log.warn("[멱등성 검사] 이미 처리 중인 요청입니다. key: {}", redisKey);
@@ -79,6 +91,12 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
 
     @Override
     public void cacheResponse(String idempotencyKey, String responseBody, int httpStatus) {
+        cacheResponse(idempotencyKey, "", responseBody, httpStatus);
+    }
+
+    @Override
+    public void cacheResponse(
+            String idempotencyKey, String requestHash, String responseBody, int httpStatus) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             return;
         }
@@ -90,7 +108,7 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
                         .status("COMPLETED")
                         .httpStatus(httpStatus)
                         .body(responseBody)
-                        .requestHash("") // 필요 시 Payload SHA-256 해시값 바인딩
+                        .requestHash(normalizeHash(requestHash))
                         .build();
 
         try {
@@ -118,13 +136,20 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
         }
     }
 
-    private String createProcessingJson() {
+    private String createProcessingJson(String requestHash) {
         try {
             IdempotencyCache processingCache =
-                    IdempotencyCache.builder().status("PROCESSING").build();
+                    IdempotencyCache.builder()
+                            .status("PROCESSING")
+                            .requestHash(normalizeHash(requestHash))
+                            .build();
             return objectMapper.writeValueAsString(processingCache);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("PROCESSING JSON 생성 실패", e);
         }
+    }
+
+    private String normalizeHash(String requestHash) {
+        return requestHash == null ? "" : requestHash;
     }
 }

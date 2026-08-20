@@ -69,3 +69,9 @@ coupon:
     enabled: ${COUPON_IDEMPOTENCY_ENABLED:true}
   save:
     strategy: ${COUPON_SAVE_STRATEGY:sync-db} # sync-db 또는 kafka
+  reconciliation:
+    # 부하 테스트에서는 false로 두고 Kafka lag=0, DLT=0 확인 후 관리자 API로 수동 실행한다.
+    # 멀티 인스턴스에서는 배치 담당 인스턴스 한 대만 true로 설정한다.
+    scheduler-enabled: ${RECONCILIATION_SCHEDULER_ENABLED:false}
+    initial-delay: ${RECONCILIATION_INITIAL_DELAY:PT1M}
+    fixed-delay: ${RECONCILIATION_FIXED_DELAY:PT5M}
