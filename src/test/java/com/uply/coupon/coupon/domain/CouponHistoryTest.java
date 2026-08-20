@@ -14,7 +14,7 @@ class CouponHistoryTest {
     void createsIssuedHistory() {
         String idempotencyKey = "550e8400-e29b-41d4-a716-446655440000";
 
-        CouponHistory history = CouponHistory.issued(COUPON_ID, idempotencyKey);
+        CouponHistory history = CouponHistory.issued(COUPON_ID, idempotencyKey, EVENT_AT);
 
         assertThat(history.getCouponId()).isEqualTo(COUPON_ID);
         assertThat(history.getFromStatus()).isNull();

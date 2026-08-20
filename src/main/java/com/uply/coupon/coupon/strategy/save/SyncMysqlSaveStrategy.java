@@ -32,6 +32,7 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
             Long campaignId,
             Long stockId,
             String idempotencyKey,
+            LocalDateTime issuedAt,
             LocalDateTime expireAt) {
 
         try {
@@ -43,10 +44,10 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
             }
 
             // 2. 쿠폰 발급, 히스토리 DB 저장
-            Coupon coupon = Coupon.issue(couponId, userId, campaignId, stockId, expireAt);
+            Coupon coupon = Coupon.issue(couponId, userId, campaignId, stockId, issuedAt, expireAt);
             couponRepository.save(coupon);
             couponHistoryRepository.save(
-                    CouponHistory.issued(coupon.getCouponId(), idempotencyKey));
+                    CouponHistory.issued(coupon.getCouponId(), idempotencyKey, issuedAt));
 
         } catch (CouponIssueException e) {
             // 재고 부족은 그대로 재전파

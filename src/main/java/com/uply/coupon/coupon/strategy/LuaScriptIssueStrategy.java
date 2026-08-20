@@ -69,8 +69,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         LocalDateTime expireAt = getExpireAt(campaignId); // 실패 가능
 
         // #3. Lua Script 실행 (Atomic 연산)
-        // Spring Data Redis의 execute() 메서드가 타입 정보가 없는 Raw Type List를 반환하기 때문에 발생하는 컴파일러 경고
-        // -> 무시해도 된다.
         List<Object> result =
                 redisTemplate.execute(
                         issueScript,
@@ -89,10 +87,15 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
+        // Lua가 반환한 Redis TIME 기준 발급 시각 (epoch millis)
+        // expireAt은 Lua 실행 전에 조회한다 - 차감 후 조회하면 캐시 미스 시 보상 없이 재고가 샌다
+        LocalDateTime issuedAt =
+                LocalDateTime.ofInstant(Instant.ofEpochMilli((Long) result.get(1)), ZoneOffset.UTC);
+
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {
             couponSaveStrategy.save(
-                    couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
+                    couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
 
         } catch (CouponIssueException e) {
             // 결과가 불명확한 타임아웃(SAVE_RESULT_UNKNOWN) 발생 시 Redis 보상 유예 (초과 발급 방지)
@@ -122,7 +125,8 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
 
         // #6. 성공 결과 반환 (IssueResult)
-        return IssueResult.success(couponId);
+        return IssueResult.success(
+                couponId, issuedAt.toInstant(ZoneOffset.UTC), expireAt.toInstant(ZoneOffset.UTC));
     }
 
     @Override

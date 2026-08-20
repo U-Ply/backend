@@ -16,6 +16,8 @@ import static org.mockito.Mockito.verify;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -28,6 +30,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Answers;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -42,10 +45,16 @@ class LuaScriptIssueStrategyUnitTest {
 
     @Mock private CouponSaveStrategy couponSaveStrategy;
 
+    // 보상 지표 수집용. Counter.builder().register()가 실제 동작해야 하므로 순수 Mock을 쓸 수 없다.
+    @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     @InjectMocks private LuaScriptIssueStrategy luaScriptIssueStrategy;
 
     private LocalDateTime expireAt;
     private long expireAtEpochMillis;
+
+    private LocalDateTime issuedAt;
+    private long issuedAtEpochMillis;
 
     @BeforeEach
     void setUp() {
@@ -53,6 +62,15 @@ class LuaScriptIssueStrategyUnitTest {
         expireAtEpochMillis = 1780000000000L;
         expireAt =
                 LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
+
+        // Lua Script가 Redis TIME 기준으로 반환하는 발급 시각 (expireAt과 다른 값이어야 뒤바뀜을 잡을 수 있다)
+        issuedAtEpochMillis = 1770000000000L;
+        issuedAt =
+                LocalDateTime.ofInstant(Instant.ofEpochMilli(issuedAtEpochMillis), ZoneOffset.UTC);
+
+        // expireAt 조회는 Lua 실행보다 먼저 일어나므로 실패 시나리오에서도 스텁이 필요하다.
+        given(redisTemplate.opsForValue().get("campaign:1:expireAt"))
+                .willReturn(String.valueOf(expireAtEpochMillis));
 
         luaScriptIssueStrategy.init();
     }
@@ -69,11 +87,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L));
-
-        // Redis expireAt 조회 설정
-        given(redisTemplate.opsForValue().get("campaign:" + campaignId + ":expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis));
 
         // when
         IssueResult result =
@@ -84,8 +98,9 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.couponId()).isEqualTo(couponId);
 
         // 저장 전략 save() 정상 호출 검증
+        // issuedAt은 Lua가 반환한 Redis TIME 값이어야 한다 (JVM 시각이면 이 검증에서 깨진다)
         verify(couponSaveStrategy)
-                .save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
+                .save(couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
     }
 
     @Test
@@ -100,7 +115,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-1L));
+                .willReturn(List.of(-1L, issuedAtEpochMillis));
 
         // when
         IssueResult result =
@@ -111,7 +126,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.reason()).isEqualTo(IssueFailReason.ALREADY_ISSUED);
 
         // 실패 시 저장 전략 미호출 검증
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -126,7 +141,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-2L));
+                .willReturn(List.of(-2L, issuedAtEpochMillis));
 
         // when
         IssueResult result =
@@ -136,7 +151,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -151,7 +166,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-4L));
+                .willReturn(List.of(-4L, issuedAtEpochMillis));
 
         // when
         IssueResult result =
@@ -161,7 +176,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_NOT_OPEN);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -186,7 +201,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.SYSTEM_ERROR);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -201,7 +216,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-99L));
+                .willReturn(List.of(-99L, issuedAtEpochMillis));
 
         // when
         IssueResult result =
@@ -211,7 +226,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.SYSTEM_ERROR);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -228,11 +243,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         // 1. Redis 선점 성공 설정
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L));
-
-        // 2. Redis expireAt 조회 설정
-        given(redisTemplate.opsForValue().get("campaign:" + campaignId + ":expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis));
 
         // 3. Kafka 이벤트 발행 실패(KAFKA_PUBLISH_FAILED) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED))
@@ -243,6 +254,7 @@ class LuaScriptIssueStrategyUnitTest {
                         eq(campaignId),
                         eq(stockId),
                         eq(idempotencyKey),
+                        eq(issuedAt),
                         eq(expireAt));
 
         // when & then
@@ -274,11 +286,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         // 1. Redis 선점 성공 설정
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L));
-
-        // 2. Redis expireAt 조회 설정
-        given(redisTemplate.opsForValue().get("campaign:" + campaignId + ":expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis));
 
         // 3. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN))
@@ -289,6 +297,7 @@ class LuaScriptIssueStrategyUnitTest {
                         eq(campaignId),
                         eq(stockId),
                         eq(idempotencyKey),
+                        eq(issuedAt),
                         eq(expireAt));
 
         // when & then

@@ -87,12 +87,13 @@ public class CouponServiceImpl implements CouponService {
             }
 
             // 응답 DTO 생성
+            // 시각은 전략이 실제로 저장한 값을 그대로 올려보낸다 (JVM now()로 새로 만들지 않는다)
             CouponIssueResponse response =
                     CouponIssueResponse.builder()
                             .couponId(String.valueOf(result.couponId()))
                             .status(CouponStatus.ISSUED)
-                            .issuedAt(now)
-                            .expireAt(expireAt)
+                            .issuedAt(result.issuedAt())
+                            .expireAt(result.expireAt())
                             .build();
 
             // #3. 성공 응답 JSON 직렬화 후 Redis 캐싱 (COMPLETED, TTL 10분)

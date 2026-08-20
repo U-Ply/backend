@@ -124,12 +124,14 @@ class CampaignCacheWarmupIntegrationTest {
         jdbcTemplate.batchUpdate(sql, batchArgs);
 
         // DB에 기발급된 쿠폰 데이터 3건 생성 (유저 ID: 100, 101, 102)
+        LocalDateTime issuedAt = savedCampaign.getOpenAt();
         Coupon coupon1 =
                 Coupon.issue(
                         2001L,
                         100L,
                         savedCampaign.getId(),
                         savedStock.getId(),
+                        issuedAt,
                         savedCampaign.getExpireAt());
         Coupon coupon2 =
                 Coupon.issue(
@@ -137,6 +139,7 @@ class CampaignCacheWarmupIntegrationTest {
                         101L,
                         savedCampaign.getId(),
                         savedStock.getId(),
+                        issuedAt,
                         savedCampaign.getExpireAt());
         Coupon coupon3 =
                 Coupon.issue(
@@ -144,6 +147,7 @@ class CampaignCacheWarmupIntegrationTest {
                         102L,
                         savedCampaign.getId(),
                         savedStock.getId(),
+                        issuedAt,
                         savedCampaign.getExpireAt());
         couponRepository.saveAll(List.of(coupon1, coupon2, coupon3));
 

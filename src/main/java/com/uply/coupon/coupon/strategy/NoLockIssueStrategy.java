@@ -9,6 +9,7 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -52,7 +53,11 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
         Optional<CouponHistory> processed =
                 couponHistoryRepository.findByIdempotencyKey(idempotencyKey);
         if (processed.isPresent()) {
-            return IssueResult.success(processed.get().getCouponId());
+            // 이미 발급된 건의 재조회이므로 databaseTime(지금 시각)이 아니라 저장된 이력의 시각을 돌려준다.
+            return IssueResult.success(
+                    processed.get().getCouponId(),
+                    processed.get().getEventAt().toInstant(ZoneOffset.UTC),
+                    expireAt.toInstant(ZoneOffset.UTC));
         }
 
         // 중복 발급 확인
@@ -77,9 +82,14 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
                         databaseTime,
                         expireAt);
         couponRepository.save(coupon);
-        couponHistoryRepository.save(CouponHistory.issued(coupon.getCouponId(), idempotencyKey));
+        // 쿠폰과 같은 databaseTime을 넘겨 event_at과 issued_at을 일치시킨다 (INV-04)
+        couponHistoryRepository.save(
+                CouponHistory.issued(coupon.getCouponId(), idempotencyKey, databaseTime));
 
-        return IssueResult.success(coupon.getCouponId());
+        return IssueResult.success(
+                coupon.getCouponId(),
+                databaseTime.toInstant(ZoneOffset.UTC),
+                expireAt.toInstant(ZoneOffset.UTC));
     }
 
     @Override

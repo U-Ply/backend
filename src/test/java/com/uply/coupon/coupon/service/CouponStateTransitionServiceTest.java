@@ -28,6 +28,7 @@ class CouponStateTransitionServiceTest {
     private static final Long COUPON_ID = 1L;
     private static final String IDEMPOTENCY_KEY = "550e8400-e29b-41d4-a716-446655440000";
     private static final LocalDateTime EVENT_AT = LocalDateTime.of(2026, 8, 14, 12, 0);
+    private static final LocalDateTime ISSUED_AT = EVENT_AT.minusDays(1);
     private static final LocalDateTime EXPIRE_AT = EVENT_AT.plusDays(1);
 
     @Mock private CouponRepository couponRepository;
@@ -38,7 +39,7 @@ class CouponStateTransitionServiceTest {
     // 사용 조건부 UPDATE가 1건 성공했을 때 ISSUED → USED 이력이 올바르게 저장되는지 확인
     @Test
     void savesUsedHistoryOnlyWhenConditionalUpdateSucceeds() {
-        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(EVENT_AT);
         when(couponRepository.useIfIssued(COUPON_ID)).thenReturn(1);
         when(couponRepository.findById(COUPON_ID)).thenReturn(Optional.of(coupon));
@@ -60,7 +61,7 @@ class CouponStateTransitionServiceTest {
     // 취소 조건부 UPDATE가 1건 성공했을 때 USED → CANCELLED 이력이 올바르게 저장되는지 확인
     @Test
     void savesCancelledHistoryOnlyWhenConditionalUpdateSucceeds() {
-        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(EVENT_AT.minusMinutes(1));
         coupon.cancel(EVENT_AT);
         when(couponRepository.cancelIfUsed(COUPON_ID)).thenReturn(1);
@@ -123,7 +124,7 @@ class CouponStateTransitionServiceTest {
     // 아직 ISSUED인 쿠폰을 CANCELLED로 변경하려고 하면 INVALID_STATE_TRANSITION 예외가 발생하고 이력을 저장하지 않는지 확인
     @Test
     void doesNotSaveHistoryWhenStateTransitionIsInvalid() {
-        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         when(couponRepository.cancelIfUsed(COUPON_ID)).thenReturn(0);
         when(couponRepository.findById(COUPON_ID)).thenReturn(Optional.of(coupon));
 

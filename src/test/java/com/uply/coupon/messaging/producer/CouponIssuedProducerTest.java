@@ -25,6 +25,7 @@ import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -45,6 +46,11 @@ class CouponIssuedProducerTest {
     private long expireAtEpochMillis = 1780000000000L;
     private LocalDateTime expireAt =
             LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
+
+    // 상위 전략이 전달하는 발급 시각. 이벤트의 issuedAt으로 그대로 실린다.
+    private long issuedAtEpochMillis = 1770000000000L;
+    private LocalDateTime issuedAt =
+            LocalDateTime.ofInstant(Instant.ofEpochMilli(issuedAtEpochMillis), ZoneOffset.UTC);
 
     @Test
     @DisplayName("JSON 직렬화 및 Kafka 동기 발행에 성공한다")
@@ -67,12 +73,25 @@ class CouponIssuedProducerTest {
                 .willReturn(CompletableFuture.completedFuture(null));
 
         // when
-        couponIssuedProducer.save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
+        couponIssuedProducer.save(
+                couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
 
         // then
-        verify(objectMapper).writeValueAsString(any(CouponIssuedEvent.class));
         verify(kafkaTemplate)
                 .send(eq("coupon-issued"), eq(String.valueOf(couponId)), eq(expectedJson));
+
+        // 이벤트의 두 시각 필드는 출처가 다르다 (D-7)
+        ArgumentCaptor<CouponIssuedEvent> eventCaptor =
+                ArgumentCaptor.forClass(CouponIssuedEvent.class);
+        verify(objectMapper).writeValueAsString(eventCaptor.capture());
+        CouponIssuedEvent published = eventCaptor.getValue();
+
+        // issuedAt은 전략이 확정한 발급 시각 그대로여야 한다 (여기서 새로 만들면 D-1이 깨진다)
+        assertThat(published.issuedAt()).isEqualTo(issuedAt.toInstant(ZoneOffset.UTC));
+
+        // publishedAt은 발행 시점의 JVM 시각이므로 issuedAt과 달라야 한다 (E2E 측정 기준점)
+        assertThat(published.publishedAt()).isNotNull();
+        assertThat(published.publishedAt()).isNotEqualTo(published.issuedAt());
     }
 
     @Test
@@ -97,6 +116,7 @@ class CouponIssuedProducerTest {
                                         campaignId,
                                         stockId,
                                         idempotencyKey,
+                                        issuedAt,
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
@@ -139,6 +159,7 @@ class CouponIssuedProducerTest {
                                         campaignId,
                                         stockId,
                                         idempotencyKey,
+                                        issuedAt,
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
@@ -181,6 +202,7 @@ class CouponIssuedProducerTest {
                                         campaignId,
                                         stockId,
                                         idempotencyKey,
+                                        issuedAt,
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
@@ -221,6 +243,7 @@ class CouponIssuedProducerTest {
                                         campaignId,
                                         stockId,
                                         idempotencyKey,
+                                        issuedAt,
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
@@ -244,7 +267,8 @@ class CouponIssuedProducerTest {
                 .willReturn(CompletableFuture.completedFuture(null));
 
         // when
-        couponIssuedProducer.save(couponId, 100L, 1L, 10L, "idempotency-key-123", expireAt);
+        couponIssuedProducer.save(
+                couponId, 100L, 1L, 10L, "idempotency-key-123", issuedAt, expireAt);
 
         // then: SimpleMeterRegistry에 기록된 카운터 값 직접 검증
         double count =
@@ -277,7 +301,7 @@ class CouponIssuedProducerTest {
         assertThatThrownBy(
                         () ->
                                 couponIssuedProducer.save(
-                                        couponId, 100L, 1L, 10L, "key-123", expireAt))
+                                        couponId, 100L, 1L, 10L, "key-123", issuedAt, expireAt))
                 .isInstanceOf(CouponIssueException.class);
 
         // then: 실패 메트릭 검증

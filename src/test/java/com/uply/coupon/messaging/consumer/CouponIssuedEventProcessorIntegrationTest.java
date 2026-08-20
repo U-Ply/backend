@@ -115,7 +115,8 @@ class CouponIssuedEventProcessorIntegrationTest {
                 CAMPAIGN_ID,
                 STOCK_ID,
                 idempotencyKey,
-                Instant.parse("2026-08-15T01:00:00Z"));
+                Instant.parse("2026-08-15T01:00:00Z"),
+                Instant.parse("2026-08-15T01:00:00.050Z"));
     }
 
     private int count(String tableName) {

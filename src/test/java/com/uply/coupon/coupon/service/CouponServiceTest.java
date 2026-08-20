@@ -8,6 +8,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.service.StockIdLookup;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
@@ -19,6 +20,8 @@ import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueResult;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -44,6 +47,17 @@ class CouponServiceTest {
 
     @Mock private ObjectMapper objectMapper;
 
+    @Mock private CampaignCacheRepository campaignCacheRepository;
+
+    /**
+     * 전략이 실제로 저장했다고 가정하는 시각.
+     *
+     * <p>Instant.now()와 명백히 다른 고정값이어야 응답이 이 값을 그대로 쓰는지(D-2) 검증할 수 있다.
+     */
+    private static final Instant STORED_ISSUED_AT = Instant.parse("2026-01-02T03:04:05.678Z");
+
+    private static final Instant STORED_EXPIRE_AT = Instant.parse("2026-01-09T03:04:05.678Z");
+
     private static final String IDEMPOTENCY_KEY = "key-123";
     private static final Long CAMPAIGN_ID = 1L;
     private static final String ROUTE_ID = "JEJU";
@@ -54,6 +68,14 @@ class CouponServiceTest {
 
     private CouponIssueRequest createRequest() {
         return new CouponIssueRequest(USER_ID, CAMPAIGN_ID, ROUTE_ID, FARE_CLASS);
+    }
+
+    /** 서비스 계층의 오픈/만료 게이트를 통과시키는 캠페인 캐시 스텁 (게이트 자체는 D-6 대상) */
+    private void givenOpenCampaign() {
+        given(campaignCacheRepository.getOpenAt(CAMPAIGN_ID))
+                .willReturn(Instant.now().minus(Duration.ofHours(1)));
+        given(campaignCacheRepository.getExpireAt(CAMPAIGN_ID))
+                .willReturn(Instant.now().plus(Duration.ofDays(7)));
     }
 
     @Nested
@@ -119,9 +141,11 @@ class CouponServiceTest {
         void issue_firstRequest_success() throws Exception {
             // given
             CouponIssueRequest request = createRequest();
-            IssueResult successResult = IssueResult.success(COUPON_ID);
+            IssueResult successResult =
+                    IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
             String responseJson = "{\"couponId\":\"7777\"}";
 
+            givenOpenCampaign();
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
@@ -141,6 +165,10 @@ class CouponServiceTest {
             assertThat(response.couponId()).isEqualTo(String.valueOf(COUPON_ID));
             assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
 
+            // 응답 시각은 전략이 저장한 값 그대로여야 한다 (Instant.now()로 새로 만들면 깨진다)
+            assertThat(response.issuedAt()).isEqualTo(STORED_ISSUED_AT);
+            assertThat(response.expireAt()).isEqualTo(STORED_EXPIRE_AT);
+
             // 멱등성 응답 캐싱 호출 검증
             verify(idempotencyChecker, times(1))
                     .cacheResponse(eq(IDEMPOTENCY_KEY), eq(responseJson), eq(200));
@@ -153,6 +181,7 @@ class CouponServiceTest {
             // given
             CouponIssueRequest request = createRequest();
 
+            givenOpenCampaign();
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
@@ -175,6 +204,7 @@ class CouponServiceTest {
         void issue_strategyFailure_throwsCouponIssueException() {
             CouponIssueRequest request = createRequest();
 
+            givenOpenCampaign();
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
@@ -201,8 +231,10 @@ class CouponServiceTest {
         void issue_noIdempotencyKey_success() {
             // given
             CouponIssueRequest request = createRequest();
-            IssueResult successResult = IssueResult.success(COUPON_ID);
+            IssueResult successResult =
+                    IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
 
+            givenOpenCampaign();
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("NO_LOCK");
             given(stockIdLookupSelector.forStrategy("NO_LOCK")).willReturn(stockIdLookup);
@@ -216,6 +248,7 @@ class CouponServiceTest {
 
             // then
             assertThat(response.couponId()).isEqualTo(String.valueOf(COUPON_ID));
+            assertThat(response.issuedAt()).isEqualTo(STORED_ISSUED_AT);
             verifyNoInteractions(idempotencyChecker);
         }
     }
