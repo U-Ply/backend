@@ -142,7 +142,7 @@ class CouponIssuedProducerTest {
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
-                .isEqualTo(IssueFailReason.KAFKA_PUBLISH_UNKNOWN);
+                .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
     }
 
     @Test
@@ -184,7 +184,7 @@ class CouponIssuedProducerTest {
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
-                .isEqualTo(IssueFailReason.KAFKA_PUBLISH_UNKNOWN);
+                .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
     }
 
     @Test

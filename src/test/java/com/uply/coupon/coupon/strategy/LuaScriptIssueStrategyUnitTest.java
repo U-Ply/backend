@@ -281,7 +281,7 @@ class LuaScriptIssueStrategyUnitTest {
                 .willReturn(String.valueOf(expireAtEpochMillis));
 
         // 3. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
-        willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_UNKNOWN))
+        willThrow(new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN))
                 .given(couponSaveStrategy)
                 .save(
                         anyLong(),
@@ -299,7 +299,7 @@ class LuaScriptIssueStrategyUnitTest {
                                         campaignId, userId, stockId, idempotencyKey))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
-                .isEqualTo(IssueFailReason.KAFKA_PUBLISH_UNKNOWN);
+                .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
 
         // Redis 보상 로직이 절대 실행되지 않았음을 검증
         // - 최초 차감용 Lua Script만 1회 실행됨

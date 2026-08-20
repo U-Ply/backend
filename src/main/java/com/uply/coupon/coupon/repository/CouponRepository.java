@@ -2,6 +2,8 @@ package com.uply.coupon.coupon.repository;
 
 import com.uply.coupon.coupon.domain.Coupon;
 import java.time.LocalDateTime;
+import java.util.List;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -45,4 +47,7 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
                and c.expireAt <= :cutoff
             """)
     int expireIfIssued(@Param("couponId") Long couponId, @Param("cutoff") LocalDateTime cutoff);
+
+    @Query("SELECT c.userId FROM Coupon c WHERE c.campaignId = :campaignId")
+	List<Long> findUserIdsByCampaignId(@Param("campaignId") Long campaignId);
 }

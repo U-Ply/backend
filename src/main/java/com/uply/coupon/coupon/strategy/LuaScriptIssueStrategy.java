@@ -4,6 +4,9 @@ import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -26,6 +29,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     private final StringRedisTemplate redisTemplate;
     private final CouponIdGenerator couponIdGenerator;
     private final CouponSaveStrategy couponSaveStrategy;
+    private final MeterRegistry meterRegistry;
 
     private DefaultRedisScript<List> issueScript;
     DefaultRedisScript<Long> rollbackScript;
@@ -143,11 +147,34 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
         }
     }
-
-    /** Redis 롤백 전용 헬퍼 메소드 */
+    
+    /** Redis 롤백 전용 헬퍼 메소드 (지표 수집 및 반환값 처리) */
     private void rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
-        redisTemplate.execute(
-                rollbackScript, List.of(stockIdKey, issuedCampaignKey), String.valueOf(userId));
+        try {
+            Long result =
+                    redisTemplate.execute(
+                            rollbackScript,
+                            List.of(stockIdKey, issuedCampaignKey),
+                            String.valueOf(userId));
+
+            if (result != null && result == 1L) {
+                recordCompensationMetric("success");
+                log.info("[Redis 보상 성공] 재고 +1 원복 완료. userId: {}", userId);
+            } else {
+                recordCompensationMetric("noop");
+                log.info("[Redis 보상 NOP] 이미 복구되었거나 발급 이력이 없는 유저. userId: {}", userId);
+            }
+        } catch (Exception e) {
+            recordCompensationMetric("failure");
+            log.error("[Redis 보상 실패] 보상 스크립트 실행 중 네트워크/인프라 예외 발생. userId: {}", userId, e);
+        }
+    }
+    
+    private void recordCompensationMetric(String result) {
+        Counter.builder("coupon.redis.compensation")
+                .tag("result", result)
+                .register(meterRegistry)
+                .increment();
     }
 
     private IssueFailReason matchFailReason(long resultCode) {
