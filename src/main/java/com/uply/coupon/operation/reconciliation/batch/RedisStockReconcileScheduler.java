@@ -21,7 +21,7 @@ public class RedisStockReconcileScheduler {
             fixedDelayString = "${coupon.reconciliation.fixed-delay:PT5M}")
     public void launch() {
         try {
-            batchLaunchService.launch("stockReconcileJob", null, true);
+            batchLaunchService.launch("stockReconcileJob", null, true, null);
         } catch (IllegalStateException exception) {
             log.info("REC-01 스케줄 실행을 건너뜁니다 — {}", exception.getMessage());
         } catch (Exception exception) {

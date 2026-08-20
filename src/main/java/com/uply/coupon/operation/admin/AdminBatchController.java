@@ -1,10 +1,12 @@
 package com.uply.coupon.operation.admin;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,7 +40,8 @@ public class AdminBatchController {
     public ResponseEntity<?> launch(
             @PathVariable String jobKey,
             @RequestParam(required = false) String runId,
-            @RequestParam(required = false) Boolean failOnViolation)
+            @RequestParam(required = false) Boolean failOnViolation,
+            @RequestParam(required = false) String round)
             throws Exception {
 
         String jobName = JOB_KEYS.get(jobKey);
@@ -46,23 +49,27 @@ public class AdminBatchController {
             throw new BatchInvalidRequestException("알 수 없는 배치: " + jobKey);
         }
 
-        JobExecution execution = launchService.launch(jobName, runId, failOnViolation);
-        String assignedRunId = execution.getJobParameters().getString("runId");
+        JobExecution execution = launchService.launch(jobName, runId, failOnViolation, round);
+        JobParameters params = execution.getJobParameters();
+        String assignedRunId = params.getString("runId");
+        String assignedRound = params.getString("round");
 
         log.info(
-                "배치 접수 — job={}, runId={}, executionId={}",
+                "배치 접수 — job={}, runId={}, round={}, executionId={}",
                 jobName,
                 assignedRunId,
+                assignedRound,
                 execution.getId());
 
-        return ResponseEntity.accepted()
-                .body(
-                        Map.of(
-                                "job", jobKey,
-                                "jobName", jobName,
-                                "runId", String.valueOf(assignedRunId),
-                                "jobExecutionId", execution.getId(),
-                                "status", execution.getStatus().name()));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("job", jobKey);
+        body.put("jobName", jobName);
+        body.put("runId", String.valueOf(assignedRunId));
+        body.put("round", assignedRound); // 회차 개념이 없는 배치는 null 이 그대로 나간다
+        body.put("jobExecutionId", execution.getId());
+        body.put("status", execution.getStatus().name());
+
+        return ResponseEntity.accepted().body(body);
     }
 
     @GetMapping("/executions/{executionId}")
@@ -76,20 +83,21 @@ public class AdminBatchController {
         List<Map<String, Object>> steps =
                 execution.getStepExecutions().stream().map(this::toStepSummary).toList();
 
-        return ResponseEntity.ok(
-                Map.of(
-                        "jobName", execution.getJobInstance().getJobName(),
-                        "runId", String.valueOf(execution.getJobParameters().getString("runId")),
-                        "status", execution.getStatus().name(),
-                        "exitCode", execution.getExitStatus().getExitCode(),
-                        "startTime", String.valueOf(execution.getStartTime()),
-                        "endTime", String.valueOf(execution.getEndTime()),
-                        "steps", steps,
-                        // 실패 원인을 여기서 바로 보여준다. 서버 로그를 뒤지지 않아도 되게.
-                        "failures",
-                                execution.getAllFailureExceptions().stream()
-                                        .map(Throwable::getMessage)
-                                        .toList()));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("jobName", execution.getJobInstance().getJobName());
+        body.put("runId", String.valueOf(execution.getJobParameters().getString("runId")));
+        body.put("round", execution.getJobParameters().getString("round"));
+        body.put("status", execution.getStatus().name());
+        body.put("exitCode", execution.getExitStatus().getExitCode());
+        body.put("startTime", String.valueOf(execution.getStartTime()));
+        body.put("endTime", String.valueOf(execution.getEndTime()));
+        body.put("steps", steps);
+        // 실패 원인을 여기서 바로 보여준다. 서버 로그를 뒤지지 않아도 되게.
+        body.put(
+                "failures",
+                execution.getAllFailureExceptions().stream().map(Throwable::getMessage).toList());
+
+        return ResponseEntity.ok(body);
     }
 
     private Map<String, Object> toStepSummary(StepExecution step) {
