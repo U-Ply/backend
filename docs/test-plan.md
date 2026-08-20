@@ -206,11 +206,16 @@ Level 2는 로컬 PC 성능이 아니라 팀이 합의한 동일한 AWS 환경�
 | 요청 결과 | 전체 요청, 성공, `OUT_OF_STOCK`, `ALREADY_ISSUED`, `LOCK_TIMEOUT`, `CONCURRENCY_CONFLICT`, `CONNECTION_UNAVAILABLE`, 기타 4xx, 기타 5xx |
 | 정합성 | 초과 발급, 중복 발급, DB 쿠폰 수, DB 잔여 재고 |
 | API 성능 | TPS, 평균 지연, p95, p99, 최대 지연 |
-| MySQL | lock wait, 활성 커넥션, HikariCP pending, CPU |
+| MySQL | lock wait, 활성 커넥션, CPU, 메모리, 컨테이너 재시작·OOM |
 | Redis | 명령 지연, 오류, 잔여 재고 |
 | Kafka | Producer 성공·실패, 최대 Consumer lag, DLT, 최종 반영 시간 |
+| EC2 호스트 | CPU 평균·최대·지속 포화 시간, 메모리 평균·최대, swap, OOM, 재시작 |
 
 사용하지 않는 기술의 지표는 `N/A`로 기록한다.
+
+MySQL이 Docker 컨테이너라면 DB CPU·메모리는 컨테이너 단위로 수집하고, RDS를 사용한다면 CloudWatch의 `CPUUtilization`, `FreeableMemory`, `DatabaseConnections`를 사용한다. EC2 호스트 CPU는 CloudWatch 또는 node_exporter로 수집하며, 메모리는 기본 CloudWatch 지표에 포함되지 않으므로 CloudWatch Agent 또는 node_exporter가 필요하다.
+
+CPU 순간 최고값만으로 안정성을 판단하지 않는다. 평균·최대값과 함께 높은 사용률이 지속된 시간을 기록하고 p95·p99 지연 및 오류 발생 시각과 대조한다. OOM, swap 급증, 컨테이너 또는 프로세스 재시작은 없어야 한다.
 
 ### 6.6 Level 2 정합성 판정
 

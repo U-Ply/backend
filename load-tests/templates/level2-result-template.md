@@ -8,7 +8,7 @@
 | 실행자 |  |
 | Git commit SHA |  |
 | 환경 ID | AWS-EC2-01 |
-| 전략 | NO_LOCK / PESSIMISTIC_LOCK / LUA_SCRIPT_SYNC_DB |
+| 전략 | NO_LOCK / PESSIMISTIC_LOCK / LUA_SCRIPT_SYNC_DB / LUA_SCRIPT_KAFKA |
 | 실행 회차 | 1 / 2 / 3 |
 | 애플리케이션 인스턴스 수 | 1 |
 | 대상 EC2 사양 |  |
@@ -85,6 +85,10 @@ load-tests/results/<strategy>-vu<vus>-run<run>.json
 | DB 재고 차이 (`stock_diff`) | 0 |  |  |
 | Redis 잔여 재고 | N/A 또는 0 |  |  |
 | Redis 발급 사용자 수 | N/A 또는 10,000 |  |  |
+| Kafka 종료 시 Consumer lag | N/A 또는 0 |  |  |
+| Kafka DLT | N/A 또는 0 |  |  |
+| Kafka DB 최종 반영 시간 | N/A |  |  |
+| REC-01 불일치 | N/A 또는 0 |  |  |
 
 검증 명령:
 
@@ -96,15 +100,38 @@ docker exec coupon-redis redis-cli SCARD issued:1
 
 ## 5. 관측 지표
 
-| 항목 | 결과 또는 Grafana 캡처 링크 |
-| --- | --- |
-| DB lock wait |  |
-| HikariCP pending |  |
-| MySQL CPU·커넥션 |  |
-| Redis latency |  |
-| 애플리케이션 CPU·메모리 |  |
+| 영역 | 항목 | 평균 | 최대 | 안정성 판단 또는 Grafana 캡처 링크 |
+| --- | --- | ---: | ---: | --- |
+| MySQL | DB CPU 사용률 |  |  |  |
+| MySQL | DB 메모리 사용량·사용률 |  |  |  |
+| MySQL | lock wait |  |  |  |
+| MySQL | 활성 커넥션 |  |  |  |
+| 애플리케이션 | JVM 프로세스 CPU |  |  |  |
+| 애플리케이션 | JVM heap·non-heap |  |  |  |
+| 애플리케이션 | HikariCP pending |  |  |  |
+| EC2 호스트 | CPU 사용률 |  |  |  |
+| EC2 호스트 | 메모리 사용량·사용률 |  |  |  |
+| EC2 호스트 | swap·OOM·재시작 |  |  | 0건 여부 |
+| Redis | CPU·메모리 |  |  |  |
+| Redis | 명령 지연 |  |  |  |
+| Kafka | CPU·메모리 |  |  |  |
+| Kafka | 최대 Consumer lag |  |  |  |
 
-## 6. 판정 및 특이사항
+호스트 CPU·메모리는 애플리케이션 프로세스 지표와 구분한다. CPU가 순간적으로 높아진 것만으로 실패 처리하지 않고, 테스트 구간 내 지속 포화 여부와 응답 지연을 함께 판단한다. OOM, swap 급증 및 컨테이너·프로세스 재시작은 0건이어야 한다.
+
+## 6. V3 Kafka 정착 결과
+
+| 항목 | 값 |
+| --- | ---: |
+| k6 종료 시각 |  |
+| 최대 Consumer lag |  |
+| Consumer lag 0 도달 시각 |  |
+| DB 쿠폰 10,000건 도달 시각 |  |
+| k6 종료 후 DB 최종 반영 소요 시간 |  |
+| DLT 메시지 수 | 0 |
+| REC-01 결과 | PASS / FAIL / N/A |
+
+## 7. 판정 및 특이사항
 
 - 최종 판정: PASS / FAIL
 - 실패한 조건:

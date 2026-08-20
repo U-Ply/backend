@@ -45,31 +45,68 @@ issued:1                             = 비어 있음
 
 초기화 후에는 사용자와 캠페인은 유지되고 쿠폰·이력·검증 결과가 삭제된다. DB와 Redis 재고는 10,000으로 돌아가고 Redis의 발급 사용자 및 멱등성 키도 제거된다.
 
-## 실행 예시
+## 전략별 애플리케이션 실행
 
-NoLock·비관적 락의 순수 동시성 제어 성능을 비교할 때는 Redis 멱등성 계층을 끄고 애플리케이션을 실행한다. k6는 매 요청에 서로 다른 Idempotency-Key를 전송한다.
+Level 2에서는 전략 이외의 조건을 고정한다. Redis 멱등성 계층은 순수 전략 비교에서 제외하고, Kafka를 사용하지 않는 V0~V2에서는 이전 메시지가 DB에 반영되지 않도록 Consumer도 중지한다. k6는 매 요청에 서로 다른 Idempotency-Key를 전송한다.
+
+| 버전 | `COUPON_STRATEGY` | `COUPON_SAVE_STRATEGY` | `COUPON_KAFKA_CONSUMER_ENABLED` | k6 `TEST_STRATEGY` |
+| --- | --- | --- | --- | --- |
+| V0 | `NO_LOCK` | `sync-db` | `false` | `V0` |
+| V1 | `PESSIMISTIC_LOCK` | `sync-db` | `false` | `V1` |
+| V2 | `LUA_SCRIPT` | `sync-db` | `false` | `V2` |
+| V3 | `LUA_SCRIPT` | `kafka` | `true` | `V3` |
+
+### V0 — NoLock + MySQL 동기 저장
 
 ```bash
 COUPON_STRATEGY=NO_LOCK \
+COUPON_SAVE_STRATEGY=sync-db \
 COUPON_IDEMPOTENCY_ENABLED=false \
+COUPON_KAFKA_CONSUMER_ENABLED=false \
 ./gradlew bootRun
 ```
 
+### V1 — 비관적 락 + MySQL 동기 저장
+
 ```bash
 COUPON_STRATEGY=PESSIMISTIC_LOCK \
+COUPON_SAVE_STRATEGY=sync-db \
 COUPON_IDEMPOTENCY_ENABLED=false \
+COUPON_KAFKA_CONSUMER_ENABLED=false \
+./gradlew bootRun
+```
+
+### V2 — Redis Lua + MySQL 동기 저장
+
+```bash
+COUPON_STRATEGY=LUA_SCRIPT \
+COUPON_SAVE_STRATEGY=sync-db \
+COUPON_IDEMPOTENCY_ENABLED=false \
+COUPON_KAFKA_CONSUMER_ENABLED=false \
+./gradlew bootRun
+```
+
+### V3 — Redis Lua + Kafka 비동기 저장
+
+```bash
+COUPON_STRATEGY=LUA_SCRIPT \
+COUPON_SAVE_STRATEGY=kafka \
+COUPON_IDEMPOTENCY_ENABLED=false \
+COUPON_KAFKA_CONSUMER_ENABLED=true \
 ./gradlew bootRun
 ```
 
 일반 실행과 멱등성 검증에서는 `COUPON_IDEMPOTENCY_ENABLED`를 생략하거나 `true`로 설정한다. `false`는 Level 2 전략 비교 전용이며 운영 설정으로 사용하지 않는다.
 
-먼저 재고 100장, 요청 200건의 스모크 테스트를 실행한다.
+## 공통 k6 실행
+
+먼저 요청 200건의 스모크 테스트를 실행한다. `TEST_STRATEGY`는 실제 애플리케이션 전략과 동일하게 지정한다.
 
 ```bash
 mkdir -p load-tests/results
 
 k6 run \
-  -e TEST_STRATEGY=V1 \
+  -e TEST_STRATEGY=V2 \
   -e BASE_URL=http://localhost:8081 \
   -e TOTAL_REQUESTS=200 \
   -e VUS=20 \
@@ -77,15 +114,15 @@ k6 run \
   -e CAMPAIGN_ID=1 \
   -e ROUTE_ID=JEJU \
   -e FARE_CLASS=ECONOMY \
-  --summary-export load-tests/results/smoke.json \
+  --summary-export load-tests/results/v2-smoke.json \
   load-tests/k6/issue-level2.js
 ```
 
-스모크 테스트가 통과한 후 Level 2 테스트를 실행한다.
+스모크 테스트 후에는 다시 `reset-level2.sh`를 실행해 재고와 발급 결과를 초기화한다. 그다음 동일한 전략으로 본 테스트를 실행한다.
 
 ```bash
 k6 run \
-  -e TEST_STRATEGY=V1 \
+  -e TEST_STRATEGY=V2 \
   -e BASE_URL=http://localhost:8081 \
   -e TOTAL_REQUESTS=20000 \
   -e VUS=500 \
@@ -93,7 +130,7 @@ k6 run \
   -e CAMPAIGN_ID=1 \
   -e ROUTE_ID=JEJU \
   -e FARE_CLASS=ECONOMY \
-  --summary-export load-tests/results/pessimistic-vu500-run1.json \
+  --summary-export load-tests/results/v2-vu500-run1.json \
   load-tests/k6/issue-level2.js
 ```
 
@@ -102,6 +139,69 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 ```bash
 -e BASE_URL=http://10.0.1.10:8081
 ```
+
+## V2 실행 및 종료 절차
+
+1. 모든 애플리케이션 인스턴스를 중지한다.
+2. `./scripts/load-test/reset-level2.sh`로 MySQL과 Redis를 초기화한다.
+3. V2 환경변수로 애플리케이션을 실행한다.
+4. `TEST_STRATEGY=V2`로 k6를 실행한다.
+5. k6가 끝나면 바로 MySQL과 Redis 정합성을 확인한다. V2는 MySQL 동기 저장이므로 별도 정착 대기가 필요 없다.
+6. REC-01을 실행하고 결과를 저장한다.
+
+```bash
+docker exec -i coupon-mysql mysql -uroot -proot1234 < load-tests/sql/verify-level2.sql
+docker exec coupon-redis redis-cli GET stock:1
+docker exec coupon-redis redis-cli SCARD issued:1
+
+curl -X POST "http://localhost:8081/api/admin/batch/reconcile?failOnViolation=true"
+```
+
+배치 실행 응답의 `jobExecutionId`로 완료 여부를 조회한다.
+
+```bash
+curl "http://localhost:8081/api/admin/batch/executions/{jobExecutionId}"
+```
+
+## V3 실행 및 종료 절차
+
+1. 모든 애플리케이션 인스턴스를 중지한다.
+2. `./scripts/load-test/reset-level2.sh`로 MySQL과 Redis를 초기화한다.
+3. `./scripts/load-test/reset-level2-kafka.sh`로 토픽과 Consumer offset을 초기화한다.
+4. V3 환경변수로 애플리케이션을 실행한다.
+5. `TEST_STRATEGY=V3`로 k6를 실행한다.
+6. k6 종료 시각부터 MySQL 쿠폰 수가 성공 응답 수에 도달할 때까지 걸린 시간을 기록한다.
+7. Consumer lag가 0이고 DLT가 0건인지 확인한다.
+8. MySQL과 Redis 정합성을 확인한 뒤 REC-01을 실행한다.
+
+Consumer lag 확인:
+
+```bash
+docker exec coupon-kafka \
+  /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 \
+  --describe \
+  --group coupon-service
+```
+
+`LAG` 열의 합이 0이어야 한다. DLT 메시지 수는 파티션별 최신 offset의 합으로 확인한다.
+
+```bash
+docker exec coupon-kafka \
+  /opt/kafka/bin/kafka-get-offsets.sh \
+  --bootstrap-server localhost:9092 \
+  --topic coupon-issued.DLT \
+  --time -1
+```
+
+MySQL 최종 반영 건수 확인:
+
+```bash
+docker exec coupon-mysql mysql -ucoupon -pcoupon1234 coupon_db \
+  -Nse "SELECT COUNT(*) FROM coupons WHERE stock_id = 1;"
+```
+
+쿠폰 수가 k6의 `coupon_issued`와 같고 lag와 DLT가 모두 0이 된 후에만 최종 검증 및 REC-01 결과를 판정한다.
 
 ## 환경변수
 
