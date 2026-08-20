@@ -56,6 +56,21 @@ public class GlobalExceptionHandler {
                             HttpStatus.SERVICE_UNAVAILABLE,
                             "LOCK_TIMEOUT",
                             "재고 처리 대기 시간이 초과되었습니다.");
+            case DB_SAVE_FAILED ->
+                    response(
+                            HttpStatus.INTERNAL_SERVER_ERROR,
+                            "DB_SAVE_FAILED",
+                            "쿠폰 정보 저장에 실패했습니다.");
+            case KAFKA_PUBLISH_FAILED ->
+                    response(
+                            HttpStatus.INTERNAL_SERVER_ERROR,
+                            "KAFKA_PUBLISH_FAILED",
+                            "이벤트 메시지 발행에 실패했습니다.");
+            case SAVE_RESULT_UNKNOWN ->
+                    response(
+                            HttpStatus.SERVICE_UNAVAILABLE, // 불확실한 실패 -> 503
+                            "SAVE_RESULT_UNKNOWN",
+                            "쿠폰 발급 처리 결과가 불확실합니다. 잠시 후 발급 내역을 확인해 주세요.");
             case SYSTEM_ERROR ->
                     response(
                             HttpStatus.INTERNAL_SERVER_ERROR,

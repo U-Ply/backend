@@ -74,5 +74,5 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
     int expireIfIssued(@Param("couponId") Long couponId, @Param("cutoff") LocalDateTime cutoff);
 
     @Query("SELECT c.userId FROM Coupon c WHERE c.campaignId = :campaignId")
-	List<Long> findUserIdsByCampaignId(@Param("campaignId") Long campaignId);
+    List<Long> findUserIdsByCampaignId(@Param("campaignId") Long campaignId);
 }

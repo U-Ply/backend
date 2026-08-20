@@ -16,7 +16,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-
 import org.apache.kafka.common.errors.DisconnectException;
 import org.apache.kafka.common.errors.NetworkException;
 import org.apache.kafka.common.errors.RetriableException;
@@ -96,8 +95,8 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
             throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
 
         } catch (ExecutionException e) {
-        	
-        	Throwable cause = e.getCause();
+
+            Throwable cause = e.getCause();
 
             // e.getCause() 기반 예외 분류: 타임아웃/네트워크 계열 및 재시도 가능 예외는 결과 불명확(UNKNOWN)으로 처리
             if (isUnknownCause(cause)) {
@@ -118,10 +117,10 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
                     couponId,
                     e);
             throw new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED, e);
-        
+
         } catch (Exception e) {
-        	log.error("[Kafka 발행 결과 불명확] couponId: {}", couponId, e);
-        	throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
+            log.error("[Kafka 발행 결과 불명확] couponId: {}", couponId, e);
+            throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
         }
     }
 
@@ -136,7 +135,7 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
                 || cause instanceof DisconnectException
                 || cause instanceof RetriableException;
     }
-    
+
     /** 이벤트 -> JSON 직렬화 헬퍼 메소드 (확실한 실패) */
     private String toJson(CouponIssuedEvent event) {
         try {

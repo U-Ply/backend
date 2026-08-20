@@ -106,10 +106,10 @@ public class CouponServiceImpl implements CouponService {
         } catch (CouponIssueException e) {
             // 비즈니스 로직 / 인프라 예외 발생 시 PROCESSING 키 삭제 (재시도 허용)
             if (hasIdempotencyKey(idempotencyKey)) {
-            	// 확실한 실패 시에만 멱등성 키를 삭제하여 재시도 허용
-            	if (e.getReason() != IssueFailReason.SAVE_RESULT_UNKNOWN) {
-            		idempotencyChecker.clearProgress(idempotencyKey);
-            	} 
+                // 확실한 실패 시에만 멱등성 키를 삭제하여 재시도 허용
+                if (e.getReason() != IssueFailReason.SAVE_RESULT_UNKNOWN) {
+                    idempotencyChecker.clearProgress(idempotencyKey);
+                }
             }
             throw e;
         }

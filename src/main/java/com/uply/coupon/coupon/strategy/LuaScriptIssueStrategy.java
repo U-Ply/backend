@@ -4,7 +4,6 @@ import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
-
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
@@ -90,7 +89,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
-
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {
             couponSaveStrategy.save(
@@ -114,9 +112,12 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
         } catch (Exception e) {
             // 기타 예상치 못한 인프라/시스템 예외 발생 시 보상 유예
-        	// 카프카 발행 중 처리되지 않은 예외
-            log.error("[알 수 없는 인프라 예외 발생] DB/Kafka 저장 상태가 불명확하므로 Redis 보상 없이 UNKNOWN 전파. couponId: {}", couponId, e);
-            //rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
+            // 카프카 발행 중 처리되지 않은 예외
+            log.error(
+                    "[알 수 없는 인프라 예외 발생] DB/Kafka 저장 상태가 불명확하므로 Redis 보상 없이 UNKNOWN 전파. couponId: {}",
+                    couponId,
+                    e);
+            // rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
             throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
         }
 
@@ -147,7 +148,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
         }
     }
-    
+
     /** Redis 롤백 전용 헬퍼 메소드 (지표 수집 및 반환값 처리) */
     private void rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
         try {
@@ -169,7 +170,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             log.error("[Redis 보상 실패] 보상 스크립트 실행 중 네트워크/인프라 예외 발생. userId: {}", userId, e);
         }
     }
-    
+
     private void recordCompensationMetric(String result) {
         Counter.builder("coupon.redis.compensation")
                 .tag("result", result)

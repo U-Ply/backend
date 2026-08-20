@@ -3,7 +3,6 @@ package com.uply.coupon.campaign.service;
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
-
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -86,7 +85,7 @@ public class CampaignCacheWarmupService {
         // 3. stock:{stockId} 잔여 재고(remainingStock) 기준 캐싱
         for (CampaignStock stock : stocks) {
             String stockKey = String.format(KEY_STOCK, stock.getId());
-            
+
             // [수정] getTotalStock() -> getRemainingStock() 으로 변경하여 실제 잔여 재고 복구
             redisTemplate
                     .opsForValue()
@@ -113,17 +112,20 @@ public class CampaignCacheWarmupService {
         List<Long> issuedUserIds = couponRepository.findUserIdsByCampaignId(campaignId);
 
         if (issuedUserIds != null && !issuedUserIds.isEmpty()) {
-            String[] userIdStrs = issuedUserIds.stream()
-                    .map(String::valueOf)
-                    .toArray(String[]::new);
-            
+            String[] userIdStrs =
+                    issuedUserIds.stream().map(String::valueOf).toArray(String[]::new);
+
             // DB의 기발급 유저 목록을 SADD로 Redis Set에 복구
             redisTemplate.opsForSet().add(issuedKey, userIdStrs);
-            log.info("Rebuilt issued Set for campaignId: {} with {} users", campaignId, userIdStrs.length);
+            log.info(
+                    "Rebuilt issued Set for campaignId: {} with {} users",
+                    campaignId,
+                    userIdStrs.length);
         }
-        
+
         redisTemplate.expire(issuedKey, CACHE_TTL_HOURS, TimeUnit.HOURS);
 
-        log.info("Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);
+        log.info(
+                "Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);
     }
 }

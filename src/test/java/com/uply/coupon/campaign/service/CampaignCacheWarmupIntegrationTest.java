@@ -113,21 +113,38 @@ class CampaignCacheWarmupIntegrationTest {
         stock.decreaseStock(30); // 재고 30개 소진
         CampaignStock savedStock = campaignStockRepository.save(stock);
 
-
         String sql = "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?)";
 
-        List<Object[]> batchArgs = List.of(
-            new Object[]{100L, "user1@test.com", "유저100"},
-            new Object[]{101L, "user2@test.com", "유저101"},
-            new Object[]{102L, "user3@test.com", "유저102"}
-        );
+        List<Object[]> batchArgs =
+                List.of(
+                        new Object[] {100L, "user1@test.com", "유저100"},
+                        new Object[] {101L, "user2@test.com", "유저101"},
+                        new Object[] {102L, "user3@test.com", "유저102"});
 
         jdbcTemplate.batchUpdate(sql, batchArgs);
-        
+
         // DB에 기발급된 쿠폰 데이터 3건 생성 (유저 ID: 100, 101, 102)
-        Coupon coupon1 = Coupon.issue(2001L, 100L, savedCampaign.getId(), savedStock.getId(), savedCampaign.getExpireAt());
-        Coupon coupon2 = Coupon.issue(2002L, 101L, savedCampaign.getId(), savedStock.getId(), savedCampaign.getExpireAt());
-        Coupon coupon3 = Coupon.issue(2003L, 102L, savedCampaign.getId(), savedStock.getId(), savedCampaign.getExpireAt());
+        Coupon coupon1 =
+                Coupon.issue(
+                        2001L,
+                        100L,
+                        savedCampaign.getId(),
+                        savedStock.getId(),
+                        savedCampaign.getExpireAt());
+        Coupon coupon2 =
+                Coupon.issue(
+                        2002L,
+                        101L,
+                        savedCampaign.getId(),
+                        savedStock.getId(),
+                        savedCampaign.getExpireAt());
+        Coupon coupon3 =
+                Coupon.issue(
+                        2003L,
+                        102L,
+                        savedCampaign.getId(),
+                        savedStock.getId(),
+                        savedCampaign.getExpireAt());
         couponRepository.saveAll(List.of(coupon1, coupon2, coupon3));
 
         // when
