@@ -18,9 +18,5 @@ fi
 docker compose up -d mysql redis
 docker exec -i coupon-mysql mysql -uroot -proot1234 < load-tests/sql/reset-level2-db.sql
 
-docker exec coupon-redis redis-cli FLUSHDB >/dev/null
-docker exec coupon-redis redis-cli SET stock:1 10000 >/dev/null
-
-echo "Redis stock:1=$(docker exec coupon-redis redis-cli GET stock:1)"
-echo "Redis issued:1 size=$(docker exec coupon-redis redis-cli SCARD issued:1)"
+bash scripts/load-test/initialize-level2-redis.sh
 echo "Level 2 reset completed."

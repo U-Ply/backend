@@ -1,5 +1,6 @@
 package com.uply.coupon.operation.admin;
 
+import com.uply.coupon.operation.verification.domain.RoundVersion;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
@@ -52,22 +53,28 @@ public class BatchLaunchService {
      * @param failOnViolation null 이면 Job 기본값(실패시킴)을 따른다. NoLock(V0) 회차처럼 정합성 위반이 의도된 결과인 경우에만 false
      *     를 넘긴다. 위반 내용은 어느 쪽이든 verification_report 에 동일하게 기록된다.
      */
-    public JobExecution launch(String jobName, String requestedRunId, Boolean failOnViolation)
+    public JobExecution launch(
+            String jobName, String requestedRunId, Boolean failOnViolation, String round)
             throws Exception {
 
         if (!ALLOWED_JOBS.contains(jobName)) {
             throw new BatchInvalidRequestException("알 수 없는 Job: " + jobName);
         }
-
-        // 경로는 예약돼 있으나 Job 빈이 아직 없는 경우.
-        // 400 이 아니라 501 로 구분한다.
         if (!jobs.containsKey(jobName)) {
             throw new BatchNotImplementedException(jobName + " 은 아직 구현되지 않았다.");
         }
-
-        // 같은 Job 이 이미 돌고 있으면 거절한다.
         if (!jobExplorer.findRunningJobExecutions(jobName).isEmpty()) {
             throw new BatchConflictException(jobName + " 이 이미 실행 중이다.");
+        }
+
+        // 검증 회차는 round 가 필수다. 없으면 CLOCK-02 가 조용히 N/A 로 넘어간다.
+        // Tasklet 에서도 parse 하지만, Job 실행이 비동기라 여기서 막아야 400 이 나간다.
+        if ("verificationJob".equals(jobName)) {
+            try {
+                RoundVersion.parse(round);
+            } catch (IllegalArgumentException e) {
+                throw new BatchInvalidRequestException(e.getMessage());
+            }
         }
 
         String runId =
@@ -79,6 +86,9 @@ public class BatchLaunchService {
 
         if (failOnViolation != null) {
             builder.addString("failOnViolation", failOnViolation.toString(), false);
+        }
+        if (round != null && !round.isBlank()) {
+            builder.addString("round", round.trim().toUpperCase(), false);
         }
 
         return launcher.run(jobs.get(jobName), builder.toJobParameters());
