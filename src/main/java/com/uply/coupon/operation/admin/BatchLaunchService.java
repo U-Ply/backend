@@ -56,18 +56,18 @@ public class BatchLaunchService {
             throws Exception {
 
         if (!ALLOWED_JOBS.contains(jobName)) {
-            throw new IllegalArgumentException("알 수 없는 Job: " + jobName);
+            throw new BatchInvalidRequestException("알 수 없는 Job: " + jobName);
         }
 
         // 경로는 예약돼 있으나 Job 빈이 아직 없는 경우.
         // 400 이 아니라 501 로 구분한다.
         if (!jobs.containsKey(jobName)) {
-            throw new UnsupportedOperationException(jobName + " 은 아직 구현되지 않았다.");
+            throw new BatchNotImplementedException(jobName + " 은 아직 구현되지 않았다.");
         }
 
         // 같은 Job 이 이미 돌고 있으면 거절한다.
         if (!jobExplorer.findRunningJobExecutions(jobName).isEmpty()) {
-            throw new IllegalStateException(jobName + " 이 이미 실행 중이다.");
+            throw new BatchConflictException(jobName + " 이 이미 실행 중이다.");
         }
 
         String runId =

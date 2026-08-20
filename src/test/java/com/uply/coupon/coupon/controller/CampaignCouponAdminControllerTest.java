@@ -17,6 +17,7 @@ import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
 import com.uply.coupon.coupon.dto.response.CampaignCouponRevokeResponse;
 import com.uply.coupon.coupon.service.CampaignCouponRevokeService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,7 @@ class CampaignCouponAdminControllerTest {
                                         campaignCouponRevokeService,
                                         idempotencyChecker,
                                         objectMapper))
-                        .setControllerAdvice(new GlobalExceptionHandler())
+                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
                         .build();
     }
 

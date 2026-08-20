@@ -1,10 +1,15 @@
 package com.uply.coupon.common.exception;
 
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import com.uply.coupon.operation.admin.BatchConflictException;
+import com.uply.coupon.operation.admin.BatchExecutionNotFoundException;
+import com.uply.coupon.operation.admin.BatchInvalidRequestException;
+import com.uply.coupon.operation.admin.BatchNotImplementedException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +18,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Slf4j
 @RestControllerAdvice
@@ -104,6 +110,37 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({MethodArgumentNotValidException.class, MissingRequestHeaderException.class})
     public ResponseEntity<ApiErrorResponse> handleInvalidRequest(Exception exception) {
         return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "요청 값이 올바르지 않습니다.");
+    }
+
+    @ExceptionHandler(BatchInvalidRequestException.class)
+    public ResponseEntity<ApiErrorResponse> handleBatchInvalidRequest(
+            BatchInvalidRequestException exception) {
+        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", exception.getMessage());
+    }
+
+    @ExceptionHandler({BatchConflictException.class, JobInstanceAlreadyCompleteException.class})
+    public ResponseEntity<ApiErrorResponse> handleBatchConflict(Exception exception) {
+        return conflict("BATCH_CONFLICT", exception.getMessage());
+    }
+
+    @ExceptionHandler(BatchNotImplementedException.class)
+    public ResponseEntity<ApiErrorResponse> handleBatchNotImplemented(
+            BatchNotImplementedException exception) {
+        return response(
+                HttpStatus.NOT_IMPLEMENTED, "BATCH_NOT_IMPLEMENTED", exception.getMessage());
+    }
+
+    @ExceptionHandler(BatchExecutionNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleBatchExecutionNotFound(
+            BatchExecutionNotFoundException exception) {
+        return response(HttpStatus.NOT_FOUND, "BATCH_EXECUTION_NOT_FOUND", exception.getMessage());
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiErrorResponse> handleMethodArgumentTypeMismatch(
+            MethodArgumentTypeMismatchException exception) {
+        String message = exception.getName() + " 값이 올바르지 않습니다: " + exception.getValue();
+        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", message);
     }
 
     @ExceptionHandler(Exception.class)
