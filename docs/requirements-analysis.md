@@ -342,6 +342,10 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 - Redis 장애가 다른 검증 규칙의 실행을 막지 않아야 한다.
 - Redis `stock:{stockId}`와 MySQL `campaign_stocks.remaining_stock`을 비교한다.
 - 불일치를 탐지하고 보고하되 기본 동작은 자동 수정이 아니다.
+- Redis를 사용하지 않는 V0(NoLock), V1(비관적 락) 회차는 `N/A`다.
+- V3(Redis Lua + Kafka)는 Consumer lag와 DLT가 모두 0인 뒤에만 최종 비교한다. 처리 중에는 Redis가 DB보다 먼저 차감되는 것이 정상일 수 있으므로, 정착 전 실행은 `SKIPPED_NOT_SETTLED`로 종료한다.
+- Redis 키 누락 또는 숫자가 아닌 Redis 값도 불일치로 기록한다. `diff = redis_remaining - db_remaining`이며, 샘플은 `campaign_stocks`의 `stock_id`를 대상으로 남긴다.
+- 기본은 부하 테스트 종료 후 수동 실행이며, 주기 실행은 발급이 없는 시간대에 `RECONCILIATION_SCHEDULER_ENABLED=true`인 배치 담당 인스턴스 한 대에서만 활성화한다.
 
 ## 12. API 오류 정책
 
