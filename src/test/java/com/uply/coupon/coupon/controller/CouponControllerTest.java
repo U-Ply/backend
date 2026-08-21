@@ -283,7 +283,7 @@ class CouponControllerTest {
     // 상태 변경 완료 후 응답 캐싱이 실패해도 멱등성 진행 상태를 삭제하지 않는지 검증한다.
     @Test
     void completedStateChangeDoesNotClearProgressWhenResponseCacheFails() throws Exception {
-        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(USED_AT);
         given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY)).willReturn(coupon);
         doThrow(new IllegalStateException("Redis response cache failure"))
