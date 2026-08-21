@@ -114,6 +114,8 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 - `coupon_issued`
 - `coupon_out_of_stock`
 - `coupon_already_issued`
+- `coupon_campaign_not_open`
+- `coupon_campaign_expired`
 - `coupon_lock_timeout`
 - `coupon_concurrency_conflict`
 - `coupon_connection_unavailable`
@@ -132,6 +134,17 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 
 `coupon_concurrency_conflict`는 V0(NoLock)에서 발생하는 것이 정상이다. 동시성 제어가 없을 때 무엇이 깨지는지 재현하는 것이 V0의 목적이므로, 이 값을 오류로 취급하면 기준선 측정이 성립하지 않는다. 그래서 threshold를 두지 않고 수치만 기록한다.
 
+409로 응답하는 캠페인 구간 거부도 별도로 집계한다.
+
+| 항목 | 발생 지점 | Level 2 판정 |
+| --- | --- | --- |
+| `coupon_campaign_not_open` | `open_at` 이전 요청 (V0·V1은 DB `NOW(3)`, V2·V3은 Lua의 Redis `TIME`) | LT-01은 0건 |
+| `coupon_campaign_expired` | `expire_at` 이후 요청 (판정 기준 동일) | LT-01은 0건. **E-2·E-3 경계 시나리오에서는 정상 관측값** |
+
+두 항목도 threshold를 두지 않는다. LT-01에서는 0이어야 하지만, 인수 기준 E-2(만료 정각)·E-3(만료 1초 후)에서는 이 값이 나오는 것이 정답이라 같은 스크립트를 두 용도로 쓰기 때문이다. 판정은 결과 문서에서 한다.
+
+`coupon_other_4xx`가 아니라 전용 카운터로 뺀 이유는 `coupon_other_4xx`에 `count==0` threshold가 걸려 있어, 만료 경계 시나리오를 돌리면 실행 자체가 실패로 끝나기 때문이다.
+
 결과 건수는 다음 식으로 전체 요청 수와 일치해야 한다.
 
 ```text
@@ -139,6 +152,8 @@ AWS의 별도 k6 인스턴스에서는 `BASE_URL`에 애플리케이션 EC2의 �
 = coupon_issued
 + coupon_out_of_stock
 + coupon_already_issued
++ coupon_campaign_not_open
++ coupon_campaign_expired
 + coupon_lock_timeout
 + coupon_concurrency_conflict
 + coupon_connection_unavailable

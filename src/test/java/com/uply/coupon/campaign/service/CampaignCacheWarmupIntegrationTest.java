@@ -113,13 +113,15 @@ class CampaignCacheWarmupIntegrationTest {
         stock.decreaseStock(30); // 재고 30개 소진
         CampaignStock savedStock = campaignStockRepository.save(stock);
 
-        String sql = "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?)";
+        String sql =
+                "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?)"
+                        + " ON DUPLICATE KEY UPDATE user_id = user_id";
 
         List<Object[]> batchArgs =
                 List.of(
-                        new Object[] {100L, "user1@test.com", "유저100"},
-                        new Object[] {101L, "user2@test.com", "유저101"},
-                        new Object[] {102L, "user3@test.com", "유저102"});
+                        new Object[] {100L, "warmup-user100@test.com", "유저100"},
+                        new Object[] {101L, "warmup-user101@test.com", "유저101"},
+                        new Object[] {102L, "warmup-user102@test.com", "유저102"});
 
         jdbcTemplate.batchUpdate(sql, batchArgs);
 

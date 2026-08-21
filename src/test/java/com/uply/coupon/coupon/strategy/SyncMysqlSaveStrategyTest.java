@@ -13,6 +13,7 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.coupon.strategy.save.SyncMysqlSaveStrategy;
+import jakarta.persistence.EntityManager;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -24,6 +25,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.PessimisticLockingFailureException;
 
 @ExtendWith(MockitoExtension.class)
@@ -34,6 +36,9 @@ class SyncMysqlSaveStrategyTest {
     @Mock private CouponHistoryRepository couponHistoryRepository;
 
     @Mock private CampaignStockRepository campaignStockRepository;
+
+    // 제약조건 위반을 트랜잭션 커밋이 아니라 save() 안에서 터뜨리기 위한 flush 대상
+    @Mock private EntityManager entityManager;
 
     @InjectMocks private SyncMysqlSaveStrategy syncMysqlSaveStrategy;
 
@@ -76,6 +81,9 @@ class SyncMysqlSaveStrategyTest {
         ArgumentCaptor<CouponHistory> historyCaptor = ArgumentCaptor.forClass(CouponHistory.class);
         verify(couponHistoryRepository).save(historyCaptor.capture());
         assertThat(historyCaptor.getValue().getEventAt()).isEqualTo(issuedAt);
+
+        // 제약조건 위반이 커밋 시점으로 밀리지 않도록 이 메서드 안에서 flush해야 한다
+        verify(entityManager).flush();
     }
 
     @Test
@@ -108,8 +116,8 @@ class SyncMysqlSaveStrategyTest {
     }
 
     @Test
-    @DisplayName("DataIntegrityViolationException 발생 시 ALREADY_ISSUED 예외로 변환되며 원인 예외가 유지된다")
-    void save_DataIntegrityViolationException_ThrowsAlreadyIssued() {
+    @DisplayName("UNIQUE 제약 위반(DuplicateKeyException) 시 ALREADY_ISSUED 예외로 변환되며 원인 예외가 유지된다")
+    void save_DuplicateKeyException_ThrowsAlreadyIssued() {
         // given
         Long couponId = 1000L;
         Long userId = 100L;
@@ -120,8 +128,7 @@ class SyncMysqlSaveStrategyTest {
         given(campaignStockRepository.decreaseRemainingStockIfAvailable(stockId, campaignId))
                 .willReturn(1);
         given(couponRepository.save(any(Coupon.class)))
-                .willThrow(
-                        new DataIntegrityViolationException("Duplicate entry for key 'UK_coupon'"));
+                .willThrow(new DuplicateKeyException("Duplicate entry for key 'UK_coupon'"));
 
         // when & then
         assertThatThrownBy(
@@ -135,9 +142,44 @@ class SyncMysqlSaveStrategyTest {
                                         issuedAt,
                                         expireAt))
                 .isInstanceOf(CouponIssueException.class)
-                .hasCauseInstanceOf(DataIntegrityViolationException.class)
+                .hasCauseInstanceOf(DuplicateKeyException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.ALREADY_ISSUED);
+    }
+
+    @Test
+    @DisplayName("중복이 아닌 정합성 위반(FK·CHECK)은 ALREADY_ISSUED가 아니라 DB_SAVE_FAILED로 변환된다")
+    void save_NonDuplicateIntegrityViolation_ThrowsDbSaveFailed() {
+        // given
+        Long couponId = 1000L;
+        Long userId = 100L;
+        Long campaignId = 1L;
+        Long stockId = 10L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(campaignStockRepository.decreaseRemainingStockIfAvailable(stockId, campaignId))
+                .willReturn(1);
+        given(couponRepository.save(any(Coupon.class)))
+                .willThrow(
+                        new DataIntegrityViolationException(
+                                "Cannot add or update a child row: a foreign key constraint fails"));
+
+        // when & then
+        // FK 위반을 ALREADY_ISSUED로 응답하면 클라이언트가 "이미 발급받았다"는 틀린 사실을 통보받는다.
+        assertThatThrownBy(
+                        () ->
+                                syncMysqlSaveStrategy.save(
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        issuedAt,
+                                        expireAt))
+                .isInstanceOf(CouponIssueException.class)
+                .hasCauseInstanceOf(DataIntegrityViolationException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.DB_SAVE_FAILED);
     }
 
     @Test

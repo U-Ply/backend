@@ -5,6 +5,7 @@ import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +46,10 @@ public class CampaignCacheWarmupService {
 
     /**
      * 특정 캠페인의 잔여 재고 및 발급 이력을 RDB에서 조회하여 Redis 캐시에 적재/복구
+     *
+     * <p><b>실행 전제</b> — 이 메서드는 DB를 정답으로 보고 Redis를 통째로 덮어쓴다. 따라서 발급 요청을 차단하고 Kafka lag이 0인 것(=발급
+     * 이벤트가 모두 DB에 반영된 것)을 확인한 뒤에 호출해야 한다. lag이 남은 상태로 호출하면 아직 DB에 없는 발급분이 issued Set에서 사라져 같은 유저가
+     * 다시 발급받을 수 있고, 재고도 그만큼 부풀려 복구된다.
      *
      * @param campaignId 사전 적재 및 복구 대상 캠페인 ID
      */
@@ -111,19 +116,29 @@ public class CampaignCacheWarmupService {
         String issuedKey = String.format(KEY_ISSUED, campaignId);
         List<Long> issuedUserIds = couponRepository.findUserIdsByCampaignId(campaignId);
 
-        if (issuedUserIds != null && !issuedUserIds.isEmpty()) {
+        if (issuedUserIds == null || issuedUserIds.isEmpty()) {
+            // DB에 발급자가 없으면 Set도 비어 있어야 한다.
+            // SADD만 하던 기존 방식은 이 경우 아무 일도 하지 않아, Redis에만 남아 있던
+            // 오염된 유저가 "복구" 후에도 그대로 살아남았다.
+            redisTemplate.delete(issuedKey);
+            log.info("Cleared issued Set for campaignId: {} (DB에 발급 이력 없음)", campaignId);
+        } else {
             String[] userIdStrs =
                     issuedUserIds.stream().map(String::valueOf).toArray(String[]::new);
 
-            // DB의 기발급 유저 목록을 SADD로 Redis Set에 복구
-            redisTemplate.opsForSet().add(issuedKey, userIdStrs);
+            // 임시 키에 DB 기준으로 새로 쌓은 뒤 RENAME으로 원자 교체한다.
+            // 기존 키에 SADD로 덧칠하면 DB에 없는 유저가 Set에 남아 발급이 부당하게 거부된다.
+            // RENAME은 대상 키를 덮어쓰면서 TTL까지 함께 옮기므로 별도 expire가 필요 없다.
+            String rebuildKey = issuedKey + ":rebuild:" + UUID.randomUUID();
+            redisTemplate.opsForSet().add(rebuildKey, userIdStrs);
+            redisTemplate.expire(rebuildKey, CACHE_TTL_HOURS, TimeUnit.HOURS);
+            redisTemplate.rename(rebuildKey, issuedKey);
+
             log.info(
                     "Rebuilt issued Set for campaignId: {} with {} users",
                     campaignId,
                     userIdStrs.length);
         }
-
-        redisTemplate.expire(issuedKey, CACHE_TTL_HOURS, TimeUnit.HOURS);
 
         log.info(
                 "Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);

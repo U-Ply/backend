@@ -7,10 +7,12 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import jakarta.persistence.EntityManager;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,6 +25,7 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
     private final CouponRepository couponRepository;
     private final CouponHistoryRepository couponHistoryRepository;
     private final CampaignStockRepository campaignStockRepository;
+    private final EntityManager entityManager;
 
     @Override
     @Transactional
@@ -49,12 +52,17 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
             couponHistoryRepository.save(
                     CouponHistory.issued(coupon.getCouponId(), idempotencyKey, issuedAt));
 
+            entityManager.flush();
+
         } catch (CouponIssueException e) {
             // 재고 부족은 그대로 재전파
             throw e;
-        } catch (DataIntegrityViolationException e) {
-            // Unique 제약조건 위반 등 데이터 정합성 예외 (원인 e 포함)
+        } catch (DuplicateKeyException e) {
+            // UNIQUE(campaign_id, user_id) 또는 coupon_history.idempotency_key 위반.
+            // 중복 발급 시도로 확정할 수 있는 유일한 경우다.
             throw new CouponIssueException(IssueFailReason.ALREADY_ISSUED, e);
+        } catch (DataIntegrityViolationException e) {
+            throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED, e);
         } catch (Exception e) {
             // DB Lock Timeout, Connection 고갈 등 시스템/인프라 예외 (원인 e 포함)
             throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED, e);

@@ -65,14 +65,22 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         String issuedCampaignKey = String.format("issued:%d", campaignId);
         // 캠페인 오픈 시각 Key
         String campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
+        // 캠페인 만료 시각 Key - 스크립트의 만료 판정과 DB 저장에 같은 값을 쓴다
+        String campaignExpireAtKey = campaignExpireAtKey(campaignId);
         // Redis 캐싱된 expireAt 조회
         LocalDateTime expireAt = getExpireAt(campaignId); // 실패 가능
 
         // #3. Lua Script 실행 (Atomic 연산)
+        // 오픈/만료 판정도 스크립트 안에서 한다. Java에서 미리 검사하면 검사와 차감 사이에
+        // 캠페인이 만료되는 창이 열리고, 그 사이 요청은 만료 후에도 발급에 성공한다.
         List<Object> result =
                 redisTemplate.execute(
                         issueScript,
-                        List.of(stockIdKey, issuedCampaignKey, campaignOpenAtKey),
+                        List.of(
+                                stockIdKey,
+                                issuedCampaignKey,
+                                campaignOpenAtKey,
+                                campaignExpireAtKey),
                         String.valueOf(userId));
 
         if (result == null || result.isEmpty()) {
@@ -134,13 +142,17 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         return "LUA_SCRIPT";
     }
 
+    private String campaignExpireAtKey(Long campaignId) {
+        return String.format("campaign:%d:expireAt", campaignId);
+    }
+
     /** expireAt 조회 헬퍼 메소드 */
     private LocalDateTime getExpireAt(Long campaignId) {
-        String key = String.format("campaign:%d:expireAt", campaignId);
-        String expireAtStr = redisTemplate.opsForValue().get(key);
+        String expireAtStr = redisTemplate.opsForValue().get(campaignExpireAtKey(campaignId));
 
         if (expireAtStr == null) {
-            throw new CampaignNotFoundException(campaignId, campaignId);
+            // 캐시 누락이므로 재고 풀이 아니라 캠페인 단위 예외다 (stockId를 아는 상황이 아니다)
+            throw new CampaignNotFoundException(campaignId);
         }
 
         // 파싱 과정에서 에러 발생 가능 -> 쿠폰 발급 실패 예외에 담아서 전파
@@ -187,6 +199,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             case -1 -> IssueFailReason.ALREADY_ISSUED;
             case -2 -> IssueFailReason.OUT_OF_STOCK;
             case -4 -> IssueFailReason.CAMPAIGN_NOT_OPEN;
+            case -5 -> IssueFailReason.CAMPAIGN_EXPIRED;
             default -> IssueFailReason.SYSTEM_ERROR;
         };
     }

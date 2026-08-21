@@ -2,6 +2,7 @@ package com.uply.coupon.coupon.strategy;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.campaign.repository.CampaignWindow;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.domain.Coupon;
@@ -35,11 +36,18 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
 
             LocalDateTime databaseTime = campaignStockRepository.currentDatabaseTime();
 
-            LocalDateTime expireAt =
+            // 오픈/만료 판정 기준을 databaseTime 하나로 통일한다.
+            // Lua 경로가 Redis TIME으로 판정하듯, DB 경로는 게이트와 기록이 모두 DB 시계에서 나와야 한다
+            CampaignWindow window =
                     campaignStockRepository
-                            .findCouponExpireAt(stockId, campaignId)
+                            .findCampaignWindow(stockId, campaignId)
                             .orElseThrow(() -> new CampaignNotFoundException(campaignId, stockId));
 
+            if (window.getOpenAt() != null && databaseTime.isBefore(window.getOpenAt())) {
+                return IssueResult.fail(IssueFailReason.CAMPAIGN_NOT_OPEN);
+            }
+
+            LocalDateTime expireAt = window.getExpireAt();
             if (!expireAt.isAfter(databaseTime)) {
                 return IssueResult.fail(IssueFailReason.CAMPAIGN_EXPIRED);
             }
@@ -54,7 +62,6 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
             Optional<CouponHistory> processed =
                     couponHistoryRepository.findByIdempotencyKey(idempotencyKey);
             if (processed.isPresent()) {
-                // 이미 발급된 건의 재조회이므로 databaseTime(지금 시각)이 아니라 저장된 이력의 시각을 돌려준다.
                 return IssueResult.success(
                         processed.get().getCouponId(),
                         processed.get().getEventAt().toInstant(ZoneOffset.UTC),
@@ -75,7 +82,7 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
             stock.decrease();
             campaignStockRepository.save(stock);
 
-            // 쿠폰 발급 (expireAt은 임시로 7일 후 만료)
+            // 쿠폰 발급 - 만료 시각은 캠페인에서 상속
             Coupon coupon =
                     Coupon.issue(
                             couponIdGenerator.generate(),
@@ -86,7 +93,7 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
                             expireAt);
             couponRepository.save(coupon);
 
-            // 발급 이력 저장 - 쿠폰과 같은 databaseTime을 넘겨 event_at과 issued_at을 일치시킨다 (INV-04)
+            // 발급 이력 저장 - 쿠폰과 같은 databaseTime을 넘겨 event_at과 issued_at을 일치하도록
             couponHistoryRepository.save(
                     CouponHistory.issued(coupon.getCouponId(), idempotencyKey, databaseTime));
 

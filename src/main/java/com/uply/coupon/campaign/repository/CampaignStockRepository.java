@@ -44,6 +44,17 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
     Optional<LocalDateTime> findCouponExpireAt(
             @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
 
+    @Query(
+            """
+            select c.openAt as openAt, c.expireAt as expireAt
+              from CampaignStock s
+              join s.campaign c
+             where s.id = :stockId
+               and c.id = :campaignId
+            """)
+    Optional<CampaignWindow> findCampaignWindow(
+            @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
             """
