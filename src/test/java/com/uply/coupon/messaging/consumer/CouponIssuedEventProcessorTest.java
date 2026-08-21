@@ -29,7 +29,8 @@ class CouponIssuedEventProcessorTest {
                     1L,
                     3L,
                     "550e8400-e29b-41d4-a716-446655440000",
-                    Instant.parse("2026-08-15T01:00:00Z"));
+                    Instant.parse("2026-08-15T01:00:00Z"),
+                    Instant.parse("2026-08-15T01:00:00.050Z"));
 
     @Mock private CouponRepository couponRepository;
     @Mock private CouponHistoryRepository couponHistoryRepository;
@@ -112,7 +113,13 @@ class CouponIssuedEventProcessorTest {
     void missingIdempotencyKeyIsRejected() {
         CouponIssuedEvent invalidEvent =
                 new CouponIssuedEvent(
-                        1001L, 10L, 1L, 3L, " ", Instant.parse("2026-08-15T01:00:00Z"));
+                        1001L,
+                        10L,
+                        1L,
+                        3L,
+                        " ",
+                        Instant.parse("2026-08-15T01:00:00Z"),
+                        Instant.parse("2026-08-15T01:00:00.050Z"));
 
         assertThatThrownBy(() -> eventProcessor.process(invalidEvent))
                 .isInstanceOf(IllegalArgumentException.class)

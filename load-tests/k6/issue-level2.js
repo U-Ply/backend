@@ -16,6 +16,8 @@ const TEST_STRATEGY = strategyEnv('TEST_STRATEGY');
 const issued = new Counter('coupon_issued');
 const outOfStock = new Counter('coupon_out_of_stock');
 const alreadyIssued = new Counter('coupon_already_issued');
+const campaignNotOpen = new Counter('coupon_campaign_not_open');
+const campaignExpired = new Counter('coupon_campaign_expired');
 const clientErrors = new Counter('coupon_other_4xx');
 const lockTimeout = new Counter('coupon_lock_timeout');
 const concurrencyConflict = new Counter('coupon_concurrency_conflict');
@@ -84,6 +86,10 @@ export default function () {
     outOfStock.add(1);
   } else if (response.status === 409 && body?.errorCode === 'ALREADY_ISSUED') {
     alreadyIssued.add(1);
+  } else if (response.status === 409 && body?.errorCode === 'CAMPAIGN_NOT_OPEN') {
+    campaignNotOpen.add(1);
+  } else if (response.status === 409 && body?.errorCode === 'CAMPAIGN_EXPIRED') {
+    campaignExpired.add(1);
   } else if (response.status === 503 && body?.errorCode === 'LOCK_TIMEOUT') {
     lockTimeout.add(1);
   } else if (response.status === 503 && body?.errorCode === 'CONCURRENCY_CONFLICT') {
@@ -104,10 +110,19 @@ export default function () {
 }
 
 function isExpectedResponse(response, body) {
+  // 여기서 보는 것은 "기술적 실패가 없었는가"이지 "인수 기준을 만족했는가"가 아니다.
+  // 오픈 전·만료 거부도 오류 코드 표에 정의된 정상 비즈니스 응답이므로 통과로 센다.
+  // LT-01 에서 이 값이 0인지는 카운터와 결과 문서에서 판정한다(ALREADY_ISSUED 와 같은 취급).
+  const businessErrorCodes = [
+    'OUT_OF_STOCK',
+    'ALREADY_ISSUED',
+    'CAMPAIGN_NOT_OPEN',
+    'CAMPAIGN_EXPIRED',
+  ];
+
   const normalBusinessResponse =
     (response.status === 200 && body?.status === 'ISSUED' && Boolean(body?.couponId)) ||
-    (response.status === 409 &&
-      (body?.errorCode === 'OUT_OF_STOCK' || body?.errorCode === 'ALREADY_ISSUED'));
+    (response.status === 409 && businessErrorCodes.includes(body?.errorCode));
 
   const expectedNoLockConflict =
     TEST_STRATEGY === 'V0' &&

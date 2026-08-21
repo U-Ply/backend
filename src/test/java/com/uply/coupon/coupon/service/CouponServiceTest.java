@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
@@ -19,6 +20,7 @@ import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueResult;
+import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -43,6 +45,15 @@ class CouponServiceTest {
     @Mock private IdempotencyChecker idempotencyChecker;
 
     @Mock private ObjectMapper objectMapper;
+
+    /**
+     * 전략이 실제로 저장했다고 가정하는 시각.
+     *
+     * <p>Instant.now()와 명백히 다른 고정값이어야 응답이 이 값을 그대로 쓰는지(D-2) 검증할 수 있다.
+     */
+    private static final Instant STORED_ISSUED_AT = Instant.parse("2026-01-02T03:04:05.678Z");
+
+    private static final Instant STORED_EXPIRE_AT = Instant.parse("2026-01-09T03:04:05.678Z");
 
     private static final String IDEMPOTENCY_KEY = "key-123";
     private static final Long CAMPAIGN_ID = 1L;
@@ -119,7 +130,8 @@ class CouponServiceTest {
         void issue_firstRequest_success() throws Exception {
             // given
             CouponIssueRequest request = createRequest();
-            IssueResult successResult = IssueResult.success(COUPON_ID);
+            IssueResult successResult =
+                    IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
             String responseJson = "{\"couponId\":\"7777\"}";
 
             given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
@@ -140,6 +152,10 @@ class CouponServiceTest {
             // then
             assertThat(response.couponId()).isEqualTo(String.valueOf(COUPON_ID));
             assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
+
+            // 응답 시각은 전략이 저장한 값 그대로여야 한다 (Instant.now()로 새로 만들면 깨진다)
+            assertThat(response.issuedAt()).isEqualTo(STORED_ISSUED_AT);
+            assertThat(response.expireAt()).isEqualTo(STORED_EXPIRE_AT);
 
             // 멱등성 응답 캐싱 호출 검증
             verify(idempotencyChecker, times(1))
@@ -168,6 +184,64 @@ class CouponServiceTest {
 
             // PROCESSING 키 삭제 검증
             verify(idempotencyChecker, times(1)).clearProgress(IDEMPOTENCY_KEY);
+        }
+
+        @Test
+        @DisplayName("발급 성공 후 응답 캐싱이 실패하면 PROCESSING 키를 지우지 않는다")
+        void issue_afterIssuance_cacheFailure_keepsProgress() throws Exception {
+            // given
+            CouponIssueRequest request = createRequest();
+            IssueResult successResult =
+                    IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
+
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .willReturn(Optional.empty());
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.name()).willReturn("PESSIMISTIC_LOCK");
+            given(stockIdLookupSelector.forStrategy("PESSIMISTIC_LOCK")).willReturn(stockIdLookup);
+            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
+                    .willReturn(STOCK_ID);
+            given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
+                    .willReturn(successResult);
+
+            // 발급은 끝났고 응답 직렬화 단계에서만 실패하는 상황
+            given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
+                    .willThrow(new JsonProcessingException("직렬화 실패") {});
+
+            // when & then
+            assertThatThrownBy(() -> couponService.issue(IDEMPOTENCY_KEY, request))
+                    .isInstanceOf(IllegalStateException.class);
+
+            // 쿠폰은 이미 발급됐다. 여기서 키를 지우면 같은 요청이 발급 로직을 다시 실행해
+            // 중복 발급이 난다.
+            verify(idempotencyChecker, never()).clearProgress(anyString());
+        }
+
+        @Test
+        @DisplayName("Redis 보상 실패로 결과가 불명확하면 PROCESSING 키를 유지한다")
+        void issue_compensationFailure_keepsProgress() {
+            // given
+            CouponIssueRequest request = createRequest();
+
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .willReturn(Optional.empty());
+            given(strategySelector.current()).willReturn(couponIssueStrategy);
+            given(couponIssueStrategy.name()).willReturn("LUA_SCRIPT");
+            given(stockIdLookupSelector.forStrategy("LUA_SCRIPT")).willReturn(stockIdLookup);
+            given(stockIdLookup.lookupStockId(CAMPAIGN_ID, ROUTE_ID, FARE_CLASS))
+                    .willReturn(STOCK_ID);
+            given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
+                    .willThrow(
+                            new CouponIssueException(
+                                    com.uply.coupon.coupon.strategy.IssueFailReason
+                                            .SAVE_RESULT_UNKNOWN));
+
+            // when & then
+            assertThatThrownBy(() -> couponService.issue(IDEMPOTENCY_KEY, request))
+                    .isInstanceOf(CouponIssueException.class);
+
+            // 재고가 덜 복구된 상태이므로 재시도를 허용하면 재시도할수록 재고만 줄어든다.
+            verify(idempotencyChecker, never()).clearProgress(anyString());
         }
 
         @Test
@@ -201,7 +275,8 @@ class CouponServiceTest {
         void issue_noIdempotencyKey_success() {
             // given
             CouponIssueRequest request = createRequest();
-            IssueResult successResult = IssueResult.success(COUPON_ID);
+            IssueResult successResult =
+                    IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
 
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("NO_LOCK");
@@ -216,6 +291,7 @@ class CouponServiceTest {
 
             // then
             assertThat(response.couponId()).isEqualTo(String.valueOf(COUPON_ID));
+            assertThat(response.issuedAt()).isEqualTo(STORED_ISSUED_AT);
             verifyNoInteractions(idempotencyChecker);
         }
     }

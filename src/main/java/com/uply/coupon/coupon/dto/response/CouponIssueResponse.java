@@ -27,17 +27,16 @@ public record CouponIssueResponse(
                 Instant expireAt) {
 
     /**
-     * IssueResult의 Long 타입 couponId를 String 으로 변환하여 성공 응답 DTO를 생성하는 팩토리 메서드 expireAt 은 캠페인의 쿠폰 정책에서
-     * 가져올 것으로 예상
+     * IssueResult가 담고 있는 시각을 그대로 사용해 성공 응답 DTO를 생성한다.
+     *
+     * <p>issuedAt/expireAt을 여기서 새로 만들지 않는다. 「기준 시간은 DB 서버 시간」 결정에 따라 값의 출처는 전략(DB NOW(3) 또는 Redis
+     * TIME)이다.
      */
-    public static CouponIssueResponse from(IssueResult result, Instant expireAt) {
+    public static CouponIssueResponse from(IssueResult result) {
         return new CouponIssueResponse(
-                String.valueOf(result.couponId()), CouponStatus.ISSUED, Instant.now(), expireAt);
-    }
-
-    /** couponId(Long)를 직접 전달받을 때 사용하는 팩토리 메서드 */
-    public static CouponIssueResponse of(Long couponId, Instant expireAt) {
-        return new CouponIssueResponse(
-                String.valueOf(couponId), CouponStatus.ISSUED, Instant.now(), expireAt);
+                String.valueOf(result.couponId()),
+                CouponStatus.ISSUED,
+                result.issuedAt(),
+                result.expireAt());
     }
 }

@@ -247,6 +247,8 @@ V2에서는 마지막 URL의 `runId`를 `L2-V2-01`로 바꾼다. 재실행할 �
 - `coupon_issued`
 - `coupon_out_of_stock`
 - `coupon_already_issued`
+- `coupon_campaign_not_open`
+- `coupon_campaign_expired`
 - `coupon_lock_timeout`
 - `coupon_concurrency_conflict`
 - `coupon_connection_unavailable`
@@ -269,6 +271,17 @@ V0 실행에는 `-e TEST_STRATEGY=V0`, 비관적 락에는 `V1`, Redis Lua + MyS
 
 V0의 `CONCURRENCY_CONFLICT`는 HTTP 상태가 503이므로 k6 기본 지표인 `http_req_failed`에는 실패로 집계된다. V0 판정에서는 `http_req_failed`만 보지 않고 `coupon_concurrency_conflict`와 전략별 check를 함께 확인한다.
 
+409로 응답하는 캠페인 구간 거부도 별도로 집계한다.
+
+| 항목 | 발생 지점 | Level 2 판정 |
+| --- | --- | --- |
+| `coupon_campaign_not_open` | `open_at` 이전 요청 (V0·V1은 DB `NOW(3)`, V2·V3은 Lua의 Redis `TIME`) | LT-01은 0건 |
+| `coupon_campaign_expired` | `expire_at` 이후 요청 (판정 기준 동일) | LT-01은 0건. **E-2·E-3 경계 시나리오에서는 정상 관측값** |
+
+두 항목도 threshold를 두지 않는다. LT-01에서는 0이어야 하지만, 인수 기준 E-2(만료 정각)·E-3(만료 1초 후)에서는 이 값이 나오는 것이 정답이라 같은 스크립트를 두 용도로 쓰기 때문이다. 판정은 결과 문서에서 한다.
+
+`coupon_other_4xx`가 아니라 전용 카운터로 뺀 이유는 `coupon_other_4xx`에 `count==0` threshold가 걸려 있어, 만료 경계 시나리오를 돌리면 실행 자체가 실패로 끝나기 때문이다.
+
 결과 건수는 다음 식으로 전체 요청 수와 일치해야 한다.
 
 ```text
@@ -276,6 +289,8 @@ V0의 `CONCURRENCY_CONFLICT`는 HTTP 상태가 503이므로 k6 기본 지표인 
 = coupon_issued
 + coupon_out_of_stock
 + coupon_already_issued
++ coupon_campaign_not_open
++ coupon_campaign_expired
 + coupon_lock_timeout
 + coupon_concurrency_conflict
 + coupon_connection_unavailable

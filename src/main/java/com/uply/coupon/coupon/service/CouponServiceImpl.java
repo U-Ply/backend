@@ -2,7 +2,6 @@ package com.uply.coupon.coupon.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
@@ -13,7 +12,6 @@ import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.coupon.strategy.IssueResult;
-import java.time.Instant;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,19 +26,10 @@ public class CouponServiceImpl implements CouponService {
     private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
     private final StockIdLookupSelector stockIdLookupSelector;
-    private final CampaignCacheRepository campaignCacheRepository;
 
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
 
-        // #1. 멱등성 검사 (Cache Hit 시 DTO 역직렬화 후 즉시 리턴)
-        /*
-         * Cache Hit 에도 두가지 경우가 있다.
-         * 	1.PROCESSING
-         * 	2.COMPLETED
-         * getCachedResponse() 수행 도중 PROCESSING 일 경우 throw 에러
-         * 그게 아니면 캐시된 성공 응답 데이터 반환
-         */
         if (hasIdempotencyKey(idempotencyKey)) {
             // 1.PROCESSING 일 경우 여기서 먼저 에러 발생
             Optional<String> cachedBody = idempotencyChecker.getCachedResponse(idempotencyKey);
@@ -51,23 +40,14 @@ public class CouponServiceImpl implements CouponService {
             }
         }
 
-        // #2. 최초 요청 처리 (예외 발생 시 PROCESSING 락 해제를 위한 try-catch)
+        // #2. 최초 요청 처리
+        //
+        // PROCESSING 키 해제 여부는 "발급이 성립했는가"로 갈린다.
+        // 발급이 성립한 뒤에 응답 직렬화나 캐싱이 실패했다고 키를 지우면,
+        // 같은 요청이 다시 들어와 발급 로직을 처음부터 실행해 중복 발급이 난다.
+        boolean issuanceCompleted = false;
+
         try {
-            // [승인 시점 측정] try 진입 직후 측정하여 예외 발생 시 catch문에서 락 해제 보장
-            Instant now = Instant.now();
-
-            // 캠페인 메타데이터(오픈/만료 시각) Redis 조회
-            Instant openAt = campaignCacheRepository.getOpenAt(request.campaignId());
-            Instant expireAt = campaignCacheRepository.getExpireAt(request.campaignId());
-
-            // 오픈 및 만료 시각 검증
-            if (now.isBefore(openAt)) {
-                throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_OPEN);
-            }
-            if (now.isAfter(expireAt)) {
-                throw new CouponIssueException(IssueFailReason.CAMPAIGN_EXPIRED);
-            }
-
             CouponIssueStrategy issueStrategy = strategySelector.current();
 
             // DB 전략은 MySQL, Lua 전략은 Redis에서 stockId를 조회한다.
@@ -86,13 +66,16 @@ public class CouponServiceImpl implements CouponService {
                 throw new CouponIssueException(result.reason());
             }
 
+            // 이 시점부터 쿠폰은 이미 발급된 것으로 본다. 이후 실패는 응답 생성 실패일 뿐이다.
+            issuanceCompleted = true;
+
             // 응답 DTO 생성
             CouponIssueResponse response =
                     CouponIssueResponse.builder()
                             .couponId(String.valueOf(result.couponId()))
                             .status(CouponStatus.ISSUED)
-                            .issuedAt(now)
-                            .expireAt(expireAt)
+                            .issuedAt(result.issuedAt())
+                            .expireAt(result.expireAt())
                             .build();
 
             // #3. 성공 응답 JSON 직렬화 후 Redis 캐싱 (COMPLETED, TTL 10분)
@@ -104,18 +87,29 @@ public class CouponServiceImpl implements CouponService {
             return response;
 
         } catch (CouponIssueException e) {
-            // 비즈니스 로직 / 인프라 예외 발생 시 PROCESSING 키 삭제 (재시도 허용)
-            if (hasIdempotencyKey(idempotencyKey)) {
-                // 확실한 실패 시에만 멱등성 키를 삭제하여 재시도 허용
-                if (e.getReason() != IssueFailReason.SAVE_RESULT_UNKNOWN) {
-                    idempotencyChecker.clearProgress(idempotencyKey);
-                }
+            // 확정 실패일 때만 키를 지워 재시도를 허용한다.
+            //  - SAVE_RESULT_UNKNOWN : Kafka 발행 결과 불명확 또는 Redis 보상 실패.
+            //    브로커에 이미 들어갔거나 재고가 복구되지 않았을 수 있으므로 키를 유지한다.
+            //  - issuanceCompleted    : 발급은 성립했고 응답 단계만 실패한 경우.
+            if (canClearProgress(idempotencyKey, issuanceCompleted)
+                    && e.getReason() != IssueFailReason.SAVE_RESULT_UNKNOWN) {
+                idempotencyChecker.clearProgress(idempotencyKey);
             }
             throw e;
+
         } catch (Exception e) {
-            idempotencyChecker.clearProgress(idempotencyKey);
+            // CouponIssueException으로 변환되지 않은 예외(캐시 누락, stockId 조회 실패 등)도
+            // 발급 전이라면 키를 풀어 정상 재시도를 막지 않는다.
+            if (canClearProgress(idempotencyKey, issuanceCompleted)) {
+                idempotencyChecker.clearProgress(idempotencyKey);
+            }
             throw e;
         }
+    }
+
+    /** 발급이 성립하기 전의 확정 실패에서만 PROCESSING 선점을 해제한다. */
+    private boolean canClearProgress(String idempotencyKey, boolean issuanceCompleted) {
+        return hasIdempotencyKey(idempotencyKey) && !issuanceCompleted;
     }
 
     private boolean hasIdempotencyKey(String idempotencyKey) {

@@ -16,6 +16,8 @@ import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.repository.CouponRepository;
+import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
+import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
 import java.time.LocalDateTime;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
@@ -148,6 +150,8 @@ class CouponServiceIntegrationTest {
 
         @MockBean private KafkaTemplate<String, String> kafkaTemplate;
 
+        @MockBean private KafkaSettlementChecker kafkaSettlementChecker;
+
         private Long userId = 100L;
         private Long campaignId;
         private final String routeId = "ICN-NRT";
@@ -161,6 +165,10 @@ class CouponServiceIntegrationTest {
             // ★ [추가] MockBean인 kafkaTemplate.send() 호출 시 CompletableFuture를 반환하도록 스터빙
             given(kafkaTemplate.send(anyString(), anyString(), anyString()))
                     .willReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+
+            // 웜업은 Kafka lag 0 · DLT 0을 확인한 뒤에만 실행된다(V3 전용 검사).
+            // 이 테스트에는 실제 브로커가 없으므로 정착한 것으로 대체한다.
+            given(kafkaSettlementChecker.check()).willReturn(new KafkaSettlement(0L, 0L));
 
             // 1. 엔티티 없이 SQL로 users 테이블에 FK 충족용 더미 데이터 삽입
             jdbcTemplate.update(

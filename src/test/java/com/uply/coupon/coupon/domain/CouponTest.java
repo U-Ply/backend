@@ -9,10 +9,11 @@ import org.junit.jupiter.api.Test;
 
 class CouponTest {
 
+    private static final LocalDateTime ISSUED_AT = LocalDateTime.of(2026, 8, 13, 9, 0);
     private static final LocalDateTime EXPIRE_AT = LocalDateTime.of(2026, 8, 31, 23, 59);
 
     private Coupon issuedCoupon() {
-        return Coupon.issue(1L, 1L, 1L, 1L, EXPIRE_AT); // 오토박싱
+        return Coupon.issue(1L, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT); // 오토박싱
     }
 
     @Test
