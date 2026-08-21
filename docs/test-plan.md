@@ -395,6 +395,16 @@ Windows PowerShell:
 ./scripts/load-test/reset-level2.sh
 ```
 
+### 8.3.1 verification_report 컬럼 migration
+
+`verification_report`에 `round`, `status` 컬럼이 추가되었다.
+
+기존 DB volume을 유지하는 경우 `docs/schema.sql`은 기존 테이블에
+자동으로 다시 적용되지 않으므로 다음 migration을 1회 실행한다.
+
+```sql
+docs/migration/2026-08-21-verification-report-round-status.sql
+```
 ### 8.4 부하 발생기 분리
 
 Level 2와 Level 3에서 k6는 애플리케이션과 다른 AWS EC2 인스턴스에서 실행한다. 같은 머신에서 실행하면 부하 발생기가 CPU와 메모리를 점유해 API 결과를 왜곡할 수 있다.

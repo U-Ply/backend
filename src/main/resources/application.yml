@@ -8,7 +8,7 @@ spring:
     password: ${DB_PASSWORD:coupon1234}
     hikari:
       maximum-pool-size: 10
-      connection-timeout: 3000
+      connection-timeout: 10000
 
   jpa:
     hibernate:
