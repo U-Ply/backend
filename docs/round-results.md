@@ -110,14 +110,19 @@ INV-03 오검출을 재현하려 했으나, 컨슈머가 2초 안에 100건을 �
 test-plan §14.4 의 lag=0 선행 조건은 Level 2/3 규모에서만 실제로 작동한다.
 게이트 자체를 검증하려면 부하 테스트 중에 확인해야 한다.
 
-### 3. REC-01 결과가 저장되지 않는다
+### 3. REC-01 이 검증 회차와 이어지지 않는다
 
-검증 배치는 `verification_report` / `verification_violation` 에 남지만,
-REC-01 은 `log.info("REC-01 {} — {}", ...)` 로 로그에만 찍힌다.
-Job 상태(`MISMATCH`)만 조회 가능하고 "몇 개가 왜 어긋났는지"는 로그를 뒤져야 한다.
+REC-01 결과는 `verification_report` 에 `rule_code='REC-01'` 로 정상 저장된다.
+다만 reconcile 배치를 runId 없이 호출하면 서버가 `20260821-013046782` 같은 값을
+자동 생성하므로, 같은 회차의 INV 결과와 다른 run_id 로 흩어진다.
 
-§11 비교표의 "Redis 잔여 재고" 칸을 채우려면 매번 로그를 grep해야 하므로
-INV 쪽과 대칭이 맞지 않는다. `reconcile_report` 테이블 추가가 필요하다. (담당: 3번)
+`uk_run_rule (run_id, rule_code)` 는 규칙 코드가 달라 충돌하지 않으므로,
+**검증과 같은 runId 로 실행하면 한 리포트에 합쳐진다.**
+
+    curl -X POST ".../batch/verification?runId=L1-V3-01&round=V3"
+    curl -X POST ".../batch/reconcile?runId=L1-V3-01"
+
+앞으로 회차 실행은 이 방식으로 통일한다.
 
 ### 4. REC-01은 전체 재고풀을 대조한다
 

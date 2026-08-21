@@ -65,7 +65,8 @@ public class RedisStockReconcileJobConfig {
             }
 
             resultWriter.write(
-                    new VerificationRun(runId, run.snapshotAt(), java.util.List.of(run.result())));
+                    new VerificationRun(
+                            runId, null, run.snapshotAt(), java.util.List.of(run.result())));
 
             if (run.status() == ReconciliationStatus.PASSED) {
                 log.info("REC-01 통과 — {}", run.detail());

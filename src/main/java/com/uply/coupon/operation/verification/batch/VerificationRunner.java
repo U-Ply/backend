@@ -72,7 +72,7 @@ public class VerificationRunner {
             results.add(evaluate(rule));
         }
 
-        return new VerificationRun(runId, snapshotAt, results);
+        return new VerificationRun(runId, round, snapshotAt, results);
     }
 
     private RuleResult evaluate(InvariantRule rule) {

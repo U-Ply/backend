@@ -3,6 +3,7 @@ package com.uply.coupon.operation.verification.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.uply.coupon.operation.verification.InvariantFixture;
+import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,6 +37,7 @@ class VerificationJobIntegrationTest {
 
     @Autowired JdbcTemplate jdbc;
     @Autowired InvariantFixture fixture;
+    @Autowired VerificationReportRenderer renderer;
 
     @BeforeEach
     void setUp() {
@@ -156,5 +158,24 @@ class VerificationJobIntegrationTest {
                         "SELECT rule_name FROM verification_report WHERE run_id='job-v1' AND rule_code='CLOCK-02'",
                         String.class);
         assertThat(name).contains("N/A");
+    }
+
+    /**
+     * CLOCK-02 는 Redis 시계로 기록하는 회차에서만 판정한다. 그 외 회차에서 이걸 "통과"로 찍으면 검사하지 않은 것이 검사해서 문제없는 것처럼 읽힌다.
+     * 리포트까지 그 구분이 이어지는지 지킨다.
+     *
+     * <p>다만 지금은 V0~V3 전부 usesRedisClock=false 라, 이 테스트만으로는 "round 를 보고 N/A 로 판단했다"와 "round 가 없어서
+     * N/A 가 됐다"를 구분하지 못한다. 어느 회차든 true 로 올라가는 시점에 반대 방향 테스트를 함께 추가한다.
+     */
+    @Test
+    @DisplayName("Redis 시계를 쓰지 않는 회차의 CLOCK-02 는 리포트에 통과가 아니라 N/A 로 찍힌다")
+    void clockTwoRendersAsNotApplicable() throws Exception {
+        utils.launchJob(params("job-report-v1", null, "V1"));
+
+        String md = renderer.render("job-report-v1");
+
+        assertThat(md).contains("CLOCK-02");
+        assertThat(md).containsPattern("`CLOCK-02`[^\\n]*\\| N/A \\|");
+        assertThat(md).doesNotContainPattern("`CLOCK-02`[^\\n]*\\| 통과 \\|");
     }
 }
