@@ -65,10 +65,12 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         String issuedCampaignKey = String.format("issued:%d", campaignId);
         // 캠페인 오픈 시각 Key
         String campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
-        // 캠페인 만료 시각 Key - 스크립트의 만료 판정과 DB 저장에 같은 값을 쓴다
+        // 캠페인 만료 시각 Key
         String campaignExpireAtKey = campaignExpireAtKey(campaignId);
-        // Redis 캐싱된 expireAt 조회
-        LocalDateTime expireAt = getExpireAt(campaignId); // 실패 가능
+        // 캐시 존재 확인용 조회 (미기재 캠페인이면 404 CampaignNotFoundException).
+        // 여기서 읽은 값 자체는 버린다 - Lua 실행 직전까지 시간이 있어 그 사이 웜업 복구가
+        // 이 키를 덮어썼을 수 있다. DB에 쓰는 값은 Lua가 실제로 판정에 쓴 값(반환값)이어야 한다.
+        getExpireAt(campaignId); // 실패 가능
 
         // #3. Lua Script 실행 (Atomic 연산)
         // 오픈/만료 판정도 스크립트 안에서 한다. Java에서 미리 검사하면 검사와 차감 사이에
@@ -96,9 +98,12 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
 
         // Lua가 반환한 Redis TIME 기준 발급 시각 (epoch millis)
-        // expireAt은 Lua 실행 전에 조회한다 - 차감 후 조회하면 캐시 미스 시 보상 없이 재고가 샌다
         LocalDateTime issuedAt =
                 LocalDateTime.ofInstant(Instant.ofEpochMilli((Long) result.get(1)), ZoneOffset.UTC);
+        // Lua가 판정에 실제로 쓴 만료 시각. Java가 위에서 미리 읽은 값과 갈릴 수 있으므로
+        // DB에는 이 값을 써야 판정과 저장이 항상 일치한다.
+        LocalDateTime expireAt =
+                LocalDateTime.ofInstant(Instant.ofEpochMilli((Long) result.get(2)), ZoneOffset.UTC);
 
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {

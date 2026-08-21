@@ -87,7 +87,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L, issuedAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -115,7 +115,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-1L, issuedAtEpochMillis));
+                .willReturn(List.of(-1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -141,7 +141,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-2L, issuedAtEpochMillis));
+                .willReturn(List.of(-2L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -166,7 +166,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-4L, issuedAtEpochMillis));
+                .willReturn(List.of(-4L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -216,7 +216,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-99L, issuedAtEpochMillis));
+                .willReturn(List.of(-99L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -243,7 +243,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         // 1. Redis 선점 성공 설정
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L, issuedAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // 2. 보상 스크립트는 Long을 돌려준다. 발급 스크립트와 같은 값으로 두면 보상이 실패로
         //    처리되어 SAVE_RESULT_UNKNOWN으로 승격되므로, 스크립트별로 따로 스텁한다.
@@ -291,7 +291,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L, issuedAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // 보상 스크립트 실행 중 인프라 예외 발생
         given(
@@ -337,7 +337,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         // 1. Redis 선점 성공 설정
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L, issuedAtEpochMillis));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // 3. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN))
