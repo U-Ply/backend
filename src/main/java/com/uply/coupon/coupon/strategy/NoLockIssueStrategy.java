@@ -2,6 +2,7 @@ package com.uply.coupon.coupon.strategy;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.campaign.repository.CampaignWindow;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.domain.Coupon;
@@ -9,6 +10,7 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -34,11 +36,17 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
         // 예: SELECT remaining_stock ... 확인 후 별도 UPDATE (조건 없이)
         LocalDateTime databaseTime = campaignStockRepository.currentDatabaseTime();
 
-        LocalDateTime expireAt =
+        // 오픈/만료 판정 기준을 databaseTime 하나로 통일 (비관적 락 전략과 동일)
+        CampaignWindow window =
                 campaignStockRepository
-                        .findCouponExpireAt(stockId, campaignId)
+                        .findCampaignWindow(stockId, campaignId)
                         .orElseThrow(() -> new CampaignNotFoundException(campaignId, stockId));
 
+        if (window.getOpenAt() != null && databaseTime.isBefore(window.getOpenAt())) {
+            return IssueResult.fail(IssueFailReason.CAMPAIGN_NOT_OPEN);
+        }
+
+        LocalDateTime expireAt = window.getExpireAt();
         if (!expireAt.isAfter(databaseTime)) {
             return IssueResult.fail(IssueFailReason.CAMPAIGN_EXPIRED);
         }
@@ -52,7 +60,10 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
         Optional<CouponHistory> processed =
                 couponHistoryRepository.findByIdempotencyKey(idempotencyKey);
         if (processed.isPresent()) {
-            return IssueResult.success(processed.get().getCouponId());
+            return IssueResult.success(
+                    processed.get().getCouponId(),
+                    processed.get().getEventAt().toInstant(ZoneOffset.UTC),
+                    expireAt.toInstant(ZoneOffset.UTC));
         }
 
         // 중복 발급 확인
@@ -77,9 +88,14 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
                         databaseTime,
                         expireAt);
         couponRepository.save(coupon);
-        couponHistoryRepository.save(CouponHistory.issued(coupon.getCouponId(), idempotencyKey));
+        // 쿠폰과 같은 databaseTime을 넘겨 event_at과 issued_at을 일치하도록
+        couponHistoryRepository.save(
+                CouponHistory.issued(coupon.getCouponId(), idempotencyKey, databaseTime));
 
-        return IssueResult.success(coupon.getCouponId());
+        return IssueResult.success(
+                coupon.getCouponId(),
+                databaseTime.toInstant(ZoneOffset.UTC),
+                expireAt.toInstant(ZoneOffset.UTC));
     }
 
     @Override

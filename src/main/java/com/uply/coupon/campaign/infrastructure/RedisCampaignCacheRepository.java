@@ -36,7 +36,7 @@ public class RedisCampaignCacheRepository implements CampaignCacheRepository {
         String valueStr = redisTemplate.opsForValue().get(key);
 
         if (valueStr == null) {
-            throw new CampaignNotFoundException(campaignId, campaignId);
+            throw new CampaignNotFoundException(campaignId);
         }
 
         try {

@@ -72,6 +72,8 @@ public class CouponIssuedEventProcessor {
         if (event.issuedAt() == null) {
             throw new IllegalArgumentException("issuedAt은 필수입니다.");
         }
+        // publishedAt은 검증하지 않는다.
+        // 저장에 쓰이지 않는 측정 전용 필드이고, 필드 추가 이전에 발행된 메시지에는 값이 없다.
     }
 
     private void validatePositive(Long value, String fieldName) {

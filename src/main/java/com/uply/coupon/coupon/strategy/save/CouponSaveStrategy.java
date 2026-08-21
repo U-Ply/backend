@@ -14,5 +14,6 @@ public interface CouponSaveStrategy {
             Long campaignId,
             Long stockId,
             String idempotencyKey,
+            LocalDateTime issuedAt,
             LocalDateTime expireAt);
 }

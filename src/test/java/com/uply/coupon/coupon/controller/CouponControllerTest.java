@@ -48,6 +48,7 @@ class CouponControllerTest {
     private static final String IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000001";
     private static final Long COUPON_ID = 1001L;
     private static final LocalDateTime USED_AT = LocalDateTime.of(2026, 8, 18, 10, 0);
+    private static final LocalDateTime ISSUED_AT = USED_AT.minusDays(1);
     private static final LocalDateTime CANCELLED_AT = USED_AT.plusMinutes(1);
     private static final LocalDateTime EXPIRE_AT = USED_AT.plusDays(1);
 
@@ -149,7 +150,7 @@ class CouponControllerTest {
     // 발급된 쿠폰의 정상 사용 요청이 200 응답과 사용 시각을 반환하는지 검증한다.
     @Test
     void useSuccessReturns200() throws Exception {
-        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(USED_AT);
         given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY)).willReturn(coupon);
 
@@ -170,7 +171,7 @@ class CouponControllerTest {
     // 사용된 쿠폰의 정상 예약 취소 요청이 200 응답과 취소 시각을 반환하는지 검증한다.
     @Test
     void cancelSuccessReturns200() throws Exception {
-        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(USED_AT);
         coupon.cancel(CANCELLED_AT);
         given(couponStateTransitionService.cancel(COUPON_ID, IDEMPOTENCY_KEY)).willReturn(coupon);
