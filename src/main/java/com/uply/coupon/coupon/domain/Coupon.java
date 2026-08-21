@@ -51,11 +51,12 @@ public class Coupon implements Persistable<Long> {
 
     @Transient private boolean newEntity = true;
 
-    public static Coupon issue(
-            Long couponId, Long userId, Long campaignId, Long stockId, LocalDateTime expireAt) {
-        return issue(couponId, userId, campaignId, stockId, LocalDateTime.now(), expireAt);
-    }
-
+    /**
+     * 발급 시각을 호출부가 반드시 명시하도록 인자로 받는다.
+     *
+     * <p>JVM 시각으로 채우는 오버로드는 두지 않는다. 기준 시간은 DB 서버 시간이며(DB 전략은 NOW(3), Lua 전략은 Redis TIME), 내부에서
+     * LocalDateTime.now()를 부르면 그 기준이 조용히 깨진다.
+     */
     public static Coupon issue(
             Long couponId,
             Long userId,

@@ -38,11 +38,11 @@ public class CouponHistory {
 
     @CreationTimestamp private LocalDateTime createdAt; // 이 이력 엔티티가 저장될 때 Hibernate가 시간을 자동으로 채움
 
-    // 발급 이력 기록
-    public static CouponHistory issued(Long couponId, String idempotencyKey) {
-        return issued(couponId, idempotencyKey, LocalDateTime.now());
-    }
-
+    /**
+     * 발급 이력 기록. 발생 시각을 호출부가 반드시 명시하도록 인자로 받는다.
+     *
+     * <p>JVM 시각으로 채우는 오버로드는 두지 않는다. 같은 행의 issued_at과 다른 시계가 섞이면 INV-04(현재 상태 = 최종 이력) 판정이 뒤집힐 수 있다.
+     */
     public static CouponHistory issued(
             Long couponId, String idempotencyKey, LocalDateTime eventAt) {
         CouponHistory history = new CouponHistory();

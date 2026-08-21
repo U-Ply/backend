@@ -65,16 +65,24 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         String issuedCampaignKey = String.format("issued:%d", campaignId);
         // 캠페인 오픈 시각 Key
         String campaignOpenAtKey = String.format("campaign:%d:openAt", campaignId);
-        // Redis 캐싱된 expireAt 조회
-        LocalDateTime expireAt = getExpireAt(campaignId); // 실패 가능
+        // 캠페인 만료 시각 Key
+        String campaignExpireAtKey = campaignExpireAtKey(campaignId);
+        // 캐시 존재 확인용 조회 (미기재 캠페인이면 404 CampaignNotFoundException).
+        // 여기서 읽은 값 자체는 버린다 - Lua 실행 직전까지 시간이 있어 그 사이 웜업 복구가
+        // 이 키를 덮어썼을 수 있다. DB에 쓰는 값은 Lua가 실제로 판정에 쓴 값(반환값)이어야 한다.
+        getExpireAt(campaignId); // 실패 가능
 
         // #3. Lua Script 실행 (Atomic 연산)
-        // Spring Data Redis의 execute() 메서드가 타입 정보가 없는 Raw Type List를 반환하기 때문에 발생하는 컴파일러 경고
-        // -> 무시해도 된다.
+        // 오픈/만료 판정도 스크립트 안에서 한다. Java에서 미리 검사하면 검사와 차감 사이에
+        // 캠페인이 만료되는 창이 열리고, 그 사이 요청은 만료 후에도 발급에 성공한다.
         List<Object> result =
                 redisTemplate.execute(
                         issueScript,
-                        List.of(stockIdKey, issuedCampaignKey, campaignOpenAtKey),
+                        List.of(
+                                stockIdKey,
+                                issuedCampaignKey,
+                                campaignOpenAtKey,
+                                campaignExpireAtKey),
                         String.valueOf(userId));
 
         if (result == null || result.isEmpty()) {
@@ -89,10 +97,18 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             return IssueResult.fail(failReason);
         }
 
+        // Lua가 반환한 Redis TIME 기준 발급 시각 (epoch millis)
+        LocalDateTime issuedAt =
+                LocalDateTime.ofInstant(Instant.ofEpochMilli((Long) result.get(1)), ZoneOffset.UTC);
+        // Lua가 판정에 실제로 쓴 만료 시각. Java가 위에서 미리 읽은 값과 갈릴 수 있으므로
+        // DB에는 이 값을 써야 판정과 저장이 항상 일치한다.
+        LocalDateTime expireAt =
+                LocalDateTime.ofInstant(Instant.ofEpochMilli((Long) result.get(2)), ZoneOffset.UTC);
+
         // #5. DB 저장 전략 선택 : 동기 / Kafka 비동기
         try {
             couponSaveStrategy.save(
-                    couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
+                    couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
 
         } catch (CouponIssueException e) {
             // 결과가 불명확한 타임아웃(SAVE_RESULT_UNKNOWN) 발생 시 Redis 보상 유예 (초과 발급 방지)
@@ -107,7 +123,14 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                     "[쿠폰 저장/발행 확정 실패] Redis 보상 로직을 실행합니다. couponId: {}, reason: {}",
                     couponId,
                     e.getReason());
-            rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
+
+            // 보상이 실패하면 Redis 재고가 덜 복구된 상태로 남는다. 이때 원래 실패 사유를 그대로
+            // 올려보내면 상위 계층이 "확정 실패"로 보고 멱등성 진행 키를 지워 재시도를 허용한다.
+            // 재고는 이미 빠져 있으므로 재시도가 반복될수록 재고만 줄어든다.
+            // 그래서 보상 실패는 결과 불명확으로 승격해 진행 키를 유지시킨다.
+            if (!rollbackInRedis(stockIdKey, issuedCampaignKey, userId)) {
+                throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
+            }
             throw e;
 
         } catch (Exception e) {
@@ -122,7 +145,8 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
 
         // #6. 성공 결과 반환 (IssueResult)
-        return IssueResult.success(couponId);
+        return IssueResult.success(
+                couponId, issuedAt.toInstant(ZoneOffset.UTC), expireAt.toInstant(ZoneOffset.UTC));
     }
 
     @Override
@@ -130,12 +154,16 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         return "LUA_SCRIPT";
     }
 
+    private String campaignExpireAtKey(Long campaignId) {
+        return String.format("campaign:%d:expireAt", campaignId);
+    }
+
     /** expireAt 조회 헬퍼 메소드 */
     private LocalDateTime getExpireAt(Long campaignId) {
-        String key = String.format("campaign:%d:expireAt", campaignId);
-        String expireAtStr = redisTemplate.opsForValue().get(key);
+        String expireAtStr = redisTemplate.opsForValue().get(campaignExpireAtKey(campaignId));
 
         if (expireAtStr == null) {
+            // 캐시 누락이므로 재고 풀이 아니라 캠페인 단위 예외다 (stockId를 아는 상황이 아니다)
             throw new CampaignNotFoundException(campaignId);
         }
 
@@ -149,8 +177,13 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
     }
 
-    /** Redis 롤백 전용 헬퍼 메소드 (지표 수집 및 반환값 처리) */
-    private void rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
+    /**
+     * Redis 재고·발급 Set을 되돌린다.
+     *
+     * @return 보상이 반영됐거나(SUCCESS) 이미 반영돼 있으면(NOOP) true, 실행 자체가 실패하면 false. 호출자는 false일 때 재고가 덜 복구된
+     *     상태임을 전제로 처리해야 한다.
+     */
+    private boolean rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
         try {
             Long result =
                     redisTemplate.execute(
@@ -165,9 +198,11 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                 recordCompensationMetric("noop");
                 log.info("[Redis 보상 NOP] 이미 복구되었거나 발급 이력이 없는 유저. userId: {}", userId);
             }
+            return true;
         } catch (Exception e) {
             recordCompensationMetric("failure");
             log.error("[Redis 보상 실패] 보상 스크립트 실행 중 네트워크/인프라 예외 발생. userId: {}", userId, e);
+            return false;
         }
     }
 
@@ -183,6 +218,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
             case -1 -> IssueFailReason.ALREADY_ISSUED;
             case -2 -> IssueFailReason.OUT_OF_STOCK;
             case -4 -> IssueFailReason.CAMPAIGN_NOT_OPEN;
+            case -5 -> IssueFailReason.CAMPAIGN_EXPIRED;
             default -> IssueFailReason.SYSTEM_ERROR;
         };
     }

@@ -1,9 +1,9 @@
 package com.uply.coupon.coupon.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.times;
 
@@ -15,10 +15,12 @@ import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
-import com.uply.coupon.messaging.event.CouponIssuedEvent;
+import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
+import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
 import java.time.LocalDateTime;
 import java.util.Queue;
 import java.util.TimeZone;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -193,7 +195,13 @@ class CouponConcurrencyTest {
         @Autowired private StringRedisTemplate redisTemplate;
         @Autowired private JdbcTemplate jdbcTemplate;
 
-        @MockBean private KafkaTemplate<String, Object> kafkaTemplate;
+        // 프로듀서가 주입받는 타입과 같아야 한다. 프로듀서는 이벤트 객체가 아니라
+        // 직렬화된 JSON 문자열을 발행하므로 값 타입은 String이다.
+        @MockBean private KafkaTemplate<String, String> kafkaTemplate;
+
+        // 웜업은 Kafka lag 0 · DLT 0을 확인한 뒤에만 실행된다(V3 전용 검사).
+        // 이 테스트에는 실제 브로커가 없으므로 정착한 것으로 대체한다.
+        @MockBean private KafkaSettlementChecker kafkaSettlementChecker;
 
         private Long campaignId;
         private Long stockId;
@@ -232,7 +240,13 @@ class CouponConcurrencyTest {
                                     .build());
             this.stockId = stock.getId();
 
+            given(kafkaSettlementChecker.check()).willReturn(new KafkaSettlement(0L, 0L));
             warmupService.warmupCampaign(this.campaignId);
+
+            // 프로듀서는 send()의 반환 Future를 3초 동기 대기한다.
+            // 스텁하지 않으면 모의가 null을 돌려주고 .get()에서 NPE가 나 전 요청이 실패한다.
+            given(kafkaTemplate.send(anyString(), anyString(), anyString()))
+                    .willReturn(CompletableFuture.completedFuture(null));
         }
 
         @AfterEach
@@ -290,9 +304,10 @@ class CouponConcurrencyTest {
             assertThat(failCount.get()).isEqualTo(20);
 
             // 2. Kafka 이벤트 발행 건수 검증 (정확히 성공한 10건만 발행되어야 함)
+            // 페이로드는 CouponIssuedEvent 객체가 아니라 직렬화된 JSON 문자열이다.
             then(kafkaTemplate)
                     .should(times(10))
-                    .send(eq("coupon-issued"), anyString(), any(CouponIssuedEvent.class));
+                    .send(eq("coupon-issued"), anyString(), anyString());
 
             // 3. RDB 비동기 저장 상태 검증 (요청 시점에는 DB 저장 0건이어야 함)
             assertThat(couponRepository.count()).isEqualTo(beforeCount);

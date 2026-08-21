@@ -53,6 +53,17 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
 
     @Query(
             """
+            select c.openAt as openAt, c.expireAt as expireAt
+              from CampaignStock s
+              join s.campaign c
+             where s.id = :stockId
+               and c.id = :campaignId
+            """)
+    Optional<CampaignWindow> findCampaignWindow(
+            @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
+
+    @Query(
+            """
             select s.routeId as routeId,
                    s.fareClass as fareClass
               from CampaignStock s

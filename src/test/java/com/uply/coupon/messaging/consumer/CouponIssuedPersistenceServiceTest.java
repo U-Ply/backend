@@ -37,7 +37,8 @@ class CouponIssuedPersistenceServiceTest {
                     1L,
                     3L,
                     "550e8400-e29b-41d4-a716-446655440000",
-                    Instant.parse("2026-08-15T01:00:00Z"));
+                    Instant.parse("2026-08-15T01:00:00Z"),
+                    Instant.parse("2026-08-15T01:00:00.050Z"));
 
     @Mock private CouponRepository couponRepository;
     @Mock private CouponHistoryRepository couponHistoryRepository;

@@ -12,6 +12,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -52,14 +53,21 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
             Long campaignId,
             Long stockId,
             String idempotencyKey,
+            LocalDateTime issuedAt,
             LocalDateTime expireAt) {
 
-        // #1. E2E Latency 측정을 위한 publishedAt(Instant.now()) 포함 이벤트 생성
+        // #1. 이벤트 생성
+        // issuedAt   - 전략이 Redis TIME으로 확정한 발급 시각. 컨슈머가 coupons.issued_at으로 저장한다.
+        // publishedAt - 지금 이 순간의 발행 시각. E2E 레이턴시 측정 전용이며 저장하지 않는다.
         CouponIssuedEvent event =
                 new CouponIssuedEvent(
-                        couponId, userId, campaignId, stockId, idempotencyKey, Instant.now()
-                        // expireAt
-                        );
+                        couponId,
+                        userId,
+                        campaignId,
+                        stockId,
+                        idempotencyKey,
+                        issuedAt.toInstant(ZoneOffset.UTC),
+                        Instant.now());
 
         // #2. 직렬화 (확실한 실패 지점)
         String jsonPayload = toJson(event);

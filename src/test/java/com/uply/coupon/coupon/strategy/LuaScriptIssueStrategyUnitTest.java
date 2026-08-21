@@ -45,13 +45,16 @@ class LuaScriptIssueStrategyUnitTest {
 
     @Mock private CouponSaveStrategy couponSaveStrategy;
 
-    // [추가] 인메모리 MeterRegistry를 @Spy로 선언하여 Mockito가 @InjectMocks에 자동 주입하도록 설정
+    // 보상 지표 수집용. Counter.builder().register()가 실제 동작해야 하므로 순수 Mock을 쓸 수 없다.
     @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @InjectMocks private LuaScriptIssueStrategy luaScriptIssueStrategy;
 
     private LocalDateTime expireAt;
     private long expireAtEpochMillis;
+
+    private LocalDateTime issuedAt;
+    private long issuedAtEpochMillis;
 
     @BeforeEach
     void setUp() {
@@ -60,8 +63,13 @@ class LuaScriptIssueStrategyUnitTest {
         expireAt =
                 LocalDateTime.ofInstant(Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
 
-        // [추가] 모든 campaign expireAt 조회 요청에 대해 정상 EpochMilli 문자열을 반환하도록 공통 설정
-        given(redisTemplate.opsForValue().get(anyString()))
+        // Lua Script가 Redis TIME 기준으로 반환하는 발급 시각 (expireAt과 다른 값이어야 뒤바뀜을 잡을 수 있다)
+        issuedAtEpochMillis = 1770000000000L;
+        issuedAt =
+                LocalDateTime.ofInstant(Instant.ofEpochMilli(issuedAtEpochMillis), ZoneOffset.UTC);
+
+        // expireAt 조회는 Lua 실행보다 먼저 일어나므로 실패 시나리오에서도 스텁이 필요하다.
+        given(redisTemplate.opsForValue().get("campaign:1:expireAt"))
                 .willReturn(String.valueOf(expireAtEpochMillis));
 
         luaScriptIssueStrategy.init();
@@ -79,7 +87,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -90,8 +98,9 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.couponId()).isEqualTo(couponId);
 
         // 저장 전략 save() 정상 호출 검증
+        // issuedAt은 Lua가 반환한 Redis TIME 값이어야 한다 (JVM 시각이면 이 검증에서 깨진다)
         verify(couponSaveStrategy)
-                .save(couponId, userId, campaignId, stockId, idempotencyKey, expireAt);
+                .save(couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
     }
 
     @Test
@@ -106,7 +115,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-1L));
+                .willReturn(List.of(-1L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -117,7 +126,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.reason()).isEqualTo(IssueFailReason.ALREADY_ISSUED);
 
         // 실패 시 저장 전략 미호출 검증
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -132,7 +141,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-2L));
+                .willReturn(List.of(-2L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -142,7 +151,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -157,7 +166,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-4L));
+                .willReturn(List.of(-4L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -167,7 +176,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_NOT_OPEN);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -192,7 +201,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.SYSTEM_ERROR);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -207,7 +216,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         given(couponIdGenerator.generate()).willReturn(couponId);
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-99L));
+                .willReturn(List.of(-99L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -217,7 +226,7 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.success()).isFalse();
         assertThat(result.reason()).isEqualTo(IssueFailReason.SYSTEM_ERROR);
 
-        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any());
+        verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -234,9 +243,16 @@ class LuaScriptIssueStrategyUnitTest {
 
         // 1. Redis 선점 성공 설정
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
-        // 2. Kafka 이벤트 발행 실패(KAFKA_PUBLISH_FAILED) 예외 발생 모킹
+        // 2. 보상 스크립트는 Long을 돌려준다. 발급 스크립트와 같은 값으로 두면 보상이 실패로
+        //    처리되어 SAVE_RESULT_UNKNOWN으로 승격되므로, 스크립트별로 따로 스텁한다.
+        given(
+                        redisTemplate.execute(
+                                eq(luaScriptIssueStrategy.rollbackScript), anyList(), anyString()))
+                .willReturn(1L);
+
+        // 3. Kafka 이벤트 발행 실패(KAFKA_PUBLISH_FAILED) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED))
                 .given(couponSaveStrategy)
                 .save(
@@ -245,6 +261,7 @@ class LuaScriptIssueStrategyUnitTest {
                         eq(campaignId),
                         eq(stockId),
                         eq(idempotencyKey),
+                        eq(issuedAt),
                         eq(expireAt));
 
         // when & then
@@ -263,6 +280,50 @@ class LuaScriptIssueStrategyUnitTest {
     }
 
     @Test
+    @DisplayName("Redis 보상 자체가 실패하면 확정 실패가 아니라 SAVE_RESULT_UNKNOWN으로 승격된다")
+    void issue_RollbackFailed_EscalatesToUnknown() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
+
+        // 보상 스크립트 실행 중 인프라 예외 발생
+        given(
+                        redisTemplate.execute(
+                                eq(luaScriptIssueStrategy.rollbackScript), anyList(), anyString()))
+                .willThrow(new RuntimeException("Redis 연결 끊김"));
+
+        willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED))
+                .given(couponSaveStrategy)
+                .save(
+                        anyLong(),
+                        eq(userId),
+                        eq(campaignId),
+                        eq(stockId),
+                        eq(idempotencyKey),
+                        eq(issuedAt),
+                        eq(expireAt));
+
+        // when & then
+        // 보상이 실패하면 Redis 재고가 덜 복구된 상태로 남는다.
+        // 확정 실패로 올려보내면 상위 계층이 멱등성 진행 키를 지워 재시도를 허용하고,
+        // 재시도가 반복될수록 재고만 줄어든다. 그래서 결과 불명확으로 승격해야 한다.
+        assertThatThrownBy(
+                        () ->
+                                luaScriptIssueStrategy.issue(
+                                        campaignId, userId, stockId, idempotencyKey))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
+    }
+
+    @Test
     @DisplayName("Kafka 저장 전략 실행 중 KAFKA_PUBLISH_UNKNOWN 발생 시 Redis 보상 로직을 실행하지 않고 예외를 그대로 전파한다")
     void issue_KafkaPublishUnknown_DoesNotRollbackRedisAndThrowsException() {
         // given
@@ -276,9 +337,9 @@ class LuaScriptIssueStrategyUnitTest {
 
         // 1. Redis 선점 성공 설정
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(1L));
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
 
-        // 2. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
+        // 3. Kafka 이벤트 발행 결과 불명확(KAFKA_PUBLISH_UNKNOWN) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN))
                 .given(couponSaveStrategy)
                 .save(
@@ -287,6 +348,7 @@ class LuaScriptIssueStrategyUnitTest {
                         eq(campaignId),
                         eq(stockId),
                         eq(idempotencyKey),
+                        eq(issuedAt),
                         eq(expireAt));
 
         // when & then
