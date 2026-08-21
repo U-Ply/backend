@@ -15,6 +15,8 @@ import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
+import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
+import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
 import java.time.LocalDateTime;
 import java.util.Queue;
 import java.util.TimeZone;
@@ -197,6 +199,10 @@ class CouponConcurrencyTest {
         // 직렬화된 JSON 문자열을 발행하므로 값 타입은 String이다.
         @MockBean private KafkaTemplate<String, String> kafkaTemplate;
 
+        // 웜업은 Kafka lag 0 · DLT 0을 확인한 뒤에만 실행된다(V3 전용 검사).
+        // 이 테스트에는 실제 브로커가 없으므로 정착한 것으로 대체한다.
+        @MockBean private KafkaSettlementChecker kafkaSettlementChecker;
+
         private Long campaignId;
         private Long stockId;
         private final String routeId = "ICN-NRT";
@@ -234,6 +240,7 @@ class CouponConcurrencyTest {
                                     .build());
             this.stockId = stock.getId();
 
+            given(kafkaSettlementChecker.check()).willReturn(new KafkaSettlement(0L, 0L));
             warmupService.warmupCampaign(this.campaignId);
 
             // 프로듀서는 send()의 반환 Future를 3초 동기 대기한다.

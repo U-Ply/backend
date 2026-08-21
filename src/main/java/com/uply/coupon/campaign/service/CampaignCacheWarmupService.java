@@ -3,29 +3,25 @@ package com.uply.coupon.campaign.service;
 import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
+import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
+import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 이벤트 개시 전 RDB의 캠페인 재고 데이터를 Redis 캐시에 사전 적재(Warm-up)하는 서비스
- *
- * 이벤트 오픈 시점에 발생하는 대량의 읽기/쓰기 트래픽이 RDB로 직접 몰리는 Cache Stampede 및 DB Connection Pool 고갈 현상을 방지
+ * 이벤트 개시 전 RDB의 캠페인 재고 데이터를 Redis 캐시에 사전 적재(Warm-up) 및 장애 복구하는 서비스
  *
  * <pre>
- * 주요 캐싱 데이터 구조
- *   1. stock:{stockId} (String) - 잔여/총 재고 수량
- *   2. stockId:{campaignId}:{routeId}:{fareClass} (String) - 검색 조건별 매핑되는 Stock PK
- *   3. campaign:{campaignId}:openAt (String) - 오픈 시각(UTC epoch milliseconds)
- *   4. issued:{campaignId} (Set) - 중복 발급 방지용 유저 집합
- *   5. campaign:{campaignId}:expireAt (String) - 만료 시각
- * <pre>
+ * 복구 실행 선행 조건 (Disaster Recovery Prerequisites)
+ *   1. 신규 발급 트래픽 차단 (Gateway 수준)
+ *   2. Kafka Consumer Lag = 0 및 DLT 처리 완료 확인 (DB의 최종 정합성 보장)
+ * </pre>
  */
 @Slf4j
 @Service
@@ -37,12 +33,15 @@ public class CampaignCacheWarmupService {
     private static final String KEY_CAMPAIGN_OPEN_AT = "campaign:%d:openAt";
     private static final String KEY_CAMPAIGN_EXPIRE_AT = "campaign:%d:expireAt";
     private static final String KEY_ISSUED = "issued:%d";
-
-    private static final long CACHE_TTL_HOURS = 24;
+    private static final String KEY_TEMP_ISSUED = "temp:issued:%d";
 
     private final CampaignStockRepository campaignStockRepository;
-    private final CouponRepository couponRepository; // [추가] 기발급 유저 조회를 위한 Repository
+    private final CouponRepository couponRepository;
     private final StringRedisTemplate redisTemplate;
+
+    // V3(coupon.save.strategy=kafka)에서만 빈이 존재한다. V0~V2에서는 비어 있으므로
+    // 직접 주입하면 컨텍스트 기동이 깨진다.
+    private final ObjectProvider<KafkaSettlementChecker> kafkaSettlementCheckerProvider;
 
     /**
      * 특정 캠페인의 잔여 재고 및 발급 이력을 RDB에서 조회하여 Redis 캐시에 적재/복구
@@ -57,6 +56,9 @@ public class CampaignCacheWarmupService {
     public void warmupCampaign(Long campaignId) {
         log.info("Starting cache warm-up and recovery for campaignId: {}", campaignId);
 
+        // 0. Kafka 정착 확인 (V3 전용)
+        requireKafkaSettled();
+
         // 1. 해당 캠페인의 전체 Stock 목록 DB 조회
         List<CampaignStock> stocks = campaignStockRepository.findAllByCampaignId(campaignId);
         if (stocks.isEmpty()) {
@@ -65,55 +67,84 @@ public class CampaignCacheWarmupService {
         }
 
         // 2. 오픈 시각 및 만료 시각 캐싱
+        //
+        // TTL을 걸지 않는다. 요구분석서 13절 Redis 키 표가 재고와 발급 Set을 TTL 없음으로 규정하고
+        // 있고, 고정 24시간을 걸면 캠페인이 그보다 길 때 발급 도중 키가 사라진다. 키를 지우는 것은
+        // 회차 초기화 스크립트와 웜업의 책임이지 만료 시간의 책임이 아니다.
         long openAtEpochMillis =
                 stocks.get(0).getCampaign().getOpenAt().toInstant(ZoneOffset.UTC).toEpochMilli();
-        String campaignOpenAtKey = String.format(KEY_CAMPAIGN_OPEN_AT, campaignId);
         redisTemplate
                 .opsForValue()
                 .set(
-                        campaignOpenAtKey,
-                        String.valueOf(openAtEpochMillis),
-                        CACHE_TTL_HOURS,
-                        TimeUnit.HOURS);
+                        String.format(KEY_CAMPAIGN_OPEN_AT, campaignId),
+                        String.valueOf(openAtEpochMillis));
 
         long expireAtEpochMillis =
                 stocks.get(0).getCampaign().getExpireAt().toInstant(ZoneOffset.UTC).toEpochMilli();
-        String campaignExpireAtKey = String.format(KEY_CAMPAIGN_EXPIRE_AT, campaignId);
         redisTemplate
                 .opsForValue()
                 .set(
-                        campaignExpireAtKey,
-                        String.valueOf(expireAtEpochMillis),
-                        CACHE_TTL_HOURS,
-                        TimeUnit.HOURS);
+                        String.format(KEY_CAMPAIGN_EXPIRE_AT, campaignId),
+                        String.valueOf(expireAtEpochMillis));
 
         // 3. stock:{stockId} 잔여 재고(remainingStock) 기준 캐싱
         for (CampaignStock stock : stocks) {
-            String stockKey = String.format(KEY_STOCK, stock.getId());
-
-            // [수정] getTotalStock() -> getRemainingStock() 으로 변경하여 실제 잔여 재고 복구
             redisTemplate
                     .opsForValue()
                     .set(
-                            stockKey,
-                            String.valueOf(stock.getRemainingStock()),
-                            CACHE_TTL_HOURS,
-                            TimeUnit.HOURS);
+                            String.format(KEY_STOCK, stock.getId()),
+                            String.valueOf(stock.getRemainingStock()));
 
-            String stockIdKey =
-                    String.format(
-                            KEY_STOCK_ID, campaignId, stock.getRouteId(), stock.getFareClass());
             redisTemplate
                     .opsForValue()
                     .set(
-                            stockIdKey,
-                            String.valueOf(stock.getId()),
-                            CACHE_TTL_HOURS,
-                            TimeUnit.HOURS);
+                            String.format(
+                                    KEY_STOCK_ID,
+                                    campaignId,
+                                    stock.getRouteId(),
+                                    stock.getFareClass()),
+                            String.valueOf(stock.getId()));
         }
 
-        // 4. issued:{campaignId} Set 재구축 (RDB 발급 이력 동기화)
+        // 4. issued:{campaignId} Set 원자적 재구축 (RENAME 활용)
+        rebuildIssuedSet(campaignId);
+
+        log.info(
+                "Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);
+    }
+
+    /**
+     * Kafka가 정착(lag 0, DLT 0)하지 않았으면 복구를 거부한다.
+     *
+     * <p>lag이 남은 상태에서 DB를 정답으로 삼아 Redis를 덮어쓰면, 아직 DB에 반영되지 않은 발급분이 issued Set에서 사라져 같은 유저가 다시 발급받을
+     * 수 있고 재고도 그만큼 부풀려 복구된다.
+     *
+     * <p>Checker 빈은 {@code coupon.save.strategy=kafka}일 때만 생성된다. 따라서 V0~V2 회차에서는 빈이 없어 이 검사가
+     * 건너뛰어지고, V3 회차에서만 강제된다. Kafka 조회 자체가 실패하면 예외가 그대로 전파되어 웜업이 중단된다.
+     */
+    private void requireKafkaSettled() {
+        KafkaSettlementChecker checker = kafkaSettlementCheckerProvider.getIfAvailable();
+        if (checker == null) {
+            return;
+        }
+
+        KafkaSettlement settlement = checker.check();
+        if (!settlement.settled()) {
+            throw new IllegalStateException(
+                    "Kafka 미정착 상태에서는 캐시 복구를 실행할 수 없습니다. lag="
+                            + settlement.lag()
+                            + ", dlt="
+                            + settlement.dltCount());
+        }
+    }
+
+    private void rebuildIssuedSet(Long campaignId) {
         String issuedKey = String.format(KEY_ISSUED, campaignId);
+        String tempIssuedKey = String.format(KEY_TEMP_ISSUED, campaignId);
+
+        // 이전 미완료 작업으로 잔존할 수 있는 임시 키 제거
+        redisTemplate.delete(tempIssuedKey);
+
         List<Long> issuedUserIds = couponRepository.findUserIdsByCampaignId(campaignId);
 
         if (issuedUserIds == null || issuedUserIds.isEmpty()) {
@@ -126,21 +157,15 @@ public class CampaignCacheWarmupService {
             String[] userIdStrs =
                     issuedUserIds.stream().map(String::valueOf).toArray(String[]::new);
 
-            // 임시 키에 DB 기준으로 새로 쌓은 뒤 RENAME으로 원자 교체한다.
+            // 임시 Set에 DB 기준 발급 유저를 적재한 뒤 RENAME으로 원자 교체한다.
             // 기존 키에 SADD로 덧칠하면 DB에 없는 유저가 Set에 남아 발급이 부당하게 거부된다.
-            // RENAME은 대상 키를 덮어쓰면서 TTL까지 함께 옮기므로 별도 expire가 필요 없다.
-            String rebuildKey = issuedKey + ":rebuild:" + UUID.randomUUID();
-            redisTemplate.opsForSet().add(rebuildKey, userIdStrs);
-            redisTemplate.expire(rebuildKey, CACHE_TTL_HOURS, TimeUnit.HOURS);
-            redisTemplate.rename(rebuildKey, issuedKey);
+            redisTemplate.opsForSet().add(tempIssuedKey, userIdStrs);
+            redisTemplate.rename(tempIssuedKey, issuedKey);
 
             log.info(
-                    "Rebuilt issued Set for campaignId: {} with {} users",
+                    "Atomically replaced issued Set for campaignId: {} with {} users",
                     campaignId,
                     userIdStrs.length);
         }
-
-        log.info(
-                "Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);
     }
 }

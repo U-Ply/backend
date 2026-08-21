@@ -11,6 +11,7 @@ const CAMPAIGN_ID = numberEnv('CAMPAIGN_ID', 1);
 const ROUTE_ID = __ENV.ROUTE_ID || 'JEJU';
 const FARE_CLASS = __ENV.FARE_CLASS || 'ECONOMY';
 const MAX_DURATION = __ENV.MAX_DURATION || '10m';
+const TEST_STRATEGY = strategyEnv('TEST_STRATEGY');
 
 const issued = new Counter('coupon_issued');
 const outOfStock = new Counter('coupon_out_of_stock');
@@ -27,6 +28,21 @@ const unexpectedResponses = new Counter('coupon_unexpected_response');
 // 재고 소진에 따른 409는 예상된 비즈니스 응답이므로 k6의 http_req_failed에서 제외한다.
 http.setResponseCallback(http.expectedStatuses(200, 409));
 
+const thresholds = {
+  checks: ['rate>0.99'],
+  coupon_lock_timeout: ['count==0'],
+  coupon_connection_unavailable: ['count==0'],
+  coupon_5xx: ['count==0'],
+  coupon_other_4xx: ['count==0'],
+  coupon_unexpected_response: ['count==0'],
+};
+
+// V0은 동시성 제어가 없는 기준선이므로 CONCURRENCY_CONFLICT를 실패 판정에서 제외하고
+// 발생량만 기록한다. V1~V3에서는 한 건이라도 발생하면 해당 실행을 실패로 판정한다.
+if (TEST_STRATEGY !== 'V0') {
+  thresholds.coupon_concurrency_conflict = ['count==0'];
+}
+
 export const options = {
   scenarios: {
     issue_coupons: {
@@ -36,21 +52,7 @@ export const options = {
       maxDuration: MAX_DURATION,
     },
   },
-  thresholds: {
-    checks: ['rate>0.99'],
-    coupon_lock_timeout: ['count==0'],
-    // 커넥션 획득 실패는 어느 전략에서도 정상이 아니므로 0건을 요구한다.
-    // coupon_concurrency_conflict 는 V0(NoLock)에서 정상 관측값이라 threshold 를 두지 않고
-    // 수치만 기록한다. V1 에서 0이어야 한다는 판정은 결과 문서에서 수행한다.
-    //
-    // coupon_campaign_not_open / coupon_campaign_expired 도 같은 이유로 threshold 를 두지 않는다.
-    // LT-01 에서는 0이어야 하지만, 인수 기준 E-2(만료 정각)·E-3(만료 1초 후) 경계 시나리오에서는
-    // 이 값이 나오는 것이 정답이다. 같은 스크립트를 두 용도로 쓰므로 판정은 결과 문서에서 한다.
-    coupon_connection_unavailable: ['count==0'],
-    coupon_5xx: ['count==0'],
-    coupon_other_4xx: ['count==0'],
-    coupon_unexpected_response: ['count==0'],
-  },
+  thresholds,
 };
 
 export default function () {
@@ -102,9 +104,15 @@ export default function () {
     unexpectedResponses.add(1);
   }
 
+  check(response, {
+    'expected response for strategy': () => isExpectedResponse(response, body),
+  });
+}
+
+function isExpectedResponse(response, body) {
   // 여기서 보는 것은 "기술적 실패가 없었는가"이지 "인수 기준을 만족했는가"가 아니다.
-  // 오픈 전·만료 거부는 오류 코드 표에 정의된 정상 비즈니스 응답이므로 통과로 센다.
-  // LT-01 에서 이 값이 0인지는 위 카운터와 결과 문서에서 판정한다(ALREADY_ISSUED 와 같은 취급).
+  // 오픈 전·만료 거부도 오류 코드 표에 정의된 정상 비즈니스 응답이므로 통과로 센다.
+  // LT-01 에서 이 값이 0인지는 카운터와 결과 문서에서 판정한다(ALREADY_ISSUED 와 같은 취급).
   const businessErrorCodes = [
     'OUT_OF_STOCK',
     'ALREADY_ISSUED',
@@ -112,11 +120,16 @@ export default function () {
     'CAMPAIGN_EXPIRED',
   ];
 
-  check(response, {
-    'expected business response': () =>
-      (response.status === 200 && body?.status === 'ISSUED' && Boolean(body?.couponId)) ||
-      (response.status === 409 && businessErrorCodes.includes(body?.errorCode)),
-  });
+  const normalBusinessResponse =
+    (response.status === 200 && body?.status === 'ISSUED' && Boolean(body?.couponId)) ||
+    (response.status === 409 && businessErrorCodes.includes(body?.errorCode));
+
+  const expectedNoLockConflict =
+    TEST_STRATEGY === 'V0' &&
+    response.status === 503 &&
+    body?.errorCode === 'CONCURRENCY_CONFLICT';
+
+  return normalBusinessResponse || expectedNoLockConflict;
 }
 
 function numberEnv(name, defaultValue) {
@@ -130,6 +143,19 @@ function numberEnv(name, defaultValue) {
     throw new Error(`${name} must be a positive integer: ${rawValue}`);
   }
 
+  return value;
+}
+
+function strategyEnv(name) {
+  const rawValue = __ENV[name];
+  if (rawValue === undefined || rawValue === '') {
+    throw new Error(`${name} is required and must match the application strategy`);
+  }
+
+  const value = rawValue.toUpperCase();
+  if (!['V0', 'V1', 'V2', 'V3'].includes(value)) {
+    throw new Error(`${name} must be one of V0, V1, V2, V3: ${value}`);
+  }
   return value;
 }
 

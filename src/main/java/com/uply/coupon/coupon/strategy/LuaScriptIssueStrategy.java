@@ -118,7 +118,14 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                     "[쿠폰 저장/발행 확정 실패] Redis 보상 로직을 실행합니다. couponId: {}, reason: {}",
                     couponId,
                     e.getReason());
-            rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
+
+            // 보상이 실패하면 Redis 재고가 덜 복구된 상태로 남는다. 이때 원래 실패 사유를 그대로
+            // 올려보내면 상위 계층이 "확정 실패"로 보고 멱등성 진행 키를 지워 재시도를 허용한다.
+            // 재고는 이미 빠져 있으므로 재시도가 반복될수록 재고만 줄어든다.
+            // 그래서 보상 실패는 결과 불명확으로 승격해 진행 키를 유지시킨다.
+            if (!rollbackInRedis(stockIdKey, issuedCampaignKey, userId)) {
+                throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
+            }
             throw e;
 
         } catch (Exception e) {
@@ -165,8 +172,13 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         }
     }
 
-    /** Redis 롤백 전용 헬퍼 메소드 (지표 수집 및 반환값 처리) */
-    private void rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
+    /**
+     * Redis 재고·발급 Set을 되돌린다.
+     *
+     * @return 보상이 반영됐거나(SUCCESS) 이미 반영돼 있으면(NOOP) true, 실행 자체가 실패하면 false. 호출자는 false일 때 재고가 덜 복구된
+     *     상태임을 전제로 처리해야 한다.
+     */
+    private boolean rollbackInRedis(String stockIdKey, String issuedCampaignKey, Long userId) {
         try {
             Long result =
                     redisTemplate.execute(
@@ -181,9 +193,11 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                 recordCompensationMetric("noop");
                 log.info("[Redis 보상 NOP] 이미 복구되었거나 발급 이력이 없는 유저. userId: {}", userId);
             }
+            return true;
         } catch (Exception e) {
             recordCompensationMetric("failure");
             log.error("[Redis 보상 실패] 보상 스크립트 실행 중 네트워크/인프라 예외 발생. userId: {}", userId, e);
+            return false;
         }
     }
 

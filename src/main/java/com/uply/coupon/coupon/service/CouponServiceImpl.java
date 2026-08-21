@@ -40,7 +40,13 @@ public class CouponServiceImpl implements CouponService {
             }
         }
 
-        // #2. 최초 요청 처리 (예외 발생 시 PROCESSING 락 해제를 위한 try-catch)
+        // #2. 최초 요청 처리
+        //
+        // PROCESSING 키 해제 여부는 "발급이 성립했는가"로 갈린다.
+        // 발급이 성립한 뒤에 응답 직렬화나 캐싱이 실패했다고 키를 지우면,
+        // 같은 요청이 다시 들어와 발급 로직을 처음부터 실행해 중복 발급이 난다.
+        boolean issuanceCompleted = false;
+
         try {
             CouponIssueStrategy issueStrategy = strategySelector.current();
 
@@ -60,6 +66,9 @@ public class CouponServiceImpl implements CouponService {
                 throw new CouponIssueException(result.reason());
             }
 
+            // 이 시점부터 쿠폰은 이미 발급된 것으로 본다. 이후 실패는 응답 생성 실패일 뿐이다.
+            issuanceCompleted = true;
+
             // 응답 DTO 생성
             CouponIssueResponse response =
                     CouponIssueResponse.builder()
@@ -78,18 +87,29 @@ public class CouponServiceImpl implements CouponService {
             return response;
 
         } catch (CouponIssueException e) {
-            if (hasIdempotencyKey(idempotencyKey)
+            // 확정 실패일 때만 키를 지워 재시도를 허용한다.
+            //  - SAVE_RESULT_UNKNOWN : Kafka 발행 결과 불명확 또는 Redis 보상 실패.
+            //    브로커에 이미 들어갔거나 재고가 복구되지 않았을 수 있으므로 키를 유지한다.
+            //  - issuanceCompleted    : 발급은 성립했고 응답 단계만 실패한 경우.
+            if (canClearProgress(idempotencyKey, issuanceCompleted)
                     && e.getReason() != IssueFailReason.SAVE_RESULT_UNKNOWN) {
                 idempotencyChecker.clearProgress(idempotencyKey);
             }
             throw e;
 
         } catch (Exception e) {
-            if (hasIdempotencyKey(idempotencyKey)) {
+            // CouponIssueException으로 변환되지 않은 예외(캐시 누락, stockId 조회 실패 등)도
+            // 발급 전이라면 키를 풀어 정상 재시도를 막지 않는다.
+            if (canClearProgress(idempotencyKey, issuanceCompleted)) {
                 idempotencyChecker.clearProgress(idempotencyKey);
             }
             throw e;
         }
+    }
+
+    /** 발급이 성립하기 전의 확정 실패에서만 PROCESSING 선점을 해제한다. */
+    private boolean canClearProgress(String idempotencyKey, boolean issuanceCompleted) {
+        return hasIdempotencyKey(idempotencyKey) && !issuanceCompleted;
     }
 
     private boolean hasIdempotencyKey(String idempotencyKey) {

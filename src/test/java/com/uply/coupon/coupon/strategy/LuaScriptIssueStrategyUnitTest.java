@@ -245,6 +245,13 @@ class LuaScriptIssueStrategyUnitTest {
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
                 .willReturn(List.of(1L, issuedAtEpochMillis));
 
+        // 2. 보상 스크립트는 Long을 돌려준다. 발급 스크립트와 같은 값으로 두면 보상이 실패로
+        //    처리되어 SAVE_RESULT_UNKNOWN으로 승격되므로, 스크립트별로 따로 스텁한다.
+        given(
+                        redisTemplate.execute(
+                                eq(luaScriptIssueStrategy.rollbackScript), anyList(), anyString()))
+                .willReturn(1L);
+
         // 3. Kafka 이벤트 발행 실패(KAFKA_PUBLISH_FAILED) 예외 발생 모킹
         willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED))
                 .given(couponSaveStrategy)
@@ -270,6 +277,50 @@ class LuaScriptIssueStrategyUnitTest {
         // Redis 보상 로직 실행 검증 (선점 1회 + 보상 1회 = 총 2회 execute 호출)
         verify(redisTemplate, times(2))
                 .execute(any(DefaultRedisScript.class), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName("Redis 보상 자체가 실패하면 확정 실패가 아니라 SAVE_RESULT_UNKNOWN으로 승격된다")
+    void issue_RollbackFailed_EscalatesToUnknown() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(1L, issuedAtEpochMillis));
+
+        // 보상 스크립트 실행 중 인프라 예외 발생
+        given(
+                        redisTemplate.execute(
+                                eq(luaScriptIssueStrategy.rollbackScript), anyList(), anyString()))
+                .willThrow(new RuntimeException("Redis 연결 끊김"));
+
+        willThrow(new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED))
+                .given(couponSaveStrategy)
+                .save(
+                        anyLong(),
+                        eq(userId),
+                        eq(campaignId),
+                        eq(stockId),
+                        eq(idempotencyKey),
+                        eq(issuedAt),
+                        eq(expireAt));
+
+        // when & then
+        // 보상이 실패하면 Redis 재고가 덜 복구된 상태로 남는다.
+        // 확정 실패로 올려보내면 상위 계층이 멱등성 진행 키를 지워 재시도를 허용하고,
+        // 재시도가 반복될수록 재고만 줄어든다. 그래서 결과 불명확으로 승격해야 한다.
+        assertThatThrownBy(
+                        () ->
+                                luaScriptIssueStrategy.issue(
+                                        campaignId, userId, stockId, idempotencyKey))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
     }
 
     @Test

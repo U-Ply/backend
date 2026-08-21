@@ -16,6 +16,13 @@ import org.springframework.data.repository.query.Param;
 // 비관적 락 조회 - DB로 락 걸고 커밋/롤백할 떄까지 대기 -> 무한대기 x timeout적용
 public interface CampaignStockRepository extends JpaRepository<CampaignStock, Long> {
 
+    interface RouteFareProjection {
+
+        String getRouteId();
+
+        String getFareClass();
+    }
+
     @Query(
             """
             SELECT s
@@ -53,6 +60,17 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
                and c.id = :campaignId
             """)
     Optional<CampaignWindow> findCampaignWindow(
+            @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
+
+    @Query(
+            """
+            select s.routeId as routeId,
+                   s.fareClass as fareClass
+              from CampaignStock s
+             where s.id = :stockId
+               and s.campaign.id = :campaignId
+            """)
+    Optional<RouteFareProjection> findRouteFareByStockIdAndCampaignId(
             @Param("stockId") Long stockId, @Param("campaignId") Long campaignId);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)

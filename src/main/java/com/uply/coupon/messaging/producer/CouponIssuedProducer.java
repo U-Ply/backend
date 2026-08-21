@@ -3,6 +3,7 @@ package com.uply.coupon.messaging.producer;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.repository.CouponIssuanceProgressRepository;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
@@ -43,6 +44,7 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry; // Micrometer 메트릭 등록 객체
+    private final CouponIssuanceProgressRepository progressRepository;
 
     @Override
     public void save(
@@ -70,9 +72,12 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
         // #2. 직렬화 (확실한 실패 지점)
         String jsonPayload = toJson(event);
 
+        // #3. Kafka 발행 전에 MySQL 반영 대기 상태 저장
+        markPending(couponId);
+
         long startTime = System.currentTimeMillis();
 
-        // #3. Kafka 동기 전송 및 예외 성격별 분기 처리
+        // #4. Kafka 동기 전송 및 예외 성격별 분기 처리
         try {
             // Key로 couponId를 전달하여 동일 파티션 보장 및 idempotent producer 동작
             kafkaTemplate
@@ -124,11 +129,29 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
                     cause != null ? cause.getClass().getSimpleName() : "null",
                     couponId,
                     e);
+            clearPending(couponId);
             throw new CouponIssueException(IssueFailReason.KAFKA_PUBLISH_FAILED, e);
 
         } catch (Exception e) {
             log.error("[Kafka 발행 결과 불명확] couponId: {}", couponId, e);
             throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
+        }
+    }
+
+    private void markPending(Long couponId) {
+        try {
+            progressRepository.markPending(couponId);
+        } catch (RuntimeException e) {
+            log.error("[발급 진행 상태 저장 실패] couponId: {}", couponId, e);
+            throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
+        }
+    }
+
+    private void clearPending(Long couponId) {
+        try {
+            progressRepository.clear(couponId);
+        } catch (RuntimeException e) {
+            log.error("[발급 진행 상태 삭제 실패] couponId: {}", couponId, e);
         }
     }
 

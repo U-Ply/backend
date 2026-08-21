@@ -169,4 +169,100 @@ class CampaignCacheWarmupIntegrationTest {
         assertThat(issuedUsers).isNotNull();
         assertThat(issuedUsers).containsExactlyInAnyOrder("100", "101", "102");
     }
+
+    @Test
+    @DisplayName("기존 Redis에 고스트 유저가 남아있을 때 웜업 실행 시 RENAME을 통해 고스트 유저가 제거된다.")
+    void warmupCampaign_RemovesGhostUser_ViaAtomicRename() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+
+        Campaign campaign =
+                Campaign.builder()
+                        .name("동남아 노선 특가 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-BKK")
+                        .fareClass("Y")
+                        .totalStock(100)
+                        .build();
+        CampaignStock savedStock = campaignStockRepository.save(stock);
+
+        // Redis에 DB 저장이 실패하여 남아있는 고스트 유저(999L) 및 기존 유저 데이터 강제 주입
+        String issuedKey = String.format("issued:%d", savedCampaign.getId());
+        redisTemplate.opsForSet().add(issuedKey, "999"); // DB에 없는 고스트 유저
+
+        // DB에는 유저 100L만 정상 발급 상태로 저장
+        String sql = "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?)";
+        jdbcTemplate.update(sql, 100L, "user100@test.com", "유저100");
+
+        // 발급 시각은 호출부가 명시한다. JVM now()로 채우던 오버로드는 시계가 섞여 제거됐다.
+        Coupon coupon =
+                Coupon.issue(
+                        3001L,
+                        100L,
+                        savedCampaign.getId(),
+                        savedStock.getId(),
+                        savedCampaign.getOpenAt(),
+                        savedCampaign.getExpireAt());
+        couponRepository.save(coupon);
+
+        // when
+        campaignCacheWarmupService.warmupCampaign(savedCampaign.getId());
+
+        // then
+        // 1. 고스트 유저(999)는 제거되고 DB 기준 유저(100)만 정확히 잔존해야 함
+        Set<String> restoredUsers = redisTemplate.opsForSet().members(issuedKey);
+        assertThat(restoredUsers).isNotNull();
+        assertThat(restoredUsers).containsExactly("100");
+        assertThat(restoredUsers).doesNotContain("999");
+
+        // 2. 스왑에 사용된 임시 키(temp:issued:{campaignId})가 깔끔히 정리되었는지 검증
+        String tempIssuedKey = String.format("temp:issued:%d", savedCampaign.getId());
+        Boolean hasTempKey = redisTemplate.hasKey(tempIssuedKey);
+        assertThat(hasTempKey).isFalse();
+    }
+
+    @Test
+    @DisplayName("DB에 발급 내역이 완전히 없는 경우 웜업 실행 시 오염된 기존 issued Set이 삭제된다.")
+    void warmupCampaign_ClearsIssuedSet_WhenNoCouponsInDb() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+
+        Campaign campaign =
+                Campaign.builder()
+                        .name("미주 노선 할인 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-LAX")
+                        .fareClass("Y")
+                        .totalStock(50)
+                        .build();
+        campaignStockRepository.save(stock);
+
+        // Redis에 고스트 유저 데이터(888L)가 잔존하는 상황
+        String issuedKey = String.format("issued:%d", savedCampaign.getId());
+        redisTemplate.opsForSet().add(issuedKey, "888");
+
+        // DB에는 쿠폰 발급 내역이 0건인 상태 유지
+
+        // when
+        campaignCacheWarmupService.warmupCampaign(savedCampaign.getId());
+
+        // then
+        // DB에 발급 유저가 없으므로 기존 오염 키가 tamamen 삭제(DELETE)되었는지 검증
+        Boolean hasIssuedKey = redisTemplate.hasKey(issuedKey);
+        assertThat(hasIssuedKey).isFalse();
+    }
 }

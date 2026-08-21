@@ -157,8 +157,12 @@ Redis와 Kafka는 하나의 원자적 트랜잭션으로 처리되지 않으므�
 ### 7.4 발급 직후 DB 반영 전 요청
 
 - Kafka 저장은 비동기이므로 `200 ISSUED` 응답 직후 MySQL에 쿠폰이 없을 수 있다.
-- 조회, 사용 또는 취소 시 DB에서 쿠폰을 찾지 못하면 100ms 간격으로 최대 3회 DB를 추가 조회한다.
+- Kafka 비동기 발급은 이벤트 발행 전에 `coupon:pending:{couponId}`를 24시간 TTL로 저장한다.
+- Kafka 발행이 명확하게 실패하면 pending 키를 삭제하고, 결과가 불명확하면 유지한다.
+- 단건 조회 시 DB에 없고 pending 키가 있을 때만 100ms 간격으로 최대 3회 DB를 추가 조회한다.
 - 3회 추가 조회 후에도 DB에 없으면 `COUPON_NOT_READY`를 반환한다.
+- DB와 Redis pending 키에 모두 없으면 `COUPON_NOT_FOUND`를 반환한다.
+- Consumer의 MySQL 저장 트랜잭션이 커밋된 후 pending 키를 삭제한다.
 - 실제 상태 변경은 MySQL에서 쿠폰이 확인된 이후에만 수행한다.
 
 ## 8. 멱등성 요구사항
@@ -370,6 +374,7 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 | `IDEMPOTENCY_REQUEST_IN_PROGRESS` | 409 | 동일 키의 최초 요청 처리 중 |
 | `COUPON_NOT_READY` | 409 | 발급 이벤트의 MySQL 반영 대기 중 |
 | `COUPON_NOT_FOUND` | 404 | 존재하지 않는 쿠폰 |
+| `USER_NOT_FOUND` | 404 | 존재하지 않는 사용자 |
 | `CAMPAIGN_NOT_FOUND` | 404 | 존재하지 않는 캠페인 또는 재고 풀 |
 | `LOCK_TIMEOUT` | 503 | 비관적 락 대기 시간 초과 (재시도 가능) |
 | `CONCURRENCY_CONFLICT` | 503 | DB 교착 등 동시성 경합으로 처리 실패 (재시도 가능) |
@@ -390,6 +395,7 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 | 재고 | `stock:{stockId}` | String 정수 | 없음 |
 | 캠페인별 발급 사용자 | `issued:{campaignId}` | Set | 없음 |
 | API 멱등성 | `idempotency:{idempotencyKey}` | String JSON | PROCESSING 30초, COMPLETED 10분 |
+| 쿠폰 DB 반영 대기 | `coupon:pending:{couponId}` | String (`PENDING`) | 24시간 |
 | 대기열 | `waiting:{campaignId}` | Sorted Set | 없음 |
 
 ## 14. 개인정보 및 로그 요구사항

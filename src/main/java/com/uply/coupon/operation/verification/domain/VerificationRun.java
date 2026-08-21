@@ -15,14 +15,15 @@ public record VerificationRun(String runId, LocalDateTime snapshotAt, List<RuleR
     }
 
     /**
-     * 앱과 DB 의 시계가 어긋나면 어느 시점을 본 것인지 알 수 없으므로 회차 전체가 무효다.
+     * 시계가 어긋나면 어느 시점을 본 것인지 알 수 없어 회차 전체가 무효다.
      *
-     * <p>CLOCK-02(Redis)는 포함하지 않는다. INV 규칙은 MySQL 만 보므로 Redis 시계가 틀려도 정합성 판정 자체는 유효하고, Lua 경로의 만료
-     * 판정 해석에만 영향을 준다.
+     * <p>CLOCK-02 를 포함하도록 바꿨다. Lua 경로의 issued_at 기준이 Redis TIME 으로 확정되면서 Redis-DB drift 가 INV-04(이력
+     * 순서) · INV-06(시각 순서) · INV-11(캠페인 기간)의 오차로 직접 이어진다. Redis 를 쓰지 않는 회차에서는 CLOCK-02 가 N/A(위반 0)로
+     * 기록되므로 이 조건이 그 회차를 막지 않는다.
      */
     public boolean clockValid() {
         return results.stream()
-                .filter(r -> "CLOCK-01".equals(r.code()))
+                .filter(r -> r.code().startsWith("CLOCK-"))
                 .allMatch(RuleResult::passed);
     }
 }

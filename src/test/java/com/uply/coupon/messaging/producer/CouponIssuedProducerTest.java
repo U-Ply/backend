@@ -7,11 +7,13 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.repository.CouponIssuanceProgressRepository;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -37,6 +39,7 @@ class CouponIssuedProducerTest {
 
     @Mock private KafkaTemplate<String, String> kafkaTemplate;
     @Mock private ObjectMapper objectMapper;
+    @Mock private CouponIssuanceProgressRepository progressRepository;
 
     // Micrometer 메트릭 수집 테스트를 위해 SimpleMeterRegistry 주입
     @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
@@ -77,6 +80,8 @@ class CouponIssuedProducerTest {
                 couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
 
         // then
+        verify(progressRepository).markPending(couponId);
+        verify(progressRepository, never()).clear(couponId);
         verify(kafkaTemplate)
                 .send(eq("coupon-issued"), eq(String.valueOf(couponId)), eq(expectedJson));
 
@@ -164,6 +169,8 @@ class CouponIssuedProducerTest {
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
+        verify(progressRepository).markPending(couponId);
+        verify(progressRepository, never()).clear(couponId);
     }
 
     @Test
@@ -248,6 +255,8 @@ class CouponIssuedProducerTest {
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.KAFKA_PUBLISH_FAILED);
+        verify(progressRepository).markPending(couponId);
+        verify(progressRepository).clear(couponId);
     }
 
     @Test

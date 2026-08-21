@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -11,12 +12,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.exception.CouponNotFoundException;
+import com.uply.coupon.common.exception.CouponNotReadyException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
+import com.uply.coupon.coupon.dto.response.CouponDetailResponse;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
+import com.uply.coupon.coupon.service.CouponQueryService;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
@@ -41,14 +45,19 @@ class CouponControllerTest {
     private MockMvc mockMvc;
     private CouponService couponService;
     private CouponStateTransitionService couponStateTransitionService;
+    private CouponQueryService couponQueryService;
 
     @BeforeEach
     void setUp() {
         couponService = mock(CouponService.class);
         couponStateTransitionService = mock(CouponStateTransitionService.class);
+        couponQueryService = mock(CouponQueryService.class);
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
-                                new CouponController(couponService, couponStateTransitionService))
+                                new CouponController(
+                                        couponService,
+                                        couponStateTransitionService,
+                                        couponQueryService))
                         .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
                         .build();
     }
@@ -180,6 +189,56 @@ class CouponControllerTest {
                                 .header("Idempotency-Key", IDEMPOTENCY_KEY))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_STATE_TRANSITION"));
+    }
+
+    // 멱등성 키 없이 쿠폰 단건 조회가 가능하고 개인정보를 포함하지 않는지 검증한다.
+    @Test
+    void couponDetailCanBeRetrievedWithoutIdempotencyKey() throws Exception {
+        CouponDetailResponse response =
+                new CouponDetailResponse(
+                        String.valueOf(COUPON_ID),
+                        1L,
+                        2L,
+                        "ICN-JEJ",
+                        "ECONOMY",
+                        CouponStatus.ISSUED,
+                        Instant.parse("2026-08-18T10:00:00Z"),
+                        null,
+                        null,
+                        null,
+                        Instant.parse("2026-08-19T10:00:00Z"));
+        given(couponQueryService.getCoupon(COUPON_ID)).willReturn(response);
+
+        mockMvc.perform(get("/api/coupons/{couponId}", COUPON_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.couponId").value(String.valueOf(COUPON_ID)))
+                .andExpect(jsonPath("$.routeId").value("ICN-JEJ"))
+                .andExpect(jsonPath("$.fareClass").value("ECONOMY"))
+                .andExpect(jsonPath("$.status").value("ISSUED"))
+                .andExpect(jsonPath("$.name").doesNotExist())
+                .andExpect(jsonPath("$.email").doesNotExist());
+    }
+
+    // 쿠폰 DB 반영이 준비되지 않은 경우 409 COUPON_NOT_READY 응답을 반환하는지 검증한다.
+    @Test
+    void couponNotReadyReturns409() throws Exception {
+        given(couponQueryService.getCoupon(COUPON_ID))
+                .willThrow(new CouponNotReadyException(COUPON_ID));
+
+        mockMvc.perform(get("/api/coupons/{couponId}", COUPON_ID))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_READY"));
+    }
+
+    // DB와 Redis 발급 진행 기록에 모두 없는 쿠폰은 404 COUPON_NOT_FOUND를 반환하는지 검증한다.
+    @Test
+    void couponNotFoundReturns404() throws Exception {
+        given(couponQueryService.getCoupon(COUPON_ID))
+                .willThrow(new CouponNotFoundException(COUPON_ID));
+
+        mockMvc.perform(get("/api/coupons/{couponId}", COUPON_ID))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_FOUND"));
     }
 
     private String validRequest() {
