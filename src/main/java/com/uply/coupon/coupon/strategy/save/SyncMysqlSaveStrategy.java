@@ -44,8 +44,8 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
 
             // 2. 쿠폰 발급, 히스토리 DB 저장
             Coupon coupon = Coupon.issue(couponId, userId, campaignId, stockId, expireAt);
-            couponRepository.save(coupon);
-            couponHistoryRepository.save(
+            couponRepository.saveAndFlush(coupon);
+            couponHistoryRepository.saveAndFlush(
                     CouponHistory.issued(coupon.getCouponId(), idempotencyKey));
 
         } catch (CouponIssueException e) {
@@ -53,7 +53,7 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
             throw e;
         } catch (DataIntegrityViolationException e) {
             // Unique 제약조건 위반 등 데이터 정합성 예외 (원인 e 포함)
-            throw new CouponIssueException(IssueFailReason.ALREADY_ISSUED, e);
+            throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED, e);
         } catch (Exception e) {
             // DB Lock Timeout, Connection 고갈 등 시스템/인프라 예외 (원인 e 포함)
             throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED, e);

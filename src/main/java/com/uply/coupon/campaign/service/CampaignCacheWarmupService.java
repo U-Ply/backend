@@ -13,18 +13,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 이벤트 개시 전 RDB의 캠페인 재고 데이터를 Redis 캐시에 사전 적재(Warm-up)하는 서비스
- *
- * 이벤트 오픈 시점에 발생하는 대량의 읽기/쓰기 트래픽이 RDB로 직접 몰리는 Cache Stampede 및 DB Connection Pool 고갈 현상을 방지
+ * 이벤트 개시 전 RDB의 캠페인 재고 데이터를 Redis 캐시에 사전 적재(Warm-up) 및 장애 복구하는 서비스
  *
  * <pre>
- * 주요 캐싱 데이터 구조
- *   1. stock:{stockId} (String) - 잔여/총 재고 수량
- *   2. stockId:{campaignId}:{routeId}:{fareClass} (String) - 검색 조건별 매핑되는 Stock PK
- *   3. campaign:{campaignId}:openAt (String) - 오픈 시각(UTC epoch milliseconds)
- *   4. issued:{campaignId} (Set) - 중복 발급 방지용 유저 집합
- *   5. campaign:{campaignId}:expireAt (String) - 만료 시각
- * <pre>
+ * 복구 실행 선행 조건 (Disaster Recovery Prerequisites)
+ *   1. 신규 발급 트래픽 차단 (Gateway 수준)
+ *   2. Kafka Consumer Lag = 0 및 DLT 처리 완료 확인 (DB의 최종 정합성 보장)
+ * </pre>
  */
 @Slf4j
 @Service
@@ -36,11 +31,12 @@ public class CampaignCacheWarmupService {
     private static final String KEY_CAMPAIGN_OPEN_AT = "campaign:%d:openAt";
     private static final String KEY_CAMPAIGN_EXPIRE_AT = "campaign:%d:expireAt";
     private static final String KEY_ISSUED = "issued:%d";
+    private static final String KEY_TEMP_ISSUED = "temp:issued:%d";
 
     private static final long CACHE_TTL_HOURS = 24;
 
     private final CampaignStockRepository campaignStockRepository;
-    private final CouponRepository couponRepository; // [추가] 기발급 유저 조회를 위한 Repository
+    private final CouponRepository couponRepository;
     private final StringRedisTemplate redisTemplate;
 
     /**
@@ -62,70 +58,81 @@ public class CampaignCacheWarmupService {
         // 2. 오픈 시각 및 만료 시각 캐싱
         long openAtEpochMillis =
                 stocks.get(0).getCampaign().getOpenAt().toInstant(ZoneOffset.UTC).toEpochMilli();
-        String campaignOpenAtKey = String.format(KEY_CAMPAIGN_OPEN_AT, campaignId);
         redisTemplate
                 .opsForValue()
                 .set(
-                        campaignOpenAtKey,
+                        String.format(KEY_CAMPAIGN_OPEN_AT, campaignId),
                         String.valueOf(openAtEpochMillis),
                         CACHE_TTL_HOURS,
                         TimeUnit.HOURS);
 
         long expireAtEpochMillis =
                 stocks.get(0).getCampaign().getExpireAt().toInstant(ZoneOffset.UTC).toEpochMilli();
-        String campaignExpireAtKey = String.format(KEY_CAMPAIGN_EXPIRE_AT, campaignId);
         redisTemplate
                 .opsForValue()
                 .set(
-                        campaignExpireAtKey,
+                        String.format(KEY_CAMPAIGN_EXPIRE_AT, campaignId),
                         String.valueOf(expireAtEpochMillis),
                         CACHE_TTL_HOURS,
                         TimeUnit.HOURS);
 
         // 3. stock:{stockId} 잔여 재고(remainingStock) 기준 캐싱
         for (CampaignStock stock : stocks) {
-            String stockKey = String.format(KEY_STOCK, stock.getId());
-
-            // [수정] getTotalStock() -> getRemainingStock() 으로 변경하여 실제 잔여 재고 복구
             redisTemplate
                     .opsForValue()
                     .set(
-                            stockKey,
+                            String.format(KEY_STOCK, stock.getId()),
                             String.valueOf(stock.getRemainingStock()),
                             CACHE_TTL_HOURS,
                             TimeUnit.HOURS);
 
-            String stockIdKey =
-                    String.format(
-                            KEY_STOCK_ID, campaignId, stock.getRouteId(), stock.getFareClass());
             redisTemplate
                     .opsForValue()
                     .set(
-                            stockIdKey,
+                            String.format(
+                                    KEY_STOCK_ID,
+                                    campaignId,
+                                    stock.getRouteId(),
+                                    stock.getFareClass()),
                             String.valueOf(stock.getId()),
                             CACHE_TTL_HOURS,
                             TimeUnit.HOURS);
         }
 
-        // 4. issued:{campaignId} Set 재구축 (RDB 발급 이력 동기화)
+        // 4. issued:{campaignId} Set 원자적 재구축 (RENAME 활용)
+        rebuildIssuedSet(campaignId);
+
+        log.info(
+                "Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);
+    }
+
+    private void rebuildIssuedSet(Long campaignId) {
         String issuedKey = String.format(KEY_ISSUED, campaignId);
+        String tempIssuedKey = String.format(KEY_TEMP_ISSUED, campaignId);
+
+        // 이전 미완료 작업으로 잔존할 수 있는 임시 키 제거
+        redisTemplate.delete(tempIssuedKey);
+
         List<Long> issuedUserIds = couponRepository.findUserIdsByCampaignId(campaignId);
 
         if (issuedUserIds != null && !issuedUserIds.isEmpty()) {
             String[] userIdStrs =
                     issuedUserIds.stream().map(String::valueOf).toArray(String[]::new);
 
-            // DB의 기발급 유저 목록을 SADD로 Redis Set에 복구
-            redisTemplate.opsForSet().add(issuedKey, userIdStrs);
+            // 임시 Set에 DB 기준 발급 유저 적재
+            redisTemplate.opsForSet().add(tempIssuedKey, userIdStrs);
+            redisTemplate.expire(tempIssuedKey, CACHE_TTL_HOURS, TimeUnit.HOURS);
+
+            // RENAME을 통한 원자적 Key 교체 (기존 오염 데이터 즉시 대체)
+            redisTemplate.rename(tempIssuedKey, issuedKey);
             log.info(
-                    "Rebuilt issued Set for campaignId: {} with {} users",
+                    "Atomically replaced issued Set for campaignId: {} with {} users",
                     campaignId,
                     userIdStrs.length);
+        } else {
+            // DB에 발급 이력이 완전히 없는 경우 오염된 기존 Set 완전 삭제
+            redisTemplate.delete(issuedKey);
+            log.info("Cleared issued Set for campaignId: {} (0 users in DB)", campaignId);
         }
-
-        redisTemplate.expire(issuedKey, CACHE_TTL_HOURS, TimeUnit.HOURS);
-
-        log.info(
-                "Cache warm-up and recovery completed successfully for campaignId: {}", campaignId);
     }
 }

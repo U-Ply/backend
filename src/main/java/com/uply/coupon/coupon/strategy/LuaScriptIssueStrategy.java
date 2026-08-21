@@ -136,7 +136,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         String expireAtStr = redisTemplate.opsForValue().get(key);
 
         if (expireAtStr == null) {
-            throw new CampaignNotFoundException(campaignId, campaignId);
+            throw new CampaignNotFoundException(campaignId);
         }
 
         // 파싱 과정에서 에러 발생 가능 -> 쿠폰 발급 실패 예외에 담아서 전파
