@@ -11,9 +11,11 @@ import java.util.Arrays;
 public enum RoundVersion {
     V0("NoLock", false),
     V1("PessimisticLock", false),
-    // issued_at 이 아직 JVM 시계다. Redis TIME 통일이 확정되면 true 로 바꾼다.
-    V2("Lua + MySQL 동기 저장", false),
-    V3("Lua + Kafka", false);
+    // Lua 가 Redis TIME 으로 찍은 nowMillis 가 issued_at 과 event_at 에 그대로 들어간다.
+    // (SyncMysqlSaveStrategy / CouponIssuedPersistenceService 둘 다 issuedAt 을 넘긴다)
+    // 실측 drift ±0.09s 이내, 허용치 0.3s — application.yml 참고.
+    V2("Lua + MySQL 동기 저장", true),
+    V3("Lua + Kafka", true);
 
     private final String description;
     private final boolean usesRedisClock;

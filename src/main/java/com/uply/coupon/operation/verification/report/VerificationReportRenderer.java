@@ -67,15 +67,28 @@ public class VerificationReportRenderer {
                         .filter(r -> code(r).startsWith("INV-"))
                         .filter(r -> !passed(r))
                         .count();
+        // REC-01 은 DB 자체가 깨진 것이 아니라 Redis 와 어긋난 것이다. 등급은 나누되
+        // 통과로 뭉개지 않는다 — 판정 한 줄만 읽는 사람에게 거짓말을 하지 않기 위해서다.
+        long failedReconciliation =
+                rules.stream()
+                        .filter(r -> code(r).startsWith("REC-"))
+                        .filter(r -> !passed(r))
+                        .count();
+        // 새 규칙 코드가 늘었을 때 어느 분류에도 안 걸려 조용히 통과되는 것을 막는다.
+        long failedOther =
+                rules.stream()
+                        .filter(r -> !code(r).startsWith("INV-"))
+                        .filter(r -> !code(r).startsWith("REC-"))
+                        .filter(r -> !code(r).startsWith("CLOCK-"))
+                        .filter(r -> !passed(r))
+                        .count();
         boolean clockValid =
                 rules.stream()
                         .filter(r -> code(r).startsWith("CLOCK-"))
                         .allMatch(VerificationReportRenderer::passed);
-
         long skipped = rules.stream().filter(r -> "SKIPPED".equals(status(r))).count();
         long checkedCount = rules.stream().filter(r -> "CHECKED".equals(status(r))).count();
         long naCount = rules.stream().filter(r -> "NOT_APPLICABLE".equals(status(r))).count();
-
         String verdict;
         if (!clockValid) {
             verdict = "**무효** — 시계가 어긋나 어느 시점을 본 것인지 알 수 없다";
@@ -83,6 +96,13 @@ public class VerificationReportRenderer {
             verdict = "**불완전** — 규칙 " + skipped + "개가 전제 조건 미충족으로 실행되지 않았다";
         } else if (failedInvariants > 0) {
             verdict = "**실패** — 불변식 " + failedInvariants + "개 위반";
+        } else if (failedOther > 0) {
+            verdict = "**실패** — 분류되지 않은 규칙 " + failedOther + "개 위반";
+        } else if (failedReconciliation > 0) {
+            verdict =
+                    "**불일치** — Redis·DB 재고 "
+                            + failedReconciliation
+                            + "건 어긋남 (DB 자체는 정합)";
         } else {
             verdict = "**통과**";
         }

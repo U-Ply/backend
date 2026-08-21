@@ -353,4 +353,12 @@ info "$REPORT_FILE  ($RULE_ROWS rules)"
 printf '\n'
 sed -n '1,12p' "$REPORT_FILE"
 
+VIOLATIONS=$(grep -o '^| 총 위반 | [0-9]*' "$REPORT_FILE" | grep -o '[0-9]*$')
+[[ "$VIOLATIONS" == "0" ]] || die "report holds $VIOLATIONS violations. see $REPORT_FILE"
+
+# 리포트가 스스로 내린 판정을 그대로 게이트로 쓴다. 위반 수만 보면
+# 무효(시계 어긋남)나 불완전(미실행)처럼 위반 0 건인 실패를 놓친다.
+grep -q '^| 판정 | \*\*통과\*\* |' "$REPORT_FILE" \
+    || die "report verdict is not 통과. see $REPORT_FILE"
+
 step "PASSED  round=$ROUND  runId=$RUN_ID"

@@ -576,10 +576,13 @@ CLOCK-02(Redis↔DB 시계 드리프트)는 해당 회차가 Redis 시계로 발
 그렇지 않은 회차에서는 N/A 로 PASS 하며, 결과 detail 에 "Redis 경로 회차 아님 (N/A)" 을 남긴다.
 검사하지 않은 것을 통과로 기록하지 않기 위해서다.
 
-2026-08-20 기준 V0~V3 은 모두 JVM 시계로 issued_at 을 기록하므로 CLOCK-02 는 전부 N/A 다.
-Lua 가 성공 시 nowMillis 를 반환해 IssueResult → CouponSaveStrategy → Kafka 이벤트 → DB 까지
-같은 시각을 전달하는 구현이 합쳐지면 해당 회차를 usesRedisClock=true 로 올린다.
-그 전까지 실제 기록 시계는 CLOCK-01 이 검사한다.
+2026-08-21 기준 V0·V1 은 DB 시계(databaseTime)로 issued_at 과 event_at 을
+기록하므로 CLOCK-02 는 N/A 다. V2·V3 는 Lua 가 반환한 nowMillis 가
+issued_at 과 event_at 에 그대로 들어가므로 usesRedisClock=true 이며
+CLOCK-02 를 실제로 판정한다.
+
+허용 오차는 LOCAL-DOCKER-01 실측 기준 0.3s 다.
+앱 내부 측정 drift 는 -0.002s 였다.
 
 ### 14.4 실행 시점
 

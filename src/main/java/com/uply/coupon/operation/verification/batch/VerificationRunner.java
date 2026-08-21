@@ -150,7 +150,7 @@ public class VerificationRunner {
     /**
      * Redis 와 DB 의 시계 오차를 잰다.
      *
-     * <p>Redis 경로 회차(V3)는 coupons.issued_at 과 coupon_history.event_at 을 Redis 시계로 기록한다. Redis-DB
+     * <p>Redis 경로 회차(V2,V3)는 coupons.issued_at 과 coupon_history.event_at 을 Redis 시계로 기록한다. Redis-DB
      * drift 가 곧 INV-04 · INV-06 · INV-11 의 오차가 되므로 그 회차에서만 판정 대상으로 올린다.
      *
      * <p>Redis 컨테이너는 V0/V1 회차에도 떠 있다. 연결 가능 여부로 판단하면 Redis 를 쓰지 않는 회차에서 없는 문제를 만든다. 그래서 회차 버전으로
