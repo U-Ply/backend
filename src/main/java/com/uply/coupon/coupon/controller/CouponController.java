@@ -2,6 +2,9 @@ package com.uply.coupon.coupon.controller;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.exception.CouponNotFoundException;
+import com.uply.coupon.common.exception.CouponNotReadyException;
+import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyKeyValidator;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
@@ -95,7 +98,9 @@ public class CouponController {
         Coupon coupon;
         try {
             coupon = transition.get();
-        } catch (RuntimeException exception) {
+        } catch (CouponNotReadyException
+                | CouponNotFoundException
+                | InvalidStateTransitionException exception) {
             idempotencyChecker.clearProgress(idempotencyKey);
             throw exception;
         }

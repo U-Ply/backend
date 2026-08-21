@@ -42,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.TransactionSystemException;
 
 class CouponControllerTest {
 
@@ -330,6 +331,23 @@ class CouponControllerTest {
                                 .header("Idempotency-Key", IDEMPOTENCY_KEY))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_STATE_TRANSITION"));
+
+        verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
+    }
+
+    // DB 커밋 결과를 확정할 수 없는 예외가 발생하면 멱등성 진행 상태를 유지하는지 검증한다.
+    @Test
+    void uncertainCommitFailureDoesNotClearProgress() throws Exception {
+        given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY))
+                .willThrow(new TransactionSystemException("DB commit outcome is unknown"));
+
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.errorCode").value("INTERNAL_SERVER_ERROR"));
+
+        verify(idempotencyChecker, never()).clearProgress(IDEMPOTENCY_KEY);
     }
 
     // 멱등성 키 없이 쿠폰 단건 조회가 가능하고 개인정보를 포함하지 않는지 검증한다.
