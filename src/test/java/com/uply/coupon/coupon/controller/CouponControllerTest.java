@@ -3,23 +3,32 @@ package com.uply.coupon.coupon.controller;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.exception.CouponNotFoundException;
 import com.uply.coupon.common.exception.CouponNotReadyException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
+import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.exception.InvalidStateTransitionException;
+import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponDetailResponse;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
+import com.uply.coupon.coupon.dto.response.CouponUseResponse;
 import com.uply.coupon.coupon.service.CouponQueryService;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
@@ -27,6 +36,7 @@ import com.uply.coupon.coupon.strategy.IssueFailReason;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -45,22 +55,29 @@ class CouponControllerTest {
     private CouponService couponService;
     private CouponStateTransitionService couponStateTransitionService;
     private CouponQueryService couponQueryService;
+    private IdempotencyChecker idempotencyChecker;
+    private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         couponService = mock(CouponService.class);
         couponStateTransitionService = mock(CouponStateTransitionService.class);
         couponQueryService = mock(CouponQueryService.class);
+        idempotencyChecker = mock(IdempotencyChecker.class);
+        objectMapper = new ObjectMapper().findAndRegisterModules();
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CouponController(
                                         couponService,
                                         couponStateTransitionService,
-                                        couponQueryService))
+                                        couponQueryService,
+                                        idempotencyChecker,
+                                        objectMapper))
                         .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
                         .build();
     }
 
+    // 정상적인 쿠폰 발급 요청이 200 응답과 발급 정보를 반환하는지 검증한다.
     @Test
     void issueSuccessReturns200() throws Exception {
         CouponIssueResponse response =
@@ -83,6 +100,7 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.status").value("ISSUED"));
     }
 
+    // 발급 가능한 재고가 없을 때 409 OUT_OF_STOCK을 반환하는지 검증한다.
     @Test
     void outOfStockReturns409() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
@@ -98,6 +116,7 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.timestamp").exists());
     }
 
+    // 이미 쿠폰을 발급받은 사용자의 재요청에 409 ALREADY_ISSUED를 반환하는지 검증한다.
     @Test
     void alreadyIssuedReturns409() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
@@ -112,6 +131,7 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("ALREADY_ISSUED"));
     }
 
+    // 존재하지 않는 캠페인에 대한 발급 요청이 404 CAMPAIGN_NOT_FOUND를 반환하는지 검증한다.
     @Test
     void missingCampaignReturns404() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
@@ -126,6 +146,7 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("CAMPAIGN_NOT_FOUND"));
     }
 
+    // 발급된 쿠폰의 정상 사용 요청이 200 응답과 사용 시각을 반환하는지 검증한다.
     @Test
     void useSuccessReturns200() throws Exception {
         Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
@@ -139,8 +160,14 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.couponId").value(String.valueOf(COUPON_ID)))
                 .andExpect(jsonPath("$.status").value("USED"))
                 .andExpect(jsonPath("$.usedAt").value("2026-08-18T10:00:00.000Z"));
+
+        verify(couponQueryService).awaitCouponPersistence(COUPON_ID);
+        verify(idempotencyChecker)
+                .cacheResponse(
+                        eq(IDEMPOTENCY_KEY), eq(requestHash("/use")), any(String.class), eq(200));
     }
 
+    // 사용된 쿠폰의 정상 예약 취소 요청이 200 응답과 취소 시각을 반환하는지 검증한다.
     @Test
     void cancelSuccessReturns200() throws Exception {
         Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
@@ -155,8 +182,17 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.couponId").value(String.valueOf(COUPON_ID)))
                 .andExpect(jsonPath("$.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.cancelledAt").value("2026-08-18T10:01:00.000Z"));
+
+        verify(couponQueryService).awaitCouponPersistence(COUPON_ID);
+        verify(idempotencyChecker)
+                .cacheResponse(
+                        eq(IDEMPOTENCY_KEY),
+                        eq(requestHash("/cancel")),
+                        any(String.class),
+                        eq(200));
     }
 
+    // 사용·취소 요청에 멱등성 키가 없으면 400 INVALID_REQUEST를 반환하는지 검증한다.
     @Test
     void missingIdempotencyKeyReturns400() throws Exception {
         mockMvc.perform(post("/api/coupons/{couponId}/use", COUPON_ID))
@@ -164,18 +200,123 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_REQUEST"));
     }
 
+    // UUID v4 형식이 아닌 멱등성 키를 상태 변경 전에 거부하는지 검증한다.
+    @Test
+    void nonUuidV4IdempotencyKeyReturns400BeforeStateChange() throws Exception {
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", "not-a-uuid-v4"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_REQUEST"));
+
+        verify(couponQueryService, never()).awaitCouponPersistence(any(Long.class));
+        verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
+    }
+
+    // 완료된 동일 사용 요청은 상태를 다시 변경하지 않고 최초 응답을 반환하는지 검증한다.
+    @Test
+    void completedUseRequestReturnsCachedResponseWithoutStateChange() throws Exception {
+        String cachedResponse =
+                objectMapper.writeValueAsString(CouponUseResponse.of(COUPON_ID, USED_AT));
+        given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, requestHash("/use")))
+                .willReturn(Optional.of(cachedResponse));
+
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("USED"))
+                .andExpect(jsonPath("$.usedAt").value("2026-08-18T10:00:00.000Z"));
+
+        verify(couponQueryService, never()).awaitCouponPersistence(any(Long.class));
+        verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
+    }
+
+    // 같은 멱등성 키를 다른 요청에 재사용하면 409 IDEMPOTENCY_KEY_REUSED를 반환하는지 검증한다.
+    @Test
+    void reusedIdempotencyKeyReturns409() throws Exception {
+        given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, requestHash("/use")))
+                .willThrow(new IdempotencyKeyReusedException());
+
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("IDEMPOTENCY_KEY_REUSED"));
+
+        verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
+    }
+
+    // 동일한 요청이 처리 중이면 409 IDEMPOTENCY_REQUEST_IN_PROGRESS를 반환하는지 검증한다.
+    @Test
+    void processingIdempotencyRequestReturns409() throws Exception {
+        given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, requestHash("/use")))
+                .willThrow(new IdempotencyRequestInProgressException());
+
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("IDEMPOTENCY_REQUEST_IN_PROGRESS"));
+
+        verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
+    }
+
+    // 쿠폰의 DB 반영이 지연되면 상태를 변경하지 않고 멱등성 진행 상태를 정리하는지 검증한다.
+    @Test
+    void couponNotReadyClearsProgressWithoutStateChange() throws Exception {
+        doThrow(new CouponNotReadyException(COUPON_ID))
+                .when(couponQueryService)
+                .awaitCouponPersistence(COUPON_ID);
+
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_READY"));
+
+        verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
+        verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
+    }
+
+    // 상태 변경 완료 후 응답 캐싱이 실패해도 멱등성 진행 상태를 삭제하지 않는지 검증한다.
+    @Test
+    void completedStateChangeDoesNotClearProgressWhenResponseCacheFails() throws Exception {
+        Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, EXPIRE_AT);
+        coupon.use(USED_AT);
+        given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY)).willReturn(coupon);
+        doThrow(new IllegalStateException("Redis response cache failure"))
+                .when(idempotencyChecker)
+                .cacheResponse(
+                        eq(IDEMPOTENCY_KEY), eq(requestHash("/use")), any(String.class), eq(200));
+
+        mockMvc.perform(
+                        post("/api/coupons/{couponId}/use", COUPON_ID)
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY))
+                .andExpect(status().isInternalServerError());
+
+        verify(couponStateTransitionService).use(COUPON_ID, IDEMPOTENCY_KEY);
+        verify(idempotencyChecker, never()).clearProgress(IDEMPOTENCY_KEY);
+    }
+
+    // 존재하지 않는 쿠폰의 상태 변경 요청이 404 COUPON_NOT_FOUND를 반환하는지 검증한다.
     @Test
     void missingCouponReturns404() throws Exception {
-        given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY))
-                .willThrow(new CouponNotFoundException(COUPON_ID));
+        doThrow(new CouponNotFoundException(COUPON_ID))
+                .when(couponQueryService)
+                .awaitCouponPersistence(COUPON_ID);
 
         mockMvc.perform(
                         post("/api/coupons/{couponId}/use", COUPON_ID)
                                 .header("Idempotency-Key", IDEMPOTENCY_KEY))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_FOUND"));
+
+        verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
+        verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
     }
 
+    // 허용되지 않은 쿠폰 취소 전이가 409 INVALID_STATE_TRANSITION을 반환하는지 검증한다.
     @Test
     void invalidCancelTransitionReturns409() throws Exception {
         given(couponStateTransitionService.cancel(COUPON_ID, IDEMPOTENCY_KEY))
@@ -249,5 +390,10 @@ class CouponControllerTest {
                   "fareClass": "ECONOMY"
                 }
                 """;
+    }
+
+    private String requestHash(String actionPath) {
+        return IdempotencyRequestHasher.sha256(
+                "POST", "/api/coupons/" + COUPON_ID + actionPath, "");
     }
 }
