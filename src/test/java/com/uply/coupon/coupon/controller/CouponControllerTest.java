@@ -23,6 +23,7 @@ import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
@@ -100,6 +101,20 @@ class CouponControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.couponId").value("100"))
                 .andExpect(jsonPath("$.status").value("ISSUED"));
+    }
+
+    // UUID v4 형식이 아닌 발급 멱등성 키를 비즈니스 로직 실행 전에 거부하는지 검증한다.
+    @Test
+    void nonUuidV4IssueIdempotencyKeyReturns400BeforeIssuance() throws Exception {
+        mockMvc.perform(
+                        post("/api/coupons/issue")
+                                .header("Idempotency-Key", "test")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(validRequest()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_REQUEST"));
+
+        verify(couponService, never()).issue(any(String.class), any(CouponIssueRequest.class));
     }
 
     // 발급 가능한 재고가 없을 때 409 OUT_OF_STOCK을 반환하는지 검증한다.
@@ -413,6 +428,6 @@ class CouponControllerTest {
 
     private String requestHash(String actionPath) {
         return IdempotencyRequestHasher.sha256(
-                "POST", "/api/coupons/" + COUPON_ID + actionPath, "");
+                "POST", CouponApiPaths.couponActionUri(COUPON_ID, actionPath), "");
     }
 }

@@ -8,6 +8,7 @@ import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyKeyValidator;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponCancelResponse;
@@ -26,7 +27,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
-@RequestMapping("/api/coupons")
+@RequestMapping(CouponApiPaths.COUPONS)
 @RequiredArgsConstructor
 public class CouponController {
 
@@ -36,21 +37,22 @@ public class CouponController {
     private final IdempotencyChecker idempotencyChecker;
     private final ObjectMapper objectMapper;
 
-    @PostMapping("/issue")
+    @PostMapping(CouponApiPaths.ISSUE)
     public ResponseEntity<CouponIssueResponse> issueCoupon(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody CouponIssueRequest request) {
+        IdempotencyKeyValidator.validateUuidV4(idempotencyKey);
         CouponIssueResponse response = couponService.issue(idempotencyKey, request);
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/{couponId}/use")
+    @PostMapping("/{couponId}" + CouponApiPaths.USE)
     public ResponseEntity<CouponUseResponse> useCoupon(
             @PathVariable Long couponId, @RequestHeader("Idempotency-Key") String idempotencyKey) {
         return executeIdempotently(
                 couponId,
                 idempotencyKey,
-                "/use",
+                CouponApiPaths.USE,
                 CouponUseResponse.class,
                 () -> {
                     couponQueryService.awaitCouponPersistence(couponId);
@@ -59,13 +61,13 @@ public class CouponController {
                 coupon -> CouponUseResponse.of(coupon.getCouponId(), coupon.getUsedAt()));
     }
 
-    @PostMapping("/{couponId}/cancel")
+    @PostMapping("/{couponId}" + CouponApiPaths.CANCEL)
     public ResponseEntity<CouponCancelResponse> cancelCoupon(
             @PathVariable Long couponId, @RequestHeader("Idempotency-Key") String idempotencyKey) {
         return executeIdempotently(
                 couponId,
                 idempotencyKey,
-                "/cancel",
+                CouponApiPaths.CANCEL,
                 CouponCancelResponse.class,
                 () -> {
                     couponQueryService.awaitCouponPersistence(couponId);
@@ -111,7 +113,8 @@ public class CouponController {
     }
 
     private String createRequestHash(Long couponId, String actionPath) {
-        return IdempotencyRequestHasher.sha256("POST", "/api/coupons/" + couponId + actionPath, "");
+        return IdempotencyRequestHasher.sha256(
+                "POST", CouponApiPaths.couponActionUri(couponId, actionPath), "");
     }
 
     private String toJson(Object response) {
