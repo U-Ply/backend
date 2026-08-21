@@ -99,10 +99,7 @@ public class VerificationReportRenderer {
         } else if (failedOther > 0) {
             verdict = "**실패** — 분류되지 않은 규칙 " + failedOther + "개 위반";
         } else if (failedReconciliation > 0) {
-            verdict =
-                    "**불일치** — Redis·DB 재고 "
-                            + failedReconciliation
-                            + "건 어긋남 (DB 자체는 정합)";
+            verdict = "**불일치** — Redis·DB 재고 " + failedReconciliation + "건 어긋남 (DB 자체는 정합)";
         } else {
             verdict = "**통과**";
         }
