@@ -173,7 +173,9 @@ CREATE TABLE verification_report (
     report_id       BIGINT       NOT NULL AUTO_INCREMENT,
     run_id          VARCHAR(40)  NOT NULL COMMENT 'Spring Batch JobParameter runId',
     round           VARCHAR(10)      NULL COMMENT '검증 대상 회차 V0~V3. 회차 개념이 없으면 NULL',
-    rule_code       VARCHAR(20)  NOT NULL COMMENT 'INV-01 ~ INV-12, CLOCK-01, CLOCK-02',
+    status          VARCHAR(20)  NOT NULL DEFAULT 'CHECKED'
+                    COMMENT 'CHECKED | NOT_APPLICABLE | SKIPPED. 검사하지 않은 것을 통과로 기록하지 않는다',
+    rule_code       VARCHAR(20)  NOT NULL COMMENT 'INV-01 ~ INV-12, CLOCK-01, CLOCK-02, REC-01',
     rule_name       VARCHAR(100) NOT NULL COMMENT '사람이 읽는 이름',
     snapshot_at     DATETIME(3)  NOT NULL COMMENT '시점 고정. 회차 내 전 규칙 동일',
     violation_count BIGINT       NOT NULL DEFAULT 0 COMMENT '전수 COUNT. 0이면 통과',

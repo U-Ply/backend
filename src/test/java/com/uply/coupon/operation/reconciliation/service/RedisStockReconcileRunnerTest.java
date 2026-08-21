@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
 import com.uply.coupon.operation.reconciliation.domain.ReconciliationStatus;
+import com.uply.coupon.operation.verification.domain.RuleStatus;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
@@ -109,6 +110,7 @@ class RedisStockReconcileRunnerTest {
 
     @Test
     void doesNotReadRedisForNoLockOrPessimisticLockStrategies() {
+        givenSnapshotTime();
         RedisStockReconcileRunner noLockRunner =
                 new RedisStockReconcileRunner(
                         jdbcTemplate,
@@ -121,6 +123,8 @@ class RedisStockReconcileRunnerTest {
         var result = noLockRunner.run();
 
         assertThat(result.status()).isEqualTo(ReconciliationStatus.NOT_APPLICABLE);
+        assertThat(result.result().status()).isEqualTo(RuleStatus.NOT_APPLICABLE);
+        verifyNoInteractions(redisTemplate);
     }
 
     @Test
@@ -136,6 +140,7 @@ class RedisStockReconcileRunnerTest {
 
     @Test
     void skipsV3ReconciliationUntilKafkaLagAndDltAreBothZero() {
+        givenSnapshotTime();
         given(kafkaSettlementCheckerProvider.getIfAvailable(any(Supplier.class)))
                 .willReturn(kafkaSettlementChecker);
         given(kafkaSettlementChecker.check()).willReturn(new KafkaSettlement(1L, 0L));
@@ -152,13 +157,18 @@ class RedisStockReconcileRunnerTest {
         var result = kafkaRunner.run();
 
         assertThat(result.status()).isEqualTo(ReconciliationStatus.SKIPPED_NOT_SETTLED);
+        assertThat(result.result().status()).isEqualTo(RuleStatus.SKIPPED);
         assertThat(result.detail()).contains("kafkaLag=1");
     }
 
-    private void givenDatabaseStocks() throws Exception {
-        given(redisTemplate.opsForValue()).willReturn(valueOperations);
+    private void givenSnapshotTime() {
         given(jdbcTemplate.queryForObject(eq("SELECT NOW(3)"), eq(Timestamp.class)))
                 .willReturn(Timestamp.valueOf(LocalDateTime.of(2026, 8, 20, 12, 0)));
+    }
+
+    private void givenDatabaseStocks() throws Exception {
+        givenSnapshotTime();
+        given(redisTemplate.opsForValue()).willReturn(valueOperations);
         givenStocks(101L, 10, 102L, 5);
     }
 

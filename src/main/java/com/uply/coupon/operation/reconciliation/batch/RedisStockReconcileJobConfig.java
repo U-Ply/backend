@@ -57,16 +57,20 @@ public class RedisStockReconcileJobConfig {
 
         return (StepContribution contribution, ChunkContext chunkContext) -> {
             StockReconcileRun run = runner.run();
+
+            // N/A · SKIPPED 도 기록한다. 검사하지 않았다는 사실 자체가 회차의 정보다.
+            // 여기서 빠져나가면 리포트에서 REC-01 줄이 통째로 사라지고,
+            // "해당 없음"과 "아예 안 돌림"을 구분할 수 없게 된다.
+            resultWriter.write(
+                    new VerificationRun(
+                            runId, null, run.snapshotAt(), java.util.List.of(run.result())));
+
             if (run.status() == ReconciliationStatus.NOT_APPLICABLE
                     || run.status() == ReconciliationStatus.SKIPPED_NOT_SETTLED) {
                 contribution.setExitStatus(new ExitStatus(run.status().name(), run.detail()));
                 log.info("REC-01 {} — {}", run.status(), run.detail());
                 return RepeatStatus.FINISHED;
             }
-
-            resultWriter.write(
-                    new VerificationRun(
-                            runId, null, run.snapshotAt(), java.util.List.of(run.result())));
 
             if (run.status() == ReconciliationStatus.PASSED) {
                 log.info("REC-01 통과 — {}", run.detail());

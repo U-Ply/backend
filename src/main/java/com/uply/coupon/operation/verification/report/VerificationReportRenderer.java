@@ -25,7 +25,7 @@ public class VerificationReportRenderer {
         List<Map<String, Object>> rules =
                 jdbcTemplate.queryForList(
                         """
-                        SELECT round, rule_code, rule_name, snapshot_at, violation_count,
+                               SELECT round, status, rule_code, rule_name, snapshot_at, violation_count,
                                sampled_count, checked_rows, elapsed_ms, passed
                         FROM verification_report
                         WHERE run_id = ?
@@ -41,7 +41,7 @@ public class VerificationReportRenderer {
         StringBuilder md = new StringBuilder();
 
         appendHeader(md, runId, round, rules);
-        appendRuleTable(md, round, rules);
+        appendRuleTable(md, rules);
         appendViolations(md, runId);
 
         return md.toString();
@@ -62,7 +62,6 @@ public class VerificationReportRenderer {
                                                 ? 0L
                                                 : ((Number) r.get("elapsed_ms")).longValue())
                         .sum();
-        long invariantCount = rules.stream().filter(r -> code(r).startsWith("INV-")).count();
         long failedInvariants =
                 rules.stream()
                         .filter(r -> code(r).startsWith("INV-"))
@@ -73,9 +72,15 @@ public class VerificationReportRenderer {
                         .filter(r -> code(r).startsWith("CLOCK-"))
                         .allMatch(VerificationReportRenderer::passed);
 
+        long skipped = rules.stream().filter(r -> "SKIPPED".equals(status(r))).count();
+        long checkedCount = rules.stream().filter(r -> "CHECKED".equals(status(r))).count();
+        long naCount = rules.stream().filter(r -> "NOT_APPLICABLE".equals(status(r))).count();
+
         String verdict;
         if (!clockValid) {
             verdict = "**무효** — 시계가 어긋나 어느 시점을 본 것인지 알 수 없다";
+        } else if (skipped > 0) {
+            verdict = "**불완전** — 규칙 " + skipped + "개가 전제 조건 미충족으로 실행되지 않았다";
         } else if (failedInvariants > 0) {
             verdict = "**실패** — 불변식 " + failedInvariants + "개 위반";
         } else {
@@ -90,14 +95,18 @@ public class VerificationReportRenderer {
         md.append("| 판정 | ").append(verdict).append(" |\n");
         md.append("| 규칙 수 | ")
                 .append(rules.size())
-                .append(" (불변식 ")
-                .append(invariantCount)
+                .append(" (검사 ")
+                .append(checkedCount)
+                .append(" / N/A ")
+                .append(naCount)
+                .append(" / 미실행 ")
+                .append(skipped)
                 .append(") |\n");
         md.append("| 총 위반 | ").append(totalViolations).append(" |\n");
         md.append("| 총 소요 | ").append(totalElapsed).append(" ms |\n\n");
     }
 
-    private void appendRuleTable(StringBuilder md, String round, List<Map<String, Object>> rules) {
+    private void appendRuleTable(StringBuilder md, List<Map<String, Object>> rules) {
         md.append("## 규칙별 결과\n\n");
         md.append("| 규칙 | 이름 | 판정 | 검사 행 | 위반 | 샘플 | 소요(ms) |\n");
         md.append("| --- | --- | :--: | ---: | ---: | ---: | ---: |\n");
@@ -108,7 +117,7 @@ public class VerificationReportRenderer {
                     .append("` | ")
                     .append(r.get("rule_name"))
                     .append(" | ")
-                    .append(verdictOf(r, round))
+                    .append(verdictOf(r))
                     .append(" | ")
                     .append(nullSafe(r.get("checked_rows")))
                     .append(" | ")
@@ -122,7 +131,9 @@ public class VerificationReportRenderer {
 
         md.append("\n");
         md.append("> `검사 행` 이 비어 있는 규칙은 전수 스캔이 아니라 존재 검사(NOT EXISTS)로 판정한다.\n");
-        md.append("> `N/A` 는 통과가 아니라 **이 회차에서 검사 대상이 아니었다**는 뜻이다.\n\n");
+        md.append("> `N/A` 는 이 회차에 해당하지 않는 규칙이다. 통과가 아니다.\n");
+        md.append("> `미실행` 은 검사해야 했지만 전제 조건이 맞지 않아 실행하지 못한 규칙이다.\n");
+        md.append("> 이 경우 회차 전체를 통과로 볼 수 없다.\n\n");
     }
 
     private void appendViolations(StringBuilder md, String runId) {
@@ -160,26 +171,16 @@ public class VerificationReportRenderer {
         md.append("\n최대 ").append(SAMPLE_LIMIT).append("건까지만 표시한다. 전체는 `/violations` 로 조회한다.\n");
     }
 
-    /**
-     * CLOCK-02 는 Redis 시계로 발급 시각을 기록하는 회차에서만 판정한다. 그 외 회차에서는 검사하지 않았으므로 통과가 아니라 N/A 다. 이름 문자열이 아니라
-     * 저장된 round 값에서 유도한다.
-     */
-    private String verdictOf(Map<String, Object> rule, String round) {
-        if ("CLOCK-02".equals(code(rule)) && !usesRedisClock(round)) {
-            return "N/A";
-        }
-        return passed(rule) ? "통과" : "**위반**";
+    private String verdictOf(Map<String, Object> rule) {
+        return switch (status(rule)) {
+            case "NOT_APPLICABLE" -> "N/A";
+            case "SKIPPED" -> "**미실행**";
+            default -> passed(rule) ? "통과" : "**위반**";
+        };
     }
 
-    private boolean usesRedisClock(String round) {
-        if (round == null || round.isBlank()) {
-            return false;
-        }
-        try {
-            return RoundVersion.valueOf(round).usesRedisClock();
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
+    private static String status(Map<String, Object> rule) {
+        return String.valueOf(rule.get("status"));
     }
 
     private String describeRound(String round) {

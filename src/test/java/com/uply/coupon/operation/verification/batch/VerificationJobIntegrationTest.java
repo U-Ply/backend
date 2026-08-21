@@ -71,11 +71,14 @@ class VerificationJobIntegrationTest {
         var exec = utils.launchJob(params("job-pass", null));
 
         assertThat(exec.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        // 실제로 검사한 규칙 수를 못 박는다. 이게 없으면 전부 N/A 인 회차도 통과로 읽힌다.
         assertThat(
                         jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM verification_report WHERE run_id='job-pass'",
+                                "SELECT COUNT(*) FROM verification_report WHERE run_id='job-pass' AND status='CHECKED'",
                                 Integer.class))
-                .isGreaterThanOrEqualTo(13); // INV 12 + CLOCK-01 (+ CLOCK-02)
+                .isEqualTo(13); // INV 12 + CLOCK-01. CLOCK-02 는 V1 이라 NOT_APPLICABLE
+
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT COUNT(*) FROM verification_report WHERE run_id='job-pass' AND passed=0",
@@ -150,14 +153,14 @@ class VerificationJobIntegrationTest {
     }
 
     @Test
-    @DisplayName("DB 경로 회차에서 CLOCK-02 는 N/A 다")
+    @DisplayName("DB 경로 회차에서 CLOCK-02 는 NOT_APPLICABLE 로 기록된다")
     void clock02_na_on_db_round() throws Exception {
         utils.launchJob(params("job-v1", null, "V1"));
-        String name =
+        String status =
                 jdbc.queryForObject(
-                        "SELECT rule_name FROM verification_report WHERE run_id='job-v1' AND rule_code='CLOCK-02'",
+                        "SELECT status FROM verification_report WHERE run_id='job-v1' AND rule_code='CLOCK-02'",
                         String.class);
-        assertThat(name).contains("N/A");
+        assertThat(status).isEqualTo("NOT_APPLICABLE");
     }
 
     /**

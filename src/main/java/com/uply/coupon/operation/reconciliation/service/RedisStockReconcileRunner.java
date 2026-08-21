@@ -56,10 +56,16 @@ public class RedisStockReconcileRunner {
     }
 
     public StockReconcileRun run() {
+        // 조기 반환 경로도 결과 행을 남겨야 하므로 시점을 먼저 확보한다.
+        // 한 판단 안에서 시계를 섞지 않기 위해 DB 시계를 쓴다.
+        LocalDateTime snapshotAt =
+                jdbcTemplate.queryForObject("SELECT NOW(3)", Timestamp.class).toLocalDateTime();
+
         if (!"LUA_SCRIPT".equalsIgnoreCase(issueStrategy)) {
             return complete(
                     StockReconcileRun.notApplicable(
-                            "issueStrategy=" + issueStrategy + " 은 Redis 재고를 사용하지 않습니다."));
+                            "issueStrategy=" + issueStrategy + " 은 Redis 재고를 사용하지 않습니다.",
+                            snapshotAt));
         }
 
         try {
@@ -78,13 +84,12 @@ public class RedisStockReconcileRunner {
                                     "kafkaLag="
                                             + settlement.lag()
                                             + ", dltCount="
-                                            + settlement.dltCount()));
+                                            + settlement.dltCount(),
+                                    snapshotAt));
                 }
             }
 
             long started = System.nanoTime();
-            LocalDateTime snapshotAt =
-                    jdbcTemplate.queryForObject("SELECT NOW(3)", Timestamp.class).toLocalDateTime();
             List<StockRow> dbStocks =
                     jdbcTemplate.query(
                             "SELECT stock_id, remaining_stock FROM campaign_stocks ORDER BY stock_id",
@@ -118,7 +123,7 @@ public class RedisStockReconcileRunner {
 
             int elapsedMs = (int) ((System.nanoTime() - started) / 1_000_000);
             RuleResult result =
-                    new RuleResult(
+                    RuleResult.checked(
                             RULE_CODE,
                             RULE_NAME,
                             mismatchCount,
@@ -137,6 +142,7 @@ public class RedisStockReconcileRunner {
                             "checkedStocks=" + dbStocks.size() + ", mismatches=" + mismatchCount,
                             snapshotAt,
                             result));
+
         } catch (RuntimeException exception) {
             meterRegistry
                     .counter("coupon.reconciliation.run.total", "result", "failed")
