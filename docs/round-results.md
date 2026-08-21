@@ -107,10 +107,19 @@ test-plan §4 는 V0/V1 을 "MySQL 동기"로, §11 비교표는 Redis 항목을
 DB 구현체(`DbCampaignCacheRepository`)를 추가하고 selector 를 두면,
 전략 선택을 시각 조회보다 앞으로 옮기는 것만으로 해결된다.
 
-> **→ 2026-08-21 현재 미해소.** 8-21 V1 회차도 `campaign:31:openAt` ·
-> `campaign:31:expireAt` 를 먼저 채워야 발급이 성립했다. `acceptance.sh` 4단계가
-> 회차와 무관하게 이 두 키를 항상 캐싱하는 이유가 이것이다. Level 2 실험 통제
-> 문제는 그대로 남아 있으므로 부하 테스트 전에 결론을 내야 한다.
+> **→ 2026-08-21 해소.** `CouponServiceImpl` 이 전략을 먼저 고르고
+> `StockIdLookupSelector` 로 조회처를 나눈다
+> (`NO_LOCK`·`PESSIMISTIC_LOCK` → MySQL, `LUA_SCRIPT` → Redis).
+> 오픈/만료 판정도 전략 안으로 들어가 DB 경로는 `findCampaignWindow` 로 읽는다.
+> V0/V1 발급 경로에 Redis 왕복이 없다.
+>
+> 단, `IdempotencyChecker` 는 전략과 무관하게 Redis 를 쓴다. 발급 판정과는
+> 별개이고 `COUPON_IDEMPOTENCY_ENABLED=false` 로 끌 수 있으므로 Level 2 순수
+> 비교에서는 통제 가능하다.
+>
+> `acceptance.sh` 4단계가 회차와 무관하게 캠페인 창 키를 쓰고 있는데, 이는
+> 수정 전 코드에 맞춘 잔재다. 아직 정리하지 않았으므로 "키 없이도 V0/V1 이
+> 발급된다" 는 실증은 없다. 4단계를 Redis 회차로 한정해 다시 돌리면 확인된다.
 
 ### 2. lag 게이트는 이 규모에서 재현되지 않는다
 
