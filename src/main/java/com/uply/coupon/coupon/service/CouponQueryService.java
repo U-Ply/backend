@@ -46,6 +46,11 @@ public class CouponQueryService {
         return CouponDetailResponse.of(coupon, routeFare.getRouteId(), routeFare.getFareClass());
     }
 
+    /** Kafka 발급 이벤트가 MySQL에 반영될 때까지 조회 정책에 따라 기다린다. */
+    public void awaitCouponPersistence(Long couponId) {
+        findCouponWithRetry(couponId);
+    }
+
     @Transactional(readOnly = true)
     public UserCouponListResponse getUserCoupons(Long userId) {
         if (!userRepository.existsById(userId)) {

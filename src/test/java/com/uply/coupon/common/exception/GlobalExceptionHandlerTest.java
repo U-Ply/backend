@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.coupon.controller.CouponController;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.service.CouponQueryService;
@@ -38,11 +40,14 @@ class GlobalExceptionHandlerTest {
                                 new CouponController(
                                         couponService,
                                         mock(CouponStateTransitionService.class),
-                                        mock(CouponQueryService.class)))
+                                        mock(CouponQueryService.class),
+                                        mock(IdempotencyChecker.class),
+                                        new ObjectMapper().findAndRegisterModules()))
                         .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
                         .build();
     }
 
+    // DB 교착으로 인한 동시성 충돌을 503 CONCURRENCY_CONFLICT로 변환하는지 검증한다.
     @Test
     @DisplayName("커밋 시점 교착은 503 CONCURRENCY_CONFLICT로 응답한다")
     void concurrencyConflictReturns503() throws Exception {
@@ -59,6 +64,7 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.timestamp").exists());
     }
 
+    // DB 커넥션 획득 실패를 503 CONNECTION_UNAVAILABLE로 변환하는지 검증한다.
     @Test
     @DisplayName("커넥션 획득 실패는 503 CONNECTION_UNAVAILABLE로 응답한다")
     void connectionUnavailableReturns503() throws Exception {
