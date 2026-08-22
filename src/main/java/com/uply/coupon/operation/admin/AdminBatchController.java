@@ -1,5 +1,6 @@
 package com.uply.coupon.operation.admin;
 
+import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,7 @@ public class AdminBatchController {
 
     private final BatchLaunchService launchService;
     private final JdbcTemplate jdbcTemplate;
+    private final VerificationReportRenderer reportRenderer;
 
     // ─────────────────────── 실행 ───────────────────────
 
@@ -142,6 +144,14 @@ public class AdminBatchController {
                 ORDER BY rule_code
                 """,
                 runId);
+    }
+
+    /** 회차 하나의 검증 결과를 마크다운으로 낸다. acceptance 스크립트가 파일로 떨군다. */
+    @GetMapping(
+            value = "/verification/runs/{runId}/report",
+            produces = "text/markdown; charset=UTF-8")
+    public ResponseEntity<String> reportMarkdown(@PathVariable String runId) {
+        return ResponseEntity.ok(reportRenderer.render(runId));
     }
 
     /** 위반 샘플. ruleCode 로 좁힐 수 있다. */
