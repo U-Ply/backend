@@ -12,8 +12,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookup;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
@@ -62,9 +65,16 @@ class CouponServiceTest {
     private static final Long USER_ID = 500L;
     private static final Long STOCK_ID = 999L;
     private static final Long COUPON_ID = 7777L;
+    private static final String ISSUE_REQUEST_JSON =
+            "{\"userId\":500,\"campaignId\":1,\"routeId\":\"JEJU\",\"fareClass\":\"BUSINESS\"}";
 
     private CouponIssueRequest createRequest() {
         return new CouponIssueRequest(USER_ID, CAMPAIGN_ID, ROUTE_ID, FARE_CLASS);
+    }
+
+    private String issueRequestHash() {
+        return IdempotencyRequestHasher.sha256(
+                "POST", CouponApiPaths.ISSUE_URI, ISSUE_REQUEST_JSON);
     }
 
     @Nested
@@ -83,7 +93,7 @@ class CouponServiceTest {
                             .status(CouponStatus.ISSUED)
                             .build();
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(eq(IDEMPOTENCY_KEY), anyString()))
                     .willReturn(Optional.of(cachedBodyJson));
             given(objectMapper.readValue(cachedBodyJson, CouponIssueResponse.class))
                     .willReturn(expectedResponse);
@@ -107,7 +117,7 @@ class CouponServiceTest {
         void issue_processingState_throwsException() {
             // given
             CouponIssueRequest request = createRequest();
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(eq(IDEMPOTENCY_KEY), anyString()))
                     .willThrow(new IdempotencyRequestInProgressException());
 
             // when & then
@@ -118,6 +128,22 @@ class CouponServiceTest {
             verifyNoInteractions(stockIdLookupSelector);
             verifyNoInteractions(couponIssueStrategy);
             verifyNoInteractions(strategySelector);
+        }
+
+        // 같은 키가 다른 발급 요청에 재사용되면 요청 해시 충돌로 거부하는지 검증한다.
+        @Test
+        @DisplayName("같은 멱등성 키를 다른 발급 요청에 재사용하면 IDEMPOTENCY_KEY_REUSED를 반환한다")
+        void issue_reusedKeyWithDifferentRequest_throwsException() throws Exception {
+            CouponIssueRequest request = createRequest();
+
+            given(objectMapper.writeValueAsString(request)).willReturn(ISSUE_REQUEST_JSON);
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, issueRequestHash()))
+                    .willThrow(new IdempotencyKeyReusedException());
+
+            assertThatThrownBy(() -> couponService.issue(IDEMPOTENCY_KEY, request))
+                    .isInstanceOf(IdempotencyKeyReusedException.class);
+
+            verifyNoInteractions(stockIdLookupSelector, couponIssueStrategy, strategySelector);
         }
     }
 
@@ -134,7 +160,7 @@ class CouponServiceTest {
                     IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
             String responseJson = "{\"couponId\":\"7777\"}";
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, issueRequestHash()))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("PESSIMISTIC_LOCK");
@@ -143,6 +169,7 @@ class CouponServiceTest {
                     .willReturn(STOCK_ID);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
                     .willReturn(successResult);
+            given(objectMapper.writeValueAsString(request)).willReturn(ISSUE_REQUEST_JSON);
             given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
                     .willReturn(responseJson);
 
@@ -159,7 +186,7 @@ class CouponServiceTest {
 
             // 멱등성 응답 캐싱 호출 검증
             verify(idempotencyChecker, times(1))
-                    .cacheResponse(eq(IDEMPOTENCY_KEY), eq(responseJson), eq(200));
+                    .cacheResponse(IDEMPOTENCY_KEY, issueRequestHash(), responseJson, 200);
             verify(idempotencyChecker, never()).clearProgress(anyString());
         }
 
@@ -169,7 +196,7 @@ class CouponServiceTest {
             // given
             CouponIssueRequest request = createRequest();
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(eq(IDEMPOTENCY_KEY), anyString()))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("NO_LOCK");
@@ -194,7 +221,7 @@ class CouponServiceTest {
             IssueResult successResult =
                     IssueResult.success(COUPON_ID, STORED_ISSUED_AT, STORED_EXPIRE_AT);
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(eq(IDEMPOTENCY_KEY), anyString()))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("PESSIMISTIC_LOCK");
@@ -203,6 +230,7 @@ class CouponServiceTest {
                     .willReturn(STOCK_ID);
             given(couponIssueStrategy.issue(CAMPAIGN_ID, USER_ID, STOCK_ID, IDEMPOTENCY_KEY))
                     .willReturn(successResult);
+            given(objectMapper.writeValueAsString(request)).willReturn(ISSUE_REQUEST_JSON);
 
             // 발급은 끝났고 응답 직렬화 단계에서만 실패하는 상황
             given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
@@ -223,7 +251,7 @@ class CouponServiceTest {
             // given
             CouponIssueRequest request = createRequest();
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(eq(IDEMPOTENCY_KEY), anyString()))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("LUA_SCRIPT");
@@ -249,7 +277,7 @@ class CouponServiceTest {
         void issue_strategyFailure_throwsCouponIssueException() {
             CouponIssueRequest request = createRequest();
 
-            given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+            given(idempotencyChecker.getCachedResponse(eq(IDEMPOTENCY_KEY), anyString()))
                     .willReturn(Optional.empty());
             given(strategySelector.current()).willReturn(couponIssueStrategy);
             given(couponIssueStrategy.name()).willReturn("PESSIMISTIC_LOCK");
@@ -267,7 +295,8 @@ class CouponServiceTest {
                     .isEqualTo(com.uply.coupon.coupon.strategy.IssueFailReason.OUT_OF_STOCK);
 
             verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
-            verify(idempotencyChecker, never()).cacheResponse(anyString(), anyString(), anyInt());
+            verify(idempotencyChecker, never())
+                    .cacheResponse(anyString(), anyString(), anyString(), anyInt());
         }
 
         @Test
