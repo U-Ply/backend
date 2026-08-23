@@ -83,6 +83,19 @@ docker exec -i coupon-mysql mysql -uroot -proot1234 < docs/schema.sql
 ./gradlew bootRun
 ```
 
+### 6. 캠페인 조회 API 사용 전 준비 (Redis 웜업)
+
+`GET /api/campaigns/{campaignId}`와 `GET /api/campaigns/{campaignId}/status`는 잔여 재고(`remainingStock`)를 DB 집계가 아니라 **Redis에서만** 읽습니다. 아래 순서를 지키지 않으면 `stock:{stockId}` 키가 없어 두 API가 500(서버 오류)을 반환합니다 — 재고 0으로 보이는 게 아니라 API 자체가 실패합니다.
+
+1. DB 시드 (캠페인·재고 데이터 적재)
+2. `CampaignCacheWarmupService.warmupCampaign(campaignId)` 실행 — 캠페인의 `openAt`/`expireAt`과 재고 풀별 `remainingStock`을 Redis에 적재
+3. Redis에 `stock:{stockId}` 키가 채워졌는지 확인 (예: `redis-cli GET stock:1`)
+4. 확인 후에만 API·화면 공개
+
+> **주의:** 현재 `warmupCampaign()`을 호출하는 관리자 API나 자동 실행 트리거가 없습니다. IDE에서 직접 호출하거나 테스트 코드를 통해 실행해야 합니다. 시연 전에 관리자 엔드포인트 또는 배치 트리거 추가 여부를 팀에서 확정해야 합니다.
+
+V0·V1(락 미적용/비관적 락) 부하테스트처럼 Redis 키를 비운 상태로 진행하는 회차에서는 캠페인 상세·발급 현황 API를 호출하지 마세요. 호출이 필요하면 해당 회차 종료 후 Redis를 다시 초기화(웜업)해야 합니다.
+
 <details>
 <summary><b>문제 해결</b></summary>
 <br>

@@ -41,7 +41,9 @@ public class CampaignQueryService {
         LocalDateTime now = campaignRepository.currentDatabaseTime();
 
         List<CampaignStockSummaryResponse> stocks =
-                campaignStockRepository.findAllByCampaignId(campaignId).stream()
+                campaignStockRepository
+                        .findAllByCampaignIdOrderByRouteIdAscFareClassAsc(campaignId)
+                        .stream()
                         .map(this::toStockSummary)
                         .toList();
 
@@ -60,7 +62,11 @@ public class CampaignQueryService {
 
         Integer remainingStock = campaignCacheRepository.getRemainingStock(stock.getId());
         return new CampaignStatusResponse(
-                campaignId, routeId, fareClass, stock.getTotalStock(), remainingStock);
+                campaignId,
+                stock.getRouteId(),
+                stock.getFareClass(),
+                stock.getTotalStock(),
+                remainingStock);
     }
 
     private CampaignStockSummaryResponse toStockSummary(CampaignStock stock) {

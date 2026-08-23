@@ -84,7 +84,8 @@ class CampaignQueryServiceTest {
         given(stock.getRouteId()).willReturn("JEJU");
         given(stock.getFareClass()).willReturn("ECONOMY");
         given(stock.getTotalStock()).willReturn(8000);
-        given(campaignStockRepository.findAllByCampaignId(1L)).willReturn(List.of(stock));
+        given(campaignStockRepository.findAllByCampaignIdOrderByRouteIdAscFareClassAsc(1L))
+                .willReturn(List.of(stock));
         given(campaignCacheRepository.getRemainingStock(10L)).willReturn(1548);
 
         CampaignDetailResponse response = campaignQueryService.getCampaign(1L);

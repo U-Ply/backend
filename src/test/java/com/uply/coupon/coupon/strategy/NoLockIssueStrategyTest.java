@@ -39,6 +39,9 @@ class NoLockIssueStrategyTest {
     private static final long STOCK_ID = 1L;
     private static final int TOTAL_STOCK = 10;
     private static final int USER_COUNT = 30;
+    private static final long OTHER_CAMPAIGN_ID = 2L;
+    private static final long OTHER_CAMPAIGN_STOCK_ID = 2L; // 다른 캠페인의 재고
+    private static final long SAME_CAMPAIGN_OTHER_STOCK_ID = 3L; // 같은 캠페인의 다른 재고 풀
 
     @BeforeEach
     void setUp() {
@@ -66,6 +69,28 @@ class NoLockIssueStrategyTest {
                         + "(stock_id, campaign_id, route_id, fare_class, total_stock, remaining_stock) "
                         + "VALUES (?, ?, 'JEJU', 'ECONOMY', ?, ?)",
                 STOCK_ID,
+                CAMPAIGN_ID,
+                TOTAL_STOCK,
+                TOTAL_STOCK);
+
+        jdbcTemplate.update(
+                "INSERT INTO campaigns (campaign_id, name, open_at, expire_at) "
+                        + "VALUES (?, ?, NOW(3), DATE_ADD(NOW(3), INTERVAL 30 DAY))",
+                OTHER_CAMPAIGN_ID,
+                "후쿠오카 특가");
+        jdbcTemplate.update(
+                "INSERT INTO campaign_stocks "
+                        + "(stock_id, campaign_id, route_id, fare_class, total_stock, remaining_stock) "
+                        + "VALUES (?, ?, 'FUKUOKA', 'ECONOMY', ?, ?)",
+                OTHER_CAMPAIGN_STOCK_ID,
+                OTHER_CAMPAIGN_ID,
+                TOTAL_STOCK,
+                TOTAL_STOCK);
+        jdbcTemplate.update(
+                "INSERT INTO campaign_stocks "
+                        + "(stock_id, campaign_id, route_id, fare_class, total_stock, remaining_stock) "
+                        + "VALUES (?, ?, 'JEJU', 'BUSINESS', ?, ?)",
+                SAME_CAMPAIGN_OTHER_STOCK_ID,
                 CAMPAIGN_ID,
                 TOTAL_STOCK,
                 TOTAL_STOCK);
@@ -151,6 +176,64 @@ class NoLockIssueStrategyTest {
                 .isInstanceOf(IdempotencyKeyReusedException.class);
 
         // 거부된 요청이므로 재고/쿠폰에 추가 영향이 없어야 한다
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
+        assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("같은 idempotencyKey를 다른 캠페인 요청에 재사용하면 IDEMPOTENCY_KEY_REUSED로 거부한다")
+    void 멱등성_키_재사용_거부_다른_캠페인() {
+        strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "reused-key-campaign");
+
+        assertThatThrownBy(
+                        () ->
+                                strategy.issue(
+                                        OTHER_CAMPAIGN_ID,
+                                        1L,
+                                        OTHER_CAMPAIGN_STOCK_ID,
+                                        "reused-key-campaign"))
+                .isInstanceOf(IdempotencyKeyReusedException.class);
+
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
+        assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("같은 캠페인·유저라도 다른 재고 풀(stockId) 요청에 재사용하면 IDEMPOTENCY_KEY_REUSED로 거부한다")
+    void 멱등성_키_재사용_거부_다른_재고풀() {
+        strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "reused-key-stock");
+
+        assertThatThrownBy(
+                        () ->
+                                strategy.issue(
+                                        CAMPAIGN_ID,
+                                        1L,
+                                        SAME_CAMPAIGN_OTHER_STOCK_ID,
+                                        "reused-key-stock"))
+                .isInstanceOf(IdempotencyKeyReusedException.class);
+
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
+        assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("발급이 아닌 상태 변경 이력의 키를 발급에 재사용하면 IDEMPOTENCY_KEY_REUSED로 거부한다")
+    void 멱등성_키_재사용_거부_발급아닌_이력() {
+        IssueResult issued = strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "issue-key");
+        // USED API를 거치지 않고 이력만 직접 재현한다 (fromStatus=ISSUED, toStatus=USED)
+        jdbcTemplate.update(
+                "INSERT INTO coupon_history (coupon_id, from_status, to_status, idempotency_key, event_at) "
+                        + "VALUES (?, 'ISSUED', 'USED', ?, NOW(3))",
+                issued.couponId(),
+                "used-key-reused-for-issue");
+
+        assertThatThrownBy(
+                        () ->
+                                strategy.issue(
+                                        CAMPAIGN_ID, 2L, STOCK_ID, "used-key-reused-for-issue"))
+                .isInstanceOf(IdempotencyKeyReusedException.class);
+
+        // 발급 자체가 거부됐으므로 재고/쿠폰에 추가 영향이 없어야 한다
         assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
         assertThat(couponCount()).isEqualTo(1);
     }
