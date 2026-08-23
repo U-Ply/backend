@@ -21,10 +21,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 /**
  * 판정 계산 회귀 테스트.
  *
- * <p>이 클래스가 존재하는 이유는 실제 사고 때문이다. 판정이 rule_code 가 INV- 로 시작하는
- * 규칙만 세고 있어서, REC-01 위반 1건이 있는 회차의 헤더에 "통과" 가 찍혔다
- * (docs/round-results/LEAK-V2-01.md). INV 전부 통과 + REC-01 위반이라는 조합을
- * 아무도 보지 않았기 때문에 통과했던 버그다.
+ * <p>이 클래스가 존재하는 이유는 실제 사고 때문이다. 판정이 rule_code 가 INV- 로 시작하는 규칙만 세고 있어서, REC-01 위반 1건이 있는 회차의 헤더에
+ * "통과" 가 찍혔다 (docs/round-results/LEAK-V2-01.md). INV 전부 통과 + REC-01 위반이라는 조합을 아무도 보지 않았기 때문에 통과했던
+ * 버그다.
  */
 @ExtendWith(MockitoExtension.class)
 class VerificationReportRendererTest {
@@ -45,7 +44,9 @@ class VerificationReportRendererTest {
         rules.add(rule("CLOCK-02", "CHECKED", 0));
         rules.add(rule("REC-01", "CHECKED", 1));
 
-        stub(rules, List.of(violation("REC-01", "campaign_stocks", 301L, "redis=0, db=1, diff=-1")));
+        stub(
+                rules,
+                List.of(violation("REC-01", "campaign_stocks", 301L, "redis=0, db=1, diff=-1")));
 
         String md = renderer.render(RUN_ID);
 
