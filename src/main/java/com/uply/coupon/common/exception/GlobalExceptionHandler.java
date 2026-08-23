@@ -172,7 +172,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ApiErrorResponse> handleMethodArgumentTypeMismatch(
             MethodArgumentTypeMismatchException exception) {
-        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "요청 값이 올바르지 않습니다.");
+        String message = exception.getName() + " 값이 올바르지 않습니다.";
+        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", message);
     }
 
     @ExceptionHandler(Exception.class)
