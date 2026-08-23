@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import java.time.Duration;
@@ -137,6 +138,19 @@ class PessimisticLockIssueStrategyTest {
         assertThat(retry.success()).isTrue();
         assertThat(retry.couponId()).isEqualTo(first.couponId()); // 같은 쿠폰이어야 한다
         assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1); // 재고는 1만 차감
+        assertThat(couponCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("같은 idempotencyKey를 다른 유저 요청에 재사용하면 IDEMPOTENCY_KEY_REUSED로 거부한다")
+    void 멱등성_키_재사용_거부() {
+        strategy.issue(CAMPAIGN_ID, 1L, STOCK_ID, "reused-key");
+
+        assertThatThrownBy(() -> strategy.issue(CAMPAIGN_ID, 2L, STOCK_ID, "reused-key"))
+                .isInstanceOf(IdempotencyKeyReusedException.class);
+
+        // 거부된 요청이므로 재고/쿠폰에 추가 영향이 없어야 한다
+        assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
         assertThat(couponCount()).isEqualTo(1);
     }
 
