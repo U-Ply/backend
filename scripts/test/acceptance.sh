@@ -155,6 +155,13 @@ esac
 USES_REDIS=false
 [[ "$ISSUE_STRATEGY" == "LUA_SCRIPT" ]] && USES_REDIS=true
 
+# V0 는 불변식이 깨지는 것이 목적이다 (test-plan 5.4).
+# failOnViolation=true 면 검증 Job 이 FAILED 로 끝나 회차가 리포트를 남기기 전에 죽는다.
+# 위반은 기록하고, 판정은 9단계에서 뒤집어 검사한다.
+if [[ "$ROUND" == "V0" ]]; then
+    FAIL_ON_VIOLATION=false
+fi
+
 if [[ -z "$RUN_ID" ]]; then
     RUN_ID="SMOKE-${ROUND}-$(date +%Y%m%d-%H%M%S)"
 fi
@@ -184,8 +191,46 @@ else
     info "expiration batch: 실행하지 않음 (TRANSITIONS=false)"
 fi
 
+if [[ "$SAVE_STRATEGY" == "kafka" ]]; then
+    info "kafka           : topic=coupon-issued  group=${KAFKA_GROUP}  dlt=${DLT_TOPIC}"
+    info "                  이 셋은 아직 코드에 하드코딩된 **공용 자원**이다."
+    info "                  회차 도중 다른 앱 인스턴스를 띄우면 이 회차의 메시지를 그쪽이 가져간다."
+fi
+
 [[ "${ALLOW_DESTRUCTIVE_ACCEPTANCE:-false}" == "true" ]] \
     || die "위 데이터를 지우고 덮어쓴다. 확인했으면 ALLOW_DESTRUCTIVE_ACCEPTANCE=true 로 다시 실행한다."
+
+# Kafka 공용 자원 가드는 반드시 앱을 띄우기 **전**에 한다.
+# 앱이 뜬 뒤에 검사하면 우리 앱의 컨슈머가 그룹 멤버로 잡혀 항상 실패한다.
+if [[ "$SAVE_STRATEGY" == "kafka" ]]; then
+    step "pre-flight — kafka 공용 자원 점검"
+
+       # 직전 회차 앱이 그룹에서 빠지는 데 몇 초 걸린다. 잔여 멤버와
+    # 진짜로 떠 있는 인스턴스를 구분하려면 잠깐 기다려 본다.
+    MEMBERS=0
+    for _ in $(seq 1 15); do
+        MEMBERS=$(kafka_sh /opt/kafka/bin/kafka-consumer-groups.sh \
+                    --bootstrap-server localhost:9092 \
+                    --group "$KAFKA_GROUP" --describe --members 2>/dev/null \
+                  | awk 'NR>1 && NF>0' | wc -l | tr -d ' ')
+        [[ "$MEMBERS" == "0" ]] && break
+        info "waiting for $MEMBERS stale consumer member(s) to leave the group"
+        sleep 2
+    done
+    [[ "$MEMBERS" == "0" ]] \
+        || die "consumer group $KAFKA_GROUP still has $MEMBERS active member(s) after 30s.
+       다른 앱 인스턴스가 떠 있으면 이 회차의 메시지를 그쪽이 가져가 실제 DB 에 쓴다. 먼저 내린다."
+
+    PRE_LAG=$(kafka_sh /opt/kafka/bin/kafka-consumer-groups.sh \
+                --bootstrap-server localhost:9092 \
+                --group "$KAFKA_GROUP" --describe 2>/dev/null \
+              | awk -v g="$KAFKA_GROUP" '$1==g && $6 ~ /^[0-9]+$/ {s+=$6} END {print s+0}')
+    [[ "$PRE_LAG" == "0" ]] \
+        || die "consumer group $KAFKA_GROUP has $PRE_LAG unconsumed messages before the round.
+       이 회차 앱이 남의 backlog 를 먹고 DB 에 쓴다. 먼저 비우거나 원인을 확인한다."
+
+    info "no active members, pre-round lag 0"
+fi
 
 # ------------------------------------------------------------------ 0. build
 
@@ -257,27 +302,6 @@ LEFTOVER=$(mysql_q "SELECT COUNT(*) FROM coupons WHERE stock_id IN (${STOCK_ID},
 [[ "$LEFTOVER" == "0" ]] || die "reset left $LEFTOVER coupons behind"
 
 if [[ "$SAVE_STRATEGY" == "kafka" ]]; then
-    # 토픽·컨슈머 그룹은 아직 공용이다(coupon-issued / coupon-service, 코드 하드코딩).
-    # 다른 앱 인스턴스가 살아 있으면 이 회차의 이벤트를 그쪽 컨슈머가 가져가고,
-    # 남아 있던 backlog 를 이 회차 앱이 먹는다. 둘 다 결과를 조용히 오염시킨다.
-    # 토픽 분리 전까지는 최소한 그 상태를 거부한다.
-    MEMBERS=$(kafka_sh /opt/kafka/bin/kafka-consumer-groups.sh \
-                --bootstrap-server localhost:9092 \
-                --group "$KAFKA_GROUP" --describe --members 2>/dev/null \
-              | awk 'NR>1 && NF>0' | wc -l | tr -d ' ')
-    [[ "$MEMBERS" == "0" ]] \
-        || die "consumer group $KAFKA_GROUP already has $MEMBERS active member(s).
-       다른 앱 인스턴스가 떠 있으면 이 회차의 메시지를 그쪽이 가져간다. 먼저 내린다."
-
-    PRE_LAG=$(kafka_sh /opt/kafka/bin/kafka-consumer-groups.sh \
-                --bootstrap-server localhost:9092 \
-                --group "$KAFKA_GROUP" --describe 2>/dev/null \
-              | awk -v g="$KAFKA_GROUP" '$1==g && $6 ~ /^[0-9]+$/ {s+=$6} END {print s+0}')
-    [[ "$PRE_LAG" == "0" ]] \
-        || die "consumer group $KAFKA_GROUP has $PRE_LAG unconsumed messages before the round.
-       이 회차 앱이 남의 메시지를 먹고 DB 에 쓴다. 먼저 비우거나 원인을 확인한다."
-    info "kafka group $KAFKA_GROUP — no active members, lag 0"
-
     # test-plan 9: DLT must start at 0.
     # 다만 무조건 지우면 남의 실패 기록까지 없앤다. 기본은 "확인 후 중단" 이고,
     # 지우려면 PURGE_DLT=true 로 의도를 밝혀야 한다.
@@ -390,20 +414,34 @@ SERVER_ERR=$(grep -c '^5' "$RESPONSE_FILE")
 OUT_OF_STOCK=$(grep -c ' OUT_OF_STOCK$' "$RESPONSE_FILE")
 ALREADY_ISSUED=$(grep -c ' ALREADY_ISSUED$' "$RESPONSE_FILE")
 LOCK_TIMEOUT=$(grep -c ' LOCK_TIMEOUT$' "$RESPONSE_FILE")
-UNCLASSIFIED=$(( TOTAL - SUCCESS - OUT_OF_STOCK - ALREADY_ISSUED - LOCK_TIMEOUT ))
+CONCURRENCY_CONFLICT=$(grep -c ' CONCURRENCY_CONFLICT$' "$RESPONSE_FILE")
+CONNECTION_UNAVAILABLE=$(grep -c ' CONNECTION_UNAVAILABLE$' "$RESPONSE_FILE")
+
+# 503 두 종류는 발생 지점이 다르므로 기타 5xx 에 중복 집계하지 않는다 (test-plan 6.6).
+#   CONCURRENCY_CONFLICT  : 커밋 단계의 DB 교착
+#   CONNECTION_UNAVAILABLE: 트랜잭션 시작 단계의 커넥션 풀 획득 실패
+OTHER_5XX=$(( SERVER_ERR - CONCURRENCY_CONFLICT - CONNECTION_UNAVAILABLE ))
+UNCLASSIFIED=$(( TOTAL - SUCCESS - OUT_OF_STOCK - ALREADY_ISSUED \
+                 - LOCK_TIMEOUT - CONCURRENCY_CONFLICT - CONNECTION_UNAVAILABLE - OTHER_5XX ))
 CAPTURED=$(wc -l < "$COUPON_FILE" | tr -d ' ')
 
 EXPECT_SUCCESS=$(( REQUESTS < INITIAL_STOCK ? REQUESTS : INITIAL_STOCK ))
 EXPECT_OOS=$(( REQUESTS - EXPECT_SUCCESS ))
 
 info "success=$SUCCESS  OUT_OF_STOCK=$OUT_OF_STOCK  ALREADY_ISSUED=$ALREADY_ISSUED"
-info "LOCK_TIMEOUT=$LOCK_TIMEOUT  5xx=$SERVER_ERR  unclassified=$UNCLASSIFIED  couponIds=$CAPTURED"
+info "LOCK_TIMEOUT=$LOCK_TIMEOUT  CONCURRENCY_CONFLICT=$CONCURRENCY_CONFLICT"
+info "CONNECTION_UNAVAILABLE=$CONNECTION_UNAVAILABLE  other5xx=$OTHER_5XX"
+info "unclassified=$UNCLASSIFIED  couponIds=$CAPTURED"
 
 if [[ "$ROUND" == "V0" ]]; then
     # V0 는 동시성 제어 부재를 재현하는 것이 목적이라 정확한 수를 요구하지 않는다
-    # (test-plan 5.4). 대신 수치를 기록하고, 빈 회차만 막는다.
-    info "V0 baseline — counts are recorded, not asserted"
+    # (test-plan 5.4). CONCURRENCY_CONFLICT 도 V0 에서는 정상이다.
+    # 다만 빈 회차와 분류 밖 응답은 여기서도 막는다.
+    OVERSOLD=$(( SUCCESS - EXPECT_SUCCESS ))
+    info "V0 baseline — oversold by $OVERSOLD (stock $EXPECT_SUCCESS, issued $SUCCESS)"
     [[ "$SUCCESS" -gt 0 ]] || die "no coupon was issued. an empty round cannot pass."
+    [[ "$UNCLASSIFIED" == "0" ]] \
+        || die "$UNCLASSIFIED responses fell outside the known categories — see $RESPONSE_FILE"
 else
     [[ "$SUCCESS" == "$EXPECT_SUCCESS" ]] \
         || die "success=$SUCCESS, expected exactly $EXPECT_SUCCESS (min(requests, stock))"
@@ -413,8 +451,12 @@ else
         || die "ALREADY_ISSUED=$ALREADY_ISSUED, expected 0 (users are unique in this round)"
     [[ "$LOCK_TIMEOUT" == "0" ]] \
         || die "LOCK_TIMEOUT=$LOCK_TIMEOUT. test-plan 6.6 requires zero."
-    [[ "$SERVER_ERR" == "0" ]] \
-        || die "$SERVER_ERR server errors. test-plan 6.6 requires zero."
+    [[ "$CONCURRENCY_CONFLICT" == "0" ]] \
+        || die "CONCURRENCY_CONFLICT=$CONCURRENCY_CONFLICT. test-plan 6.6 requires zero for V1~V3."
+    [[ "$CONNECTION_UNAVAILABLE" == "0" ]] \
+        || die "CONNECTION_UNAVAILABLE=$CONNECTION_UNAVAILABLE. test-plan 6.6 requires zero."
+    [[ "$OTHER_5XX" == "0" ]] \
+        || die "$OTHER_5XX other server errors. test-plan 6.6 requires zero."
     [[ "$UNCLASSIFIED" == "0" ]] \
         || die "$UNCLASSIFIED responses fell outside the known categories — see $RESPONSE_FILE"
 fi
@@ -440,6 +482,11 @@ if [[ "$TRANSITIONS" == "true" ]]; then
     DB_ISSUED=$(mysql_q "SELECT COUNT(*) FROM coupons WHERE stock_id=${STOCK_ID};")
     [[ "$DB_ISSUED" == "$SUCCESS" ]] \
         || die "db holds $DB_ISSUED coupons but $SUCCESS were issued"
+
+    # 사용·취소 전 재고를 기록해둔다. 발급이 정확했는지와 무관하게
+    # "상태 변경이 재고를 되돌리지 않는다"(test-plan 2.8)만 보려면 전후 비교여야 한다.
+    # 절대값(INITIAL_STOCK - SUCCESS)을 기대값으로 쓰면 V0 에서는 성립하지 않는다.
+    STOCK_BEFORE=$(mysql_q "SELECT remaining_stock FROM campaign_stocks WHERE stock_id=${STOCK_ID};")
 
     mapfile -t COUPON_IDS < "$COUPON_FILE"
     [[ "${#COUPON_IDS[@]}" -ge "$USE_COUNT" ]] \
@@ -481,10 +528,19 @@ if [[ "$TRANSITIONS" == "true" ]]; then
     # 발급된 재고는 상태와 무관하게 영구 소진한다 (test-plan 2.8).
     # 사용·취소가 재고를 되돌리면 여기서 잡힌다.
     AFTER_STOCK=$(mysql_q "SELECT remaining_stock FROM campaign_stocks WHERE stock_id=${STOCK_ID};")
-    EXPECT_STOCK=$(( INITIAL_STOCK - SUCCESS ))
-    [[ "$AFTER_STOCK" == "$EXPECT_STOCK" ]] \
-        || die "remaining_stock is $AFTER_STOCK, expected $EXPECT_STOCK — state change must not restore stock"
-    info "remaining_stock still $AFTER_STOCK (state changes do not restore stock)"
+    [[ "$AFTER_STOCK" == "$STOCK_BEFORE" ]] \
+        || die "remaining_stock moved $STOCK_BEFORE -> $AFTER_STOCK during use/cancel — test-plan 2.8 forbids restoring stock"
+    info "remaining_stock unchanged at $AFTER_STOCK through use/cancel"
+
+    # 발급이 정확한 회차에서는 절대값 항등식도 성립해야 한다.
+    # V0 는 이 항등식이 깨지는 것 자체가 재현 목표다 (test-plan 5.4).
+    if [[ "$ROUND" != "V0" ]]; then
+        EXPECT_STOCK=$(( INITIAL_STOCK - SUCCESS ))
+        [[ "$AFTER_STOCK" == "$EXPECT_STOCK" ]] \
+            || die "remaining_stock is $AFTER_STOCK, expected $EXPECT_STOCK (= $INITIAL_STOCK - $SUCCESS)"
+    else
+        info "V0 baseline — remaining_stock=$AFTER_STOCK vs ($INITIAL_STOCK - $SUCCESS) 불일치는 예상된 결과"
+    fi
 else
     step "5b. state transitions  (skipped, TRANSITIONS=$TRANSITIONS)"
 fi
@@ -577,23 +633,43 @@ if [[ "$TRANSITIONS" == "true" ]]; then
     EXP_TOTAL=$(wc -l < "$EXPIRY_RESPONSE_FILE" | tr -d ' ')
     EXP_SUCCESS=$(grep -c '^200 ' "$EXPIRY_RESPONSE_FILE")
     EXP_OOS=$(grep -c ' OUT_OF_STOCK$' "$EXPIRY_RESPONSE_FILE")
+    EXP_ALREADY=$(grep -c ' ALREADY_ISSUED$' "$EXPIRY_RESPONSE_FILE")
+    EXP_LOCK=$(grep -c ' LOCK_TIMEOUT$' "$EXPIRY_RESPONSE_FILE")
+    EXP_CONFLICT=$(grep -c ' CONCURRENCY_CONFLICT$' "$EXPIRY_RESPONSE_FILE")
+    EXP_CONN=$(grep -c ' CONNECTION_UNAVAILABLE$' "$EXPIRY_RESPONSE_FILE")
     EXP_5XX=$(grep -c '^5' "$EXPIRY_RESPONSE_FILE")
-    EXP_UNCLASSIFIED=$(( EXP_TOTAL - EXP_SUCCESS - EXP_OOS ))
+    EXP_OTHER_5XX=$(( EXP_5XX - EXP_CONFLICT - EXP_CONN ))
+    EXP_UNCLASSIFIED=$(( EXP_TOTAL - EXP_SUCCESS - EXP_OOS - EXP_ALREADY \
+                         - EXP_LOCK - EXP_CONFLICT - EXP_CONN - EXP_OTHER_5XX ))
 
     EXPECT_EXP_SUCCESS=$(( EXPIRY_REQUESTS < EXPIRY_STOCK ? EXPIRY_REQUESTS : EXPIRY_STOCK ))
     EXPECT_EXP_OOS=$(( EXPIRY_REQUESTS - EXPECT_EXP_SUCCESS ))
 
-    info "expiry issue: success=$EXP_SUCCESS  OUT_OF_STOCK=$EXP_OOS  5xx=$EXP_5XX"
+    info "expiry issue: success=$EXP_SUCCESS  OUT_OF_STOCK=$EXP_OOS"
+    info "              CONCURRENCY_CONFLICT=$EXP_CONFLICT  CONNECTION_UNAVAILABLE=$EXP_CONN  other5xx=$EXP_OTHER_5XX"
+
     [[ "$EXP_TOTAL" == "$EXPIRY_REQUESTS" ]] \
         || die "expiry: only $EXP_TOTAL responses recorded, expected $EXPIRY_REQUESTS"
-    [[ "$EXP_SUCCESS" == "$EXPECT_EXP_SUCCESS" ]] \
-        || die "expiry success=$EXP_SUCCESS, expected exactly $EXPECT_EXP_SUCCESS"
-    [[ "$EXP_OOS" == "$EXPECT_EXP_OOS" ]] \
-        || die "expiry OUT_OF_STOCK=$EXP_OOS, expected $EXPECT_EXP_OOS"
-    [[ "$EXP_5XX" == "0" ]] \
-        || die "$EXP_5XX server errors on the expiry campaign"
     [[ "$EXP_UNCLASSIFIED" == "0" ]] \
         || die "$EXP_UNCLASSIFIED expiry responses fell outside the known categories"
+
+    if [[ "$ROUND" == "V0" ]]; then
+        # 만료 회차 발급도 같은 발급 경로를 탄다. V0 는 정확한 수를 만족할 수 없다.
+        # 만료 배치에 태울 쿠폰이 생기기만 하면 이 단계의 목적은 달성된다.
+        info "V0 baseline — expiry counts recorded, not asserted"
+        [[ "$EXP_SUCCESS" -gt 0 ]] || die "expiry campaign issued nothing — cannot test expiration"
+    else
+        [[ "$EXP_SUCCESS" == "$EXPECT_EXP_SUCCESS" ]] \
+            || die "expiry success=$EXP_SUCCESS, expected exactly $EXPECT_EXP_SUCCESS"
+        [[ "$EXP_OOS" == "$EXPECT_EXP_OOS" ]] \
+            || die "expiry OUT_OF_STOCK=$EXP_OOS, expected $EXPECT_EXP_OOS"
+        [[ "$EXP_CONFLICT" == "0" ]] \
+            || die "expiry CONCURRENCY_CONFLICT=$EXP_CONFLICT, expected 0"
+        [[ "$EXP_CONN" == "0" ]] \
+            || die "expiry CONNECTION_UNAVAILABLE=$EXP_CONN, expected 0"
+        [[ "$EXP_OTHER_5XX" == "0" ]] \
+            || die "$EXP_OTHER_5XX server errors on the expiry campaign"
+    fi
 
     if [[ "$SAVE_STRATEGY" == "kafka" ]]; then
         for _ in $(seq 1 30); do
@@ -726,12 +802,24 @@ printf '\n'
 sed -n '1,12p' "$REPORT_FILE"
 
 VIOLATIONS=$(grep -o '^| 총 위반 | [0-9]*' "$REPORT_FILE" | grep -o '[0-9]*$')
-[[ "$VIOLATIONS" == "0" ]] || die "report holds $VIOLATIONS violations. see $REPORT_FILE"
 
-# 리포트가 스스로 내린 판정을 그대로 게이트로 쓴다. 위반 수만 보면
-# 무효(시계 어긋남)나 불완전(미실행)처럼 위반 0 건인 실패를 놓친다.
-grep -q '^| 판정 | \*\*통과\*\* |' "$REPORT_FILE" \
-    || die "report verdict is not 통과. see $REPORT_FILE"
+if [[ "$ROUND" == "V0" ]]; then
+    # V0 는 동시성 제어 부재를 재현하는 기준선이다 (test-plan 5.4).
+    # 위반이 0 건이면 재현에 실패한 것이므로 그쪽이 오히려 문제다.
+    [[ "$VIOLATIONS" -gt 0 ]] \
+        || die "V0 produced no invariant violation — 기준선이 재현되지 않았다. 재고/요청 수를 확인한다."
+    if grep -q '^| 판정 | \*\*통과\*\* |' "$REPORT_FILE"; then
+        die "V0 report says 통과 but the baseline must show violations — 판정 로직을 확인한다"
+    fi
+    info "V0 baseline — $VIOLATIONS violations recorded (예상된 결과)"
+else
+    [[ "$VIOLATIONS" == "0" ]] || die "report holds $VIOLATIONS violations. see $REPORT_FILE"
+
+    # 리포트가 스스로 내린 판정을 그대로 게이트로 쓴다. 위반 수만 보면
+    # 무효(시계 어긋남)나 불완전(미실행)처럼 위반 0 건인 실패를 놓친다.
+    grep -q '^| 판정 | \*\*통과\*\* |' "$REPORT_FILE" \
+        || die "report verdict is not 통과. see $REPORT_FILE"
+fi
 
 # 이번 회차가 만든 상태 분포. "위반 0 건" 이 어떤 데이터 위에서 나온 값인지 남긴다.
 if [[ "$TRANSITIONS" == "true" ]]; then
@@ -747,4 +835,15 @@ if [[ "$TRANSITIONS" == "true" ]]; then
     info "history rows for this round: $HIST"
 fi
 
-step "PASSED  round=$ROUND  runId=$RUN_ID"
+# V0 에서 PASSED 를 찍으면 "V0 가 정합성을 통과했다" 로 읽힌다.
+# 절차가 끝났다는 뜻이지 통과가 아니다.
+if [[ "$ROUND" == "V0" ]]; then
+    step "DONE  round=$ROUND  runId=$RUN_ID  (baseline — 위반은 예상된 산출물이다)"
+    info "위반 규칙 확인:"
+    mysql_q "SELECT rule_code, status, violation_count
+               FROM verification_report
+              WHERE run_id='${RUN_ID}' AND violation_count > 0
+              ORDER BY rule_code;" | sed 's/^/    /'
+else
+    step "PASSED  round=$ROUND  runId=$RUN_ID"
+fi

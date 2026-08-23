@@ -181,4 +181,27 @@ class VerificationJobIntegrationTest {
         assertThat(md).containsPattern("`CLOCK-02`[^\\n]*\\| N/A \\|");
         assertThat(md).doesNotContainPattern("`CLOCK-02`[^\\n]*\\| 통과 \\|");
     }
+    /**
+     * V2·V3 는 Lua 가 반환한 nowMillis 를 issued_at·event_at 에 쓰므로 Redis 시계 회차다.
+     * 여기서 N/A 가 나오면 RoundVersion 이 false 로 되돌아갔다는 뜻이고,
+     * 그러면 검사하지 않은 것을 통과로 세게 된다.
+     */
+    @Test
+    @DisplayName("Redis 시계 회차에서 CLOCK-02 는 실제로 검사된다 - N/A 로 새면 안 된다")
+    void clock02_checked_on_redis_round() throws Exception {
+        utils.launchJob(params("job-v2", null, "V2"));
+
+        String status =
+                jdbc.queryForObject(
+                        "SELECT status FROM verification_report WHERE run_id='job-v2' AND rule_code='CLOCK-02'",
+                        String.class);
+        assertThat(status).isEqualTo("CHECKED");
+
+        // N/A 가 하나도 없어야 한다. V1 회차의 2건과 대비된다.
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM verification_report WHERE run_id='job-v2' AND status='NOT_APPLICABLE'",
+                                Integer.class))
+                .isZero();
+    }
 }
