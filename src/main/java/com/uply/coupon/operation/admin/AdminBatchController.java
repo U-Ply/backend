@@ -119,11 +119,20 @@ public class AdminBatchController {
         return jdbcTemplate.queryForList(
                 """
                 SELECT run_id,
+                       MAX(round)                                  AS round,
                        MIN(snapshot_at)                            AS snapshot_at,
                        SUM(violation_count)                        AS total_violations,
                        SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) AS failed_rules,
+                       SUM(status = 'CHECKED')                     AS checked_rules,
+                       SUM(status = 'NOT_APPLICABLE')              AS not_applicable_rules,
+                       SUM(status = 'SKIPPED')                     AS skipped_rules,
                        COUNT(*)                                    AS rule_count,
-                       SUM(elapsed_ms)                             AS total_elapsed_ms
+                       SUM(elapsed_ms)                             AS total_elapsed_ms,
+                       CASE
+                         WHEN SUM(status = 'SKIPPED') > 0 THEN 'INCOMPLETE'
+                         WHEN SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) > 0 THEN 'FAILED'
+                         ELSE 'PASSED'
+                       END                                         AS verdict
                 FROM verification_report
                 GROUP BY run_id
                 ORDER BY MIN(created_at) DESC
@@ -137,7 +146,8 @@ public class AdminBatchController {
     public List<Map<String, Object>> report(@PathVariable String runId) {
         return jdbcTemplate.queryForList(
                 """
-                SELECT rule_code, rule_name, violation_count, sampled_count,
+                  SELECT rule_code, rule_name, round, status,
+                       violation_count, sampled_count,
                        checked_rows, elapsed_ms, passed, snapshot_at
                 FROM verification_report
                 WHERE run_id = ?
