@@ -521,18 +521,22 @@ case "$ROUND" in
     V0)
         ISSUE_STRATEGY="NO_LOCK"
         SAVE_STRATEGY="sync-db"
+        KAFKA_CONSUMER_ENABLED=false
         ;;
     V1)
         ISSUE_STRATEGY="PESSIMISTIC_LOCK"
         SAVE_STRATEGY="sync-db"
+        KAFKA_CONSUMER_ENABLED=false
         ;;
     V2)
         ISSUE_STRATEGY="LUA_SCRIPT"
         SAVE_STRATEGY="sync-db"
+        KAFKA_CONSUMER_ENABLED=false
         ;;
     V3)
         ISSUE_STRATEGY="LUA_SCRIPT"
         SAVE_STRATEGY="kafka"
+        KAFKA_CONSUMER_ENABLED=true
         ;;
     *)
         die "unknown ROUND: $ROUND (use V0 | V1 | V2 | V3)"
@@ -605,7 +609,7 @@ info "git: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # ------------------------------------------------------------------
 
 step "1. start application"
-info "round=$ROUND issue=$ISSUE_STRATEGY save=$SAVE_STRATEGY"
+info "round=$ROUND issue=$ISSUE_STRATEGY save=$SAVE_STRATEGY consumer=$KAFKA_CONSUMER_ENABLED"
 info "DB=$DB_NAME"
 
 if curl -s -o /dev/null -w '%{http_code}' \
@@ -625,6 +629,7 @@ SPRING_JPA_DATABASE_PLATFORM="org.hibernate.dialect.MySQLDialect" \
 SPRING_DATA_REDIS_DATABASE="$REDIS_DB" \
 COUPON_STRATEGY="$ISSUE_STRATEGY" \
 COUPON_SAVE_STRATEGY="$SAVE_STRATEGY" \
+COUPON_KAFKA_CONSUMER_ENABLED="$KAFKA_CONSUMER_ENABLED" \
     java \
         -Duser.timezone=UTC \
         -jar "$JAR" \
