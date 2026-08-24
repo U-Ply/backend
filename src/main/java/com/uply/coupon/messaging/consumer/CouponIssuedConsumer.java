@@ -6,11 +6,13 @@ import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "coupon.save.strategy", havingValue = "kafka")
 @RequiredArgsConstructor
 public class CouponIssuedConsumer {
 
@@ -26,7 +28,7 @@ public class CouponIssuedConsumer {
     @KafkaListener(
             topics = "coupon-issued",
             containerFactory = "kafkaListenerContainerFactory",
-            autoStartup = "${coupon.kafka.consumer.enabled:false}")
+            autoStartup = "${coupon.kafka.consumer.enabled:true}")
     public void consume(ConsumerRecord<String, String> record) throws JsonProcessingException {
         CouponIssuedEvent event = objectMapper.readValue(record.value(), CouponIssuedEvent.class);
         validatePartitionKey(record.key(), event.couponId());

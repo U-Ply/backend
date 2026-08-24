@@ -2,6 +2,7 @@ package com.uply.coupon.messaging.consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.kafka.annotation.KafkaListener;
 
 @ExtendWith(MockitoExtension.class)
@@ -76,14 +78,63 @@ class CouponIssuedConsumerTest {
                 .isInstanceOf(com.fasterxml.jackson.core.JsonProcessingException.class);
     }
 
-    // 저장 전략을 지정하지 않은 일반 실행에서는 과거 Kafka 이벤트를 소비하지 않는지 확인
+    // sync-db 저장 전략에서는 Kafka Consumer Bean 자체가 생성되지 않는지 확인
     @Test
-    void listenerIsDisabledByDefault() throws NoSuchMethodException {
-        KafkaListener listener =
-                CouponIssuedConsumer.class
-                        .getDeclaredMethod("consume", ConsumerRecord.class)
-                        .getAnnotation(KafkaListener.class);
+    void consumerBeanIsNotCreatedForSyncDbStrategy() {
+        consumerContext()
+                .withPropertyValues(
+                        "coupon.save.strategy=sync-db", "coupon.kafka.consumer.enabled=true")
+                .run(context -> assertThat(context).doesNotHaveBean(CouponIssuedConsumer.class));
+    }
 
-        assertThat(listener.autoStartup()).isEqualTo("${coupon.kafka.consumer.enabled:false}");
+    // kafka 저장 전략에서는 Consumer Bean이 생성되고 Listener가 기본 활성화되는지 확인
+    @Test
+    void consumerBeanIsCreatedAndListenerEnabledForKafkaStrategy() {
+        consumerContext()
+                .withPropertyValues("coupon.save.strategy=kafka")
+                .run(
+                        context -> {
+                            assertThat(context).hasSingleBean(CouponIssuedConsumer.class);
+                            assertThat(resolveAutoStartup(context, listenerAnnotation()))
+                                    .isEqualTo("true");
+                        });
+    }
+
+    // kafka 저장 전략에서도 Producer 전용 인스턴스는 Listener를 명시적으로 끌 수 있는지 확인
+    @Test
+    void listenerCanBeDisabledExplicitlyForKafkaStrategy() {
+        consumerContext()
+                .withPropertyValues(
+                        "coupon.save.strategy=kafka", "coupon.kafka.consumer.enabled=false")
+                .run(
+                        context -> {
+                            assertThat(context).hasSingleBean(CouponIssuedConsumer.class);
+                            assertThat(resolveAutoStartup(context, listenerAnnotation()))
+                                    .isEqualTo("false");
+                        });
+    }
+
+    private ApplicationContextRunner consumerContext() {
+        return new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, () -> new ObjectMapper().findAndRegisterModules())
+                .withBean(
+                        CouponIssuedEventProcessor.class,
+                        () -> mock(CouponIssuedEventProcessor.class))
+                .withUserConfiguration(CouponIssuedConsumer.class);
+    }
+
+    private KafkaListener listenerAnnotation() {
+        try {
+            return CouponIssuedConsumer.class
+                    .getDeclaredMethod("consume", ConsumerRecord.class)
+                    .getAnnotation(KafkaListener.class);
+        } catch (NoSuchMethodException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
+    private String resolveAutoStartup(
+            org.springframework.context.ApplicationContext context, KafkaListener listener) {
+        return context.getEnvironment().resolvePlaceholders(listener.autoStartup());
     }
 }
