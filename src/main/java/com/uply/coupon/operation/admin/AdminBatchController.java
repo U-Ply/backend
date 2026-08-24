@@ -98,9 +98,7 @@ public class AdminBatchController {
         // 실패 원인을 여기서 바로 보여준다. 서버 로그를 뒤지지 않아도 되게.
         body.put(
                 "failures",
-                execution.getAllFailureExceptions().stream()
-                        .map(Throwable::getMessage)
-                        .toList());
+                execution.getAllFailureExceptions().stream().map(Throwable::getMessage).toList());
 
         return ResponseEntity.ok(body);
     }

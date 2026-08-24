@@ -63,11 +63,9 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(requests);
 
-        ConcurrentLinkedQueue<IssueFailReason> failures =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<IssueFailReason> failures = new ConcurrentLinkedQueue<>();
 
-        ConcurrentLinkedQueue<Throwable> unexpected =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
 
         try {
             for (int i = 0; i < requests; i++) {
@@ -113,31 +111,22 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
 
             assertThat(failures).hasSize(70);
 
-            assertThat(failures)
-                    .allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
+            assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
             // V2 는 sync-db 라 발급 응답 시점에 DB 가 이미 확정이다. 대기가 필요 없다.
             assertThat(fixture.couponCount()).isEqualTo(30);
             assertThat(fixture.historyCount()).isEqualTo(30);
             assertThat(fixture.remaining()).isZero();
 
-            assertThat(
-                            redis.opsForValue()
-                                    .get("stock:" + CouponIntegrationFixture.STOCK_ID))
+            assertThat(redis.opsForValue().get("stock:" + CouponIntegrationFixture.STOCK_ID))
                     .isEqualTo("0");
 
-            assertThat(
-                            redis.opsForSet()
-                                    .size(
-                                            "issued:"
-                                                    + CouponIntegrationFixture.CAMPAIGN_ID))
+            assertThat(redis.opsForSet().size("issued:" + CouponIntegrationFixture.CAMPAIGN_ID))
                     .isEqualTo(30L);
 
             // 이 회차 데이터 위에서 검증·대사 배치를 돌리고 리포트를 남긴다.
             // build/round-results/V2.md 가 이 회차의 산출물이다.
-            RoundReportAssert.assertPassed(
-                    reportWriter.writeReport("V2"),
-                    "V2");
+            RoundReportAssert.assertPassed(reportWriter.writeReport("V2"), "V2");
 
         } finally {
             pool.shutdownNow();

@@ -54,11 +54,9 @@ class V1PessimisticIssueIntegrationTest extends IntegrationTestContainers {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(requests);
 
-        ConcurrentLinkedQueue<IssueFailReason> failures =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<IssueFailReason> failures = new ConcurrentLinkedQueue<>();
 
-        ConcurrentLinkedQueue<Throwable> unexpected =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
 
         try {
             for (int i = 0; i < requests; i++) {
@@ -102,8 +100,7 @@ class V1PessimisticIssueIntegrationTest extends IntegrationTestContainers {
 
             assertThat(unexpected).isEmpty();
             assertThat(failures).hasSize(70);
-            assertThat(failures)
-                    .allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
+            assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
             assertThat(fixture.couponCount()).isEqualTo(30);
             assertThat(fixture.historyCount()).isEqualTo(30);

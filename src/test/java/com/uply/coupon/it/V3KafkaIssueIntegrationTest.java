@@ -79,11 +79,9 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(requests);
 
-        ConcurrentLinkedQueue<IssueFailReason> failures =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<IssueFailReason> failures = new ConcurrentLinkedQueue<>();
 
-        ConcurrentLinkedQueue<Throwable> unexpected =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
 
         try {
             for (int i = 0; i < requests; i++) {
@@ -128,16 +126,14 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
             assertThat(unexpected).isEmpty();
 
             assertThat(failures).hasSize(70);
-            assertThat(failures)
-                    .allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
+            assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
             /*
              * V3는 Kafka Consumer가 DB에 저장할 때까지 최종 정착되지 않는다.
              *
              * 먼저 DB의 쿠폰/이력/재고가 반영되는 것을 기다린다.
              */
-            await()
-                    .atMost(Duration.ofSeconds(20))
+            await().atMost(Duration.ofSeconds(20))
                     .untilAsserted(
                             () -> {
                                 assertThat(fixture.couponCount()).isEqualTo(30);
@@ -153,8 +149,7 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * settlement 상태를 반환하며, settled()는 lag == 0 && DLT == 0인
              * 경우에만 true가 된다.
              */
-            await()
-                    .atMost(Duration.ofSeconds(30))
+            await().atMost(Duration.ofSeconds(30))
                     .pollInterval(Duration.ofMillis(200))
                     .untilAsserted(
                             () ->
@@ -166,16 +161,10 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * Redis 쪽은 Lua가 발급 시점에 동기로 쓰므로 Kafka 정착을 기다릴
              * 필요 없이 여기서 바로 검증한다.
              */
-            assertThat(
-                            redis.opsForValue()
-                                    .get("stock:" + CouponIntegrationFixture.STOCK_ID))
+            assertThat(redis.opsForValue().get("stock:" + CouponIntegrationFixture.STOCK_ID))
                     .isEqualTo("0");
 
-            assertThat(
-                            redis.opsForSet()
-                                    .size(
-                                            "issued:"
-                                                    + CouponIntegrationFixture.CAMPAIGN_ID))
+            assertThat(redis.opsForSet().size("issued:" + CouponIntegrationFixture.CAMPAIGN_ID))
                     .isEqualTo(30L);
 
             /*
@@ -185,9 +174,7 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * settlement 전에 실행하면 REC-01이 SKIPPED_NOT_SETTLED가 되어
              * 회차가 INCOMPLETE가 될 수 있다.
              */
-            RoundReportAssert.assertPassed(
-                    reportWriter.writeReport("V3"),
-                    "V3");
+            RoundReportAssert.assertPassed(reportWriter.writeReport("V3"), "V3");
 
         } finally {
             pool.shutdownNow();
@@ -204,14 +191,8 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
             try {
                 admin.createTopics(
                                 List.of(
-                                        new NewTopic(
-                                                "coupon-issued",
-                                                3,
-                                                (short) 1),
-                                        new NewTopic(
-                                                "coupon-issued.DLT",
-                                                3,
-                                                (short) 1)))
+                                        new NewTopic("coupon-issued", 3, (short) 1),
+                                        new NewTopic("coupon-issued.DLT", 3, (short) 1)))
                         .all()
                         .get();
 
