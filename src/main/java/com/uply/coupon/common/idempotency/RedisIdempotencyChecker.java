@@ -59,9 +59,10 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
 
         // #3. [중복 요청] 키가 이미 있는 경우 -> 캐시된 응답 얻기
         String cachedData = redisTemplate.opsForValue().get(redisKey);
-        // 키는 있는데 데이터가 없는 경우 empty 반환
+        // 선점하지 못한 요청만 이 경로에 진입하므로 캐시 조회 실패 시에도 중복 실행을 차단한다.
         if (cachedData == null) {
-            return Optional.empty();
+            log.warn("[멱등성 검사] 선점 실패 후 캐시 데이터가 없습니다. key: {}", redisKey);
+            throw new IdempotencyRequestInProgressException();
         }
 
         // #4. 캐시된 응답 데이터 검사
@@ -85,7 +86,7 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
 
         } catch (JsonProcessingException e) {
             log.error("[멱등성 검사] Redis 캐시 역직렬화 실패 - key: {}", redisKey, e);
-            return Optional.empty();
+            throw new IdempotencyRequestInProgressException();
         }
     }
 
