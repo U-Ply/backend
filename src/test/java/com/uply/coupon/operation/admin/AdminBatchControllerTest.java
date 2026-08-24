@@ -1,6 +1,8 @@
 package com.uply.coupon.operation.admin;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -12,6 +14,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,14 +27,16 @@ class AdminBatchControllerTest {
     private MockMvc mockMvc;
     private BatchLaunchService launchService;
     private VerificationReportRenderer reportRenderer;
+    private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void setUp() {
         launchService = mock(BatchLaunchService.class);
         reportRenderer = mock(VerificationReportRenderer.class);
+        jdbcTemplate = mock(JdbcTemplate.class);
 
         AdminBatchController controller =
-                new AdminBatchController(launchService, mock(JdbcTemplate.class), reportRenderer);
+                new AdminBatchController(launchService, jdbcTemplate, reportRenderer);
 
         mockMvc =
                 MockMvcBuilders.standaloneSetup(controller)
@@ -99,5 +105,103 @@ class AdminBatchControllerTest {
         mockMvc.perform(get("/api/admin/batch/verification/runs/{runId}/report", "L1-V1-01"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("L1-V1-01")));
+    }
+
+    @Test
+    void verificationRuns_V0는_위반이_있어도_BASELINE이다() throws Exception {
+        given(jdbcTemplate.queryForList(anyString(), eq(20)))
+                .willReturn(
+                        List.of(
+                                Map.of(
+                                        "run_id", "it-v0",
+                                        "round", "V0",
+                                        "total_violations", 3L,
+                                        "failed_rules", 3L,
+                                        "checked_rules", 13L,
+                                        "not_applicable_rules", 1L,
+                                        "skipped_rules", 0L,
+                                        "rule_count", 14L,
+                                        "total_elapsed_ms", 100L,
+                                        "verdict", "BASELINE")));
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].round").value("V0"))
+                .andExpect(jsonPath("$[0].total_violations").value(3))
+                .andExpect(jsonPath("$[0].failed_rules").value(3))
+                .andExpect(jsonPath("$[0].verdict").value("BASELINE"));
+    }
+
+    @Test
+    void verificationRuns_SKIPPED가_있으면_INCOMPLETE이다() throws Exception {
+        given(jdbcTemplate.queryForList(anyString(), eq(20)))
+                .willReturn(
+                        List.of(
+                                Map.of(
+                                        "run_id", "it-v1-incomplete",
+                                        "round", "V1",
+                                        "total_violations", 0L,
+                                        "failed_rules", 0L,
+                                        "checked_rules", 13L,
+                                        "not_applicable_rules", 0L,
+                                        "skipped_rules", 1L,
+                                        "rule_count", 14L,
+                                        "total_elapsed_ms", 100L,
+                                        "verdict", "INCOMPLETE")));
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].round").value("V1"))
+                .andExpect(jsonPath("$[0].skipped_rules").value(1))
+                .andExpect(jsonPath("$[0].verdict").value("INCOMPLETE"));
+    }
+
+    @Test
+    void verificationRuns_위반이_있으면_FAILED이다() throws Exception {
+        given(jdbcTemplate.queryForList(anyString(), eq(20)))
+                .willReturn(
+                        List.of(
+                                Map.of(
+                                        "run_id", "it-v1-failed",
+                                        "round", "V1",
+                                        "total_violations", 1L,
+                                        "failed_rules", 1L,
+                                        "checked_rules", 13L,
+                                        "not_applicable_rules", 1L,
+                                        "skipped_rules", 0L,
+                                        "rule_count", 14L,
+                                        "total_elapsed_ms", 100L,
+                                        "verdict", "FAILED")));
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].round").value("V1"))
+                .andExpect(jsonPath("$[0].failed_rules").value(1))
+                .andExpect(jsonPath("$[0].verdict").value("FAILED"));
+    }
+
+    @Test
+    void verificationRuns_위반도_SKIPPED도_없으면_PASSED이다() throws Exception {
+        given(jdbcTemplate.queryForList(anyString(), eq(20)))
+                .willReturn(
+                        List.of(
+                                Map.of(
+                                        "run_id", "it-v1-pass",
+                                        "round", "V1",
+                                        "total_violations", 0L,
+                                        "failed_rules", 0L,
+                                        "checked_rules", 13L,
+                                        "not_applicable_rules", 1L,
+                                        "skipped_rules", 0L,
+                                        "rule_count", 14L,
+                                        "total_elapsed_ms", 100L,
+                                        "verdict", "PASSED")));
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].round").value("V1"))
+                .andExpect(jsonPath("$[0].failed_rules").value(0))
+                .andExpect(jsonPath("$[0].skipped_rules").value(0))
+                .andExpect(jsonPath("$[0].verdict").value("PASSED"));
     }
 }

@@ -94,10 +94,13 @@ public class AdminBatchController {
         body.put("startTime", String.valueOf(execution.getStartTime()));
         body.put("endTime", String.valueOf(execution.getEndTime()));
         body.put("steps", steps);
+
         // 실패 원인을 여기서 바로 보여준다. 서버 로그를 뒤지지 않아도 되게.
         body.put(
                 "failures",
-                execution.getAllFailureExceptions().stream().map(Throwable::getMessage).toList());
+                execution.getAllFailureExceptions().stream()
+                        .map(Throwable::getMessage)
+                        .toList());
 
         return ResponseEntity.ok(body);
     }
@@ -119,20 +122,21 @@ public class AdminBatchController {
         return jdbcTemplate.queryForList(
                 """
                 SELECT run_id,
-                       MAX(round)                                     AS round,
-                       MIN(snapshot_at)                               AS snapshot_at,
-                       SUM(violation_count)                           AS total_violations,
+                       MAX(round)                                      AS round,
+                       MIN(snapshot_at)                                AS snapshot_at,
+                       SUM(violation_count)                            AS total_violations,
                        SUM(status = 'CHECKED' AND violation_count > 0) AS failed_rules,
-                       SUM(status = 'CHECKED')                        AS checked_rules,
-                       SUM(status = 'NOT_APPLICABLE')                 AS not_applicable_rules,
-                       SUM(status = 'SKIPPED')                        AS skipped_rules,
-                       COUNT(*)                                       AS rule_count,
-                       SUM(elapsed_ms)                                AS total_elapsed_ms,
+                       SUM(status = 'CHECKED')                         AS checked_rules,
+                       SUM(status = 'NOT_APPLICABLE')                  AS not_applicable_rules,
+                       SUM(status = 'SKIPPED')                         AS skipped_rules,
+                       COUNT(*)                                        AS rule_count,
+                       SUM(elapsed_ms)                                 AS total_elapsed_ms,
                        CASE
+                         WHEN MAX(round) = 'V0' THEN 'BASELINE'
                          WHEN SUM(status = 'SKIPPED') > 0 THEN 'INCOMPLETE'
                          WHEN SUM(status = 'CHECKED' AND violation_count > 0) > 0 THEN 'FAILED'
                          ELSE 'PASSED'
-                       END                                            AS verdict
+                       END AS verdict
                 FROM verification_report
                 GROUP BY run_id
                 ORDER BY MIN(created_at) DESC
@@ -146,9 +150,19 @@ public class AdminBatchController {
     public List<Map<String, Object>> report(@PathVariable String runId) {
         return jdbcTemplate.queryForList(
                 """
-                                SELECT rule_code, rule_name, round, status,
-                       violation_count, sampled_count,
-                       checked_rows, elapsed_ms, snapshot_at
+                SELECT rule_code,
+                       rule_name,
+                       round,
+                       status,
+                       CASE
+                           WHEN status = 'CHECKED' AND violation_count = 0 THEN true
+                           ELSE false
+                       END AS passed,
+                       violation_count,
+                       sampled_count,
+                       checked_rows,
+                       elapsed_ms,
+                       snapshot_at
                 FROM verification_report
                 WHERE run_id = ?
                 ORDER BY rule_code
