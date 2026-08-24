@@ -28,7 +28,6 @@ import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,7 +49,7 @@ class LuaScriptIssueStrategyUnitTest {
     @Mock private CouponIdGenerator couponIdGenerator;
 
     @Mock private CouponSaveStrategy couponSaveStrategy;
-    
+
     @Mock private CampaignRepository campaignRepository;
 
     @Mock private CampaignCacheWarmupService campaignCacheWarmupService;
@@ -159,7 +158,7 @@ class LuaScriptIssueStrategyUnitTest {
 
         verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
     }
-    
+
     @Test
     @DisplayName("Lua Script 결과가 -3(미웜업)인 경우 DB 조회, 재웜업, Lua Script 1회 재시도를 실행한다")
     void issue_NotWarmedUp_ExecutesDbLookupWarmupAndRetry() {
