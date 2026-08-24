@@ -230,10 +230,10 @@ class PessimisticLockIssueStrategyTest {
         assertThatThrownBy(
                         () ->
                                 strategy.issue(
-                                        CAMPAIGN_ID, 2L, STOCK_ID, "used-key-reused-for-issue"))
+                                        CAMPAIGN_ID, 1L, STOCK_ID, "used-key-reused-for-issue"))
                 .isInstanceOf(IdempotencyKeyReusedException.class);
 
-        // 발급 자체가 거부됐으므로 재고/쿠폰에 추가 영향이 없어야 한다
+        // 발급 자체가 거부됐으므로 재고/쿠폰에 추가 영향 x
         assertThat(remainingStock()).isEqualTo(TOTAL_STOCK - 1);
         assertThat(couponCount()).isEqualTo(1);
     }

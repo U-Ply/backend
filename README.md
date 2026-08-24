@@ -94,7 +94,9 @@ docker exec -i coupon-mysql mysql -uroot -proot1234 < docs/schema.sql
 
 > **주의:** 현재 `warmupCampaign()`을 호출하는 관리자 API나 자동 실행 트리거가 없습니다. IDE에서 직접 호출하거나 테스트 코드를 통해 실행해야 합니다. 시연 전에 관리자 엔드포인트 또는 배치 트리거 추가 여부를 팀에서 확정해야 합니다.
 
-V0·V1(락 미적용/비관적 락) 부하테스트처럼 Redis 키를 비운 상태로 진행하는 회차에서는 캠페인 상세·발급 현황 API를 호출하지 마세요. 호출이 필요하면 해당 회차 종료 후 Redis를 다시 초기화(웜업)해야 합니다.
+**V0(NoLock)·V1(비관적 락) 회차에서는 웜업을 해도 얼마 못 갑니다.** `docs/test-plan.md`의 V0~V3 비교표대로 V0·V1은 발급 판정과 재고 차감을 MySQL(`campaign_stocks.remaining_stock`)로만 처리하고 Redis는 전혀 건드리지 않습니다(`NoLockIssueStrategy`/`PessimisticLockIssueStrategy` 어디에도 Redis 호출이 없음). 반면 이 API들의 `remainingStock`은 스펙상 Redis 값을 그대로 반환하므로, 웜업 직후에는 맞다가 V0·V1 발급이 몇 건만 들어가도 **Redis 값이 실제 MySQL 재고보다 계속 커진 채로 고정**됩니다. 500 오류가 나는 게 아니라 **잘못된 숫자를 정상 응답으로 돌려주는** 문제라 더 위험합니다. Redis-DB 대사 배치(REC-01)도 "Redis Lua(V2·V3) 전략 회차에만 적용, 비관적 락 회차는 N/A"로 문서화돼 있어 자동으로 잡아주지 않습니다.
+
+그러니 V0·V1 회차 중에는 캠페인 상세·발급 현황 API를 호출하지 말고, 호출이 필요하면(화면 시연 등) 그 시점 직전에 다시 웜업해서 Redis를 MySQL 기준으로 맞춘 뒤 사용하세요. remainingStock이 Redis와 항상 정확히 맞는 건 V2·V3(Redis Lua 발급) 회차뿐입니다.
 
 <details>
 <summary><b>문제 해결</b></summary>
