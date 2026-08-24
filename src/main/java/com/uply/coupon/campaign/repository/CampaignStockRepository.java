@@ -92,4 +92,6 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
     Optional<CampaignStock> findByIdForUpdate(@Param("stockId") Long stockId);
 
     List<CampaignStock> findAllByCampaignId(Long campaignId);
+
+    List<CampaignStock> findAllByCampaignIdOrderByRouteIdAscFareClassAsc(Long campaignId);
 }
