@@ -12,6 +12,7 @@ public enum IssueFailReason {
     DB_SAVE_FAILED, // DB 저장 실패
     KAFKA_PUBLISH_FAILED, // Kafka 이벤트 발행 확실한 실패
     SAVE_RESULT_UNKNOWN, // (Kafka) 이벤트 발행 불확실한 실패
+    CONNECTION_UNAVAILABLE, // DB 커넥션 풀 획득 실패 (트랜잭션 시작 전)
     CAMPAIGN_NOT_CACHED, // Redis 조회 중 실패. 캐시 미스 -> 이후 에러 처리는 DB 조회 또는 캐시 웜업 시도
     SYSTEM_ERROR // 나머지 모든 에러 상황
 }

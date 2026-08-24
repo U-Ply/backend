@@ -370,12 +370,19 @@ DB 작업이 시간축으로 퍼져 동시 커넥션이 10 을 넘지 않는다.
 
 풀을 30 으로 올려도 성질은 그대로다. 동시 요청이 300 이면 같은 일이 난다.
 
+해결됨:
+
+- **커넥션 풀 고갈이 500 으로 나가던 문제.** `IssueFailReason`에 `CONNECTION_UNAVAILABLE`을
+  추가하고, `SyncMysqlSaveStrategy.save()`(V2)와 `CouponIssuedProducer.markPending()`(V3)
+  두 지점에서 `CannotCreateTransactionException`을 일반 `Exception`/`RuntimeException`
+  catch보다 먼저 잡아 이 사유로 매핑하도록 수정했다. `GlobalExceptionHandler`가 이 사유를
+  503 `CONNECTION_UNAVAILABLE`로 응답하며, test-plan §6.6의 분류 정의와 일치한다.
+  `SyncMysqlSaveStrategyTest`, `CouponIssuedProducerTest`, `GlobalExceptionHandlerTest`에
+  회귀 테스트를 추가해 검증했다. 이 절의 실제 100동시요청 재현(1)은 아직 다시 돌리지
+  않았고, 단위/슬라이스 테스트로만 확인한 상태다.
+
 미해결 과제:
 
-- **커넥션 풀 고갈이 500 으로 나간다.** test-plan §6.6 은 이 경우를
-  503 `CONNECTION_UNAVAILABLE` 로 분류하도록 이미 정의하고 있다("트랜잭션 시작
-  단계의 커넥션 풀 획득 실패"). 매핑이 없으면 §11 비교표의 해당 칸은 Level 2 에서
-  영원히 0 으로 남고 실제 발생분은 "기타 5xx" 에 묻힌다. (담당: 발급 경로)
 - **풀 크기 10 은 V2/V3 에서 100 동시요청만으로 포화된다.** Level 2 는 500~5,000 VU
   이므로 §8.2 기록 항목으로 풀 크기를 명시적으로 확정해야 한다. 전략 간 비교가
   성립하려면 모든 회차가 같은 값을 써야 한다. (팀 합의 필요)
