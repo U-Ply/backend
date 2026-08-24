@@ -103,6 +103,42 @@ docker compose up -d mysql
 
 `docs/schema.sql`은 테스트 실행마다 다시 적용하지 않는다. 로컬 스키마를 완전히 재생성해야 할 때만 운영체제별 `reset-schema` 스크립트를 사용하며, 이 작업은 기존 테스트 데이터를 모두 삭제한다.
 
+
+#### 5.3.1 Testcontainers 통합 테스트
+
+`com.uply.coupon.it` 패키지의 통합 테스트는 Testcontainers를 사용한다.
+
+실행 전 Docker Desktop이 실행 중이어야 한다.
+
+실행 명령:
+
+```bash
+./gradlew test --tests "com.uply.coupon.it.*"
+```
+
+Testcontainers 통합 테스트는 로컬 개발 환경의 MySQL, Redis, Kafka를 사용하거나 초기화하지 않는다.
+
+테스트 실행 시 다음 컨테이너가 자동으로 생성된다.
+
+* MySQL 컨테이너
+* Redis 컨테이너
+* Kafka 컨테이너
+
+따라서 Testcontainers 통합 테스트를 실행하기 위해 로컬 개발 DB의 데이터를 삭제하거나 Redis 재고 키를 초기화하거나 Kafka 토픽을 삭제할 필요가 없다.
+
+Testcontainers 통합 테스트의 결과는 다음 위치에 저장한다.
+
+```text
+build/round-results
+```
+여기에 생성된 결과 중 대표 회차를 공식 테스트 결과로 반영할 경우, 결과를 검토한 후 다음 문서에 반영한다.
+
+```text
+docs/round-results
+```
+Testcontainers 통합 테스트는 로컬 개발 환경의 데이터를 변경하지 않는 것을 원칙으로 한다.
+
+
 ### 5.4 Level 1 공통 검증 항목 및 전략별 판정
 
 - 처리되지 않은 예외가 없어야 한다.

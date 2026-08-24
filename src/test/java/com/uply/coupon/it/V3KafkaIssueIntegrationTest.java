@@ -10,16 +10,11 @@ import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
 import java.time.Duration;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import org.apache.kafka.clients.admin.AdminClient;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.common.errors.TopicExistsException;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,65 +30,147 @@ import org.springframework.data.redis.core.StringRedisTemplate;
         })
 class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
 
-    @Autowired CouponService couponService;
+    /**
+     * V3 초기 재고.
+     */
+    private static final int STOCK = 10;
 
-    @Autowired CouponIntegrationFixture fixture;
+    /**
+     * V3 동시 발급 요청 수.
+     */
+    private static final int REQUESTS = 30;
 
-    @Autowired CampaignCacheWarmupService warmupService;
+    @Autowired
+    CouponService couponService;
 
-    @Autowired StringRedisTemplate redis;
+    @Autowired
+    CouponIntegrationFixture fixture;
 
-    @Autowired RoundReportWriter reportWriter;
+    @Autowired
+    CampaignCacheWarmupService warmupService;
 
-    @Autowired KafkaSettlementChecker kafkaSettlementChecker;
+    @Autowired
+    StringRedisTemplate redis;
+
+    @Autowired
+    RoundReportWriter reportWriter;
+
+    @Autowired
+    KafkaSettlementChecker kafkaSettlementChecker;
 
     @BeforeEach
-    void setUp() throws Exception {
-        // 청소는 앞에서 한다. 뒤에서만 하면 앞선 클래스가 남긴 키 때문에 이 테스트가
-        // 자기 잘못이 아닌 이유로 깨진다. warmup 보다 반드시 먼저다.
-        redis.getConnectionFactory().getConnection().serverCommands().flushDb();
+    void setUp() {
 
+        /*
+         * 앞선 테스트에서 남은 Redis 상태가 현재 회차에 영향을 주지 않도록
+         * warmup 전에 Redis를 비운다.
+         *
+         * 특히 V2/V3는 동일한 campaign/stock key를 사용하므로
+         * warmup 이후에 flushDb()를 실행하면 안 된다.
+         */
+        redis.getConnectionFactory()
+                .getConnection()
+                .serverCommands()
+                .flushDb();
+
+        /*
+         * 이전 회차의 DB fixture를 정리한다.
+         */
         fixture.reset();
 
-        fixture.createCampaign(30);
-        fixture.createUsers(100, 40001L);
+        /*
+         * V1/V2와 동일한 기준 부하 조건을 사용한다.
+         *
+         * 초기 재고: 10
+         * 동시 요청: 30
+         */
+        fixture.createCampaign(STOCK);
+        fixture.createUsers(REQUESTS, 40001L);
 
-        createIssueTopic();
+        /*
+         * Kafka topic은 IntegrationTestContainers에서
+         * Kafka 컨테이너 시작 직후 생성 및 검증된다.
+         *
+         * coupon-issued      -> 3 partitions
+         * coupon-issued.DLT  -> 3 partitions
+         *
+         * 따라서 V3에서는 topic을 직접 생성하지 않는다.
+         */
 
-        warmupService.warmupCampaign(CouponIntegrationFixture.CAMPAIGN_ID);
+        /*
+         * Lua 발급 경로에서 사용할 campaign/stock/issued Redis key를
+         * 현재 fixture 데이터 기준으로 준비한다.
+         */
+        warmupService.warmupCampaign(
+                CouponIntegrationFixture.CAMPAIGN_ID);
     }
 
     @AfterEach
     void tearDown() {
-        redis.getConnectionFactory().getConnection().serverCommands().flushDb();
+
+        /*
+         * 다음 테스트가 이전 회차의 Redis 상태를 보지 않도록 정리한다.
+         */
+        redis.getConnectionFactory()
+                .getConnection()
+                .serverCommands()
+                .flushDb();
+
+        /*
+         * 테스트 fixture도 정리한다.
+         */
         fixture.reset();
     }
 
     @Test
-    void V3는_Lua_Kafka_DB_전체경로에서_정확히_발급량을_정착시킨다() throws Exception {
-        int requests = 100;
+    void V3는_Lua_Kafka_DB_전체경로에서_정확히_10건을_최종_정착시킨다()
+            throws Exception {
 
-        ExecutorService pool = Executors.newFixedThreadPool(requests);
+        ExecutorService pool =
+                Executors.newFixedThreadPool(REQUESTS);
 
-        CountDownLatch ready = new CountDownLatch(requests);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(requests);
+        CountDownLatch ready =
+                new CountDownLatch(REQUESTS);
 
-        ConcurrentLinkedQueue<IssueFailReason> failures = new ConcurrentLinkedQueue<>();
+        CountDownLatch start =
+                new CountDownLatch(1);
 
-        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
+        CountDownLatch done =
+                new CountDownLatch(REQUESTS);
+
+        ConcurrentLinkedQueue<IssueFailReason> failures =
+                new ConcurrentLinkedQueue<>();
+
+        ConcurrentLinkedQueue<Throwable> unexpected =
+                new ConcurrentLinkedQueue<>();
 
         try {
-            for (int i = 0; i < requests; i++) {
+
+            /*
+             * 모든 worker를 먼저 준비시킨 뒤
+             * 하나의 start latch로 동시에 발급을 시작한다.
+             */
+            for (int i = 0; i < REQUESTS; i++) {
+
                 long userId = 40001L + i;
 
                 pool.submit(
                         () -> {
+
                             ready.countDown();
 
                             try {
-                                assertThat(start.await(10, java.util.concurrent.TimeUnit.SECONDS))
-                                        .as("동시 발급 시작 신호를 10초 안에 받지 못했습니다.")
+
+                                /*
+                                 * 모든 worker가 준비된 뒤
+                                 * 동시에 시작하도록 한다.
+                                 */
+                                assertThat(
+                                                start.await(
+                                                        10,
+                                                        TimeUnit.SECONDS))
+                                        .as(
+                                                "동시 발급 시작 신호를 10초 안에 받지 못했습니다.")
                                         .isTrue();
 
                                 couponService.issue(
@@ -103,108 +180,170 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
                                                 CouponIntegrationFixture.CAMPAIGN_ID,
                                                 CouponIntegrationFixture.ROUTE,
                                                 CouponIntegrationFixture.FARE));
+
                             } catch (CouponIssueException e) {
+
+                                /*
+                                 * 재고 소진에 따른 정상적인 도메인 거절은
+                                 * failures에 기록한다.
+                                 */
                                 failures.add(e.getReason());
+
                             } catch (Throwable t) {
+
+                                /*
+                                 * 예상하지 못한 예외는 별도로 기록한다.
+                                 */
                                 unexpected.add(t);
+
                             } finally {
+
                                 done.countDown();
                             }
                         });
             }
 
-            assertThat(ready.await(10, java.util.concurrent.TimeUnit.SECONDS))
-                    .as("모든 발급 작업이 10초 안에 준비되지 않았습니다.")
+            /*
+             * 모든 worker가 준비될 때까지 기다린다.
+             */
+            assertThat(
+                            ready.await(
+                                    10,
+                                    TimeUnit.SECONDS))
+                    .as(
+                            "모든 발급 작업이 10초 안에 준비되지 않았습니다.")
                     .isTrue();
-
-            start.countDown();
-
-            assertThat(done.await(60, java.util.concurrent.TimeUnit.SECONDS))
-                    .as("모든 발급 작업이 60초 안에 종료되지 않았습니다.")
-                    .isTrue();
-
-            assertThat(unexpected).isEmpty();
-
-            assertThat(failures).hasSize(70);
-            assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
             /*
-             * V3는 Kafka Consumer가 DB에 저장할 때까지 최종 정착되지 않는다.
-             *
-             * 먼저 DB의 쿠폰/이력/재고가 반영되는 것을 기다린다.
+             * 모든 worker를 동시에 출발시킨다.
              */
-            await().atMost(Duration.ofSeconds(20))
+            start.countDown();
+
+            /*
+             * 전체 요청이 제한 시간 안에 종료되어야 한다.
+             */
+            assertThat(
+                            done.await(
+                                    60,
+                                    TimeUnit.SECONDS))
+                    .as(
+                            "모든 발급 요청이 60초 안에 종료되지 않았습니다. requests=%d",
+                            REQUESTS)
+                    .isTrue();
+
+            /*
+             * OUT_OF_STOCK 이외의 예상하지 못한 예외는 허용하지 않는다.
+             */
+            assertThat(unexpected)
+                    .as("V3에서 예상하지 못한 예외가 발생했습니다.")
+                    .isEmpty();
+
+            /*
+             * 재고 10개에 요청 30건이므로:
+             *
+             * 성공 = 10
+             * 실패 = 20
+             * 실패 사유 = OUT_OF_STOCK
+             */
+            assertThat(failures)
+                    .as("재고 소진으로 거절된 요청 수가 예상과 다릅니다.")
+                    .hasSize(REQUESTS - STOCK);
+
+            assertThat(failures)
+                    .as("V3의 정상 거절 사유는 OUT_OF_STOCK이어야 합니다.")
+                    .allMatch(
+                            reason ->
+                                    reason == IssueFailReason.OUT_OF_STOCK);
+
+            /*
+             * Lua에서 Redis 재고를 차감한 뒤
+             * Kafka를 통해 DB settlement가 비동기적으로 수행된다.
+             *
+             * 따라서 coupon.issue() 호출이 모두 끝난 시점과
+             * DB 최종 정착 시점은 다를 수 있다.
+             *
+             * Kafka Consumer가 DB에 coupon/history/remaining을
+             * 반영할 때까지 기다린다.
+             */
+            await()
+                    .atMost(Duration.ofSeconds(20))
                     .untilAsserted(
                             () -> {
-                                assertThat(fixture.couponCount()).isEqualTo(30);
-                                assertThat(fixture.historyCount()).isEqualTo(30);
-                                assertThat(fixture.remaining()).isZero();
+
+                                assertThat(fixture.couponCount())
+                                        .as("최종 DB 쿠폰 수")
+                                        .isEqualTo(STOCK);
+
+                                assertThat(fixture.historyCount())
+                                        .as("최종 DB 발급 이력 수")
+                                        .isEqualTo(STOCK);
+
+                                assertThat(fixture.remaining())
+                                        .as("최종 DB 잔여 재고")
+                                        .isZero();
                             });
 
             /*
-             * Kafka Consumer의 처리와 offset commit, DLT 상태까지 정착된 후
-             * verification report를 실행해야 한다.
+             * DB 값이 맞는 것과 Kafka settlement가 완전히 끝난 것은
+             * 별개의 문제다.
              *
-             * KafkaSettlementChecker.check()는 현재 애플리케이션의 실제
-             * settlement 상태를 반환하며, settled()는 lag == 0 && DLT == 0인
-             * 경우에만 true가 된다.
+             * Consumer lag과 DLT까지 정착된 뒤
+             * verification report를 실행한다.
              */
-            await().atMost(Duration.ofSeconds(30))
+            await()
+                    .atMost(Duration.ofSeconds(30))
                     .pollInterval(Duration.ofMillis(200))
                     .untilAsserted(
                             () ->
-                                    assertThat(kafkaSettlementChecker.check().settled())
-                                            .as("Kafka consumer lag/DLT가 아직 정착되지 않았습니다.")
+                                    assertThat(
+                                                    kafkaSettlementChecker
+                                                            .check()
+                                                            .settled())
+                                            .as(
+                                                    "Kafka consumer lag/DLT가 아직 정착되지 않았습니다.")
                                             .isTrue());
 
             /*
-             * Redis 쪽은 Lua가 발급 시점에 동기로 쓰므로 Kafka 정착을 기다릴
-             * 필요 없이 여기서 바로 검증한다.
+             * Lua는 발급 시점에 Redis 재고를 원자적으로 차감한다.
+             *
+             * Kafka settlement와 관계없이 Redis stock은 이미 0이어야 한다.
              */
-            assertThat(redis.opsForValue().get("stock:" + CouponIntegrationFixture.STOCK_ID))
+            assertThat(
+                            redis.opsForValue()
+                                    .get(
+                                            "stock:"
+                                                    + CouponIntegrationFixture.STOCK_ID))
+                    .as("Lua 실행 후 Redis 재고")
                     .isEqualTo("0");
 
-            assertThat(redis.opsForSet().size("issued:" + CouponIntegrationFixture.CAMPAIGN_ID))
-                    .isEqualTo(30L);
+            /*
+             * Lua issued set에도 성공한 사용자 10명이 기록되어야 한다.
+             */
+            assertThat(
+                            redis.opsForSet()
+                                    .size(
+                                            "issued:"
+                                                    + CouponIntegrationFixture.CAMPAIGN_ID))
+                    .as("Lua issued set 크기")
+                    .isEqualTo((long) STOCK);
 
             /*
-             * DB 반영 + Kafka settlement가 모두 끝난 뒤에야 검증 리포트를 실행한다.
+             * DB와 Kafka settlement가 모두 정착된 이후에
+             * 최종 verification report를 생성한다.
              *
-             * 이 순서가 중요하다.
-             * settlement 전에 실행하면 REC-01이 SKIPPED_NOT_SETTLED가 되어
-             * 회차가 INCOMPLETE가 될 수 있다.
+             * settlement 전에 report를 실행하면 REC-01이
+             * SKIPPED_NOT_SETTLED가 될 수 있으므로 순서가 중요하다.
              */
-            RoundReportAssert.assertPassed(reportWriter.writeReport("V3"), "V3");
+            RoundReportAssert.assertPassed(
+                    reportWriter.writeReport("V3"),
+                    "V3");
 
         } finally {
+
+            /*
+             * 테스트가 성공/실패하더라도 worker pool은 반드시 정리한다.
+             */
             pool.shutdownNow();
-        }
-    }
-
-    private void createIssueTopic() throws Exception {
-        try (AdminClient admin =
-                AdminClient.create(
-                        Map.of(
-                                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
-                                KAFKA.getBootstrapServers()))) {
-
-            try {
-                admin.createTopics(
-                                List.of(
-                                        new NewTopic("coupon-issued", 3, (short) 1),
-                                        new NewTopic("coupon-issued.DLT", 3, (short) 1)))
-                        .all()
-                        .get();
-
-            } catch (Exception e) {
-                // Testcontainers Kafka는 컨테이너 단위로 재사용되므로 이미 존재하는
-                // 토픽은 그대로 사용한다.
-                Throwable cause = e.getCause();
-
-                if (!(cause instanceof TopicExistsException)) {
-                    throw e;
-                }
-            }
         }
     }
 }

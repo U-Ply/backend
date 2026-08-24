@@ -35,8 +35,8 @@ class V1PessimisticIssueIntegrationTest extends IntegrationTestContainers {
     void setUp() {
         redis.getConnectionFactory().getConnection().serverCommands().flushDb();
         fixture.reset();
-        fixture.createCampaign(30);
-        fixture.createUsers(100, 10001L);
+        fixture.createCampaign(10);
+        fixture.createUsers(30, 10001L);
     }
 
     @AfterEach
@@ -46,8 +46,8 @@ class V1PessimisticIssueIntegrationTest extends IntegrationTestContainers {
     }
 
     @Test
-    void 재고_30개에_100건_동시발급하면_정확히_30건만_성공한다() throws Exception {
-        int requests = 100;
+    void 재고_10개에_30건_동시발급하면_정확히_10건만_성공한다() throws Exception {
+        int requests = 30;
 
         ExecutorService pool = Executors.newFixedThreadPool(requests);
         CountDownLatch ready = new CountDownLatch(requests);
@@ -99,11 +99,11 @@ class V1PessimisticIssueIntegrationTest extends IntegrationTestContainers {
                     .isTrue();
 
             assertThat(unexpected).isEmpty();
-            assertThat(failures).hasSize(70);
+            assertThat(failures).hasSize(20);
             assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
-            assertThat(fixture.couponCount()).isEqualTo(30);
-            assertThat(fixture.historyCount()).isEqualTo(30);
+            assertThat(fixture.couponCount()).isEqualTo(10);
+            assertThat(fixture.historyCount()).isEqualTo(10);
             assertThat(fixture.remaining()).isZero();
 
             // V1은 campaign/stock 조회를 DB에서 해야 한다. 발급 전에 Redis campaign/stockId

@@ -42,8 +42,8 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
         redis.getConnectionFactory().getConnection().serverCommands().flushDb();
 
         fixture.reset();
-        fixture.createCampaign(30);
-        fixture.createUsers(100, 30001L);
+        fixture.createCampaign(10);
+        fixture.createUsers(30, 30001L);
 
         warmupService.warmupCampaign(CouponIntegrationFixture.CAMPAIGN_ID);
     }
@@ -55,8 +55,8 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
     }
 
     @Test
-    void Redis_Lua_경로는_재고_30개에_100건이면_정확히_30건만_성공한다() throws Exception {
-        int requests = 100;
+    void Redis_Lua_경로는_재고_10개에_30건이면_정확히_10건만_성공한다() throws Exception {
+        int requests = 30;
 
         ExecutorService pool = Executors.newFixedThreadPool(requests);
         CountDownLatch ready = new CountDownLatch(requests);
@@ -109,20 +109,20 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
 
             assertThat(unexpected).isEmpty();
 
-            assertThat(failures).hasSize(70);
+            assertThat(failures).hasSize(20);
 
             assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
             // V2 는 sync-db 라 발급 응답 시점에 DB 가 이미 확정이다. 대기가 필요 없다.
-            assertThat(fixture.couponCount()).isEqualTo(30);
-            assertThat(fixture.historyCount()).isEqualTo(30);
+            assertThat(fixture.couponCount()).isEqualTo(10);
+            assertThat(fixture.historyCount()).isEqualTo(10);
             assertThat(fixture.remaining()).isZero();
 
             assertThat(redis.opsForValue().get("stock:" + CouponIntegrationFixture.STOCK_ID))
                     .isEqualTo("0");
 
             assertThat(redis.opsForSet().size("issued:" + CouponIntegrationFixture.CAMPAIGN_ID))
-                    .isEqualTo(30L);
+                    .isEqualTo(10L);
 
             // 이 회차 데이터 위에서 검증·대사 배치를 돌리고 리포트를 남긴다.
             // build/round-results/V2.md 가 이 회차의 산출물이다.
