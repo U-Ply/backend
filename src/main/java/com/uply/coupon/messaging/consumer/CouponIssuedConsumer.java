@@ -26,7 +26,7 @@ public class CouponIssuedConsumer {
     @KafkaListener(
             topics = "coupon-issued",
             containerFactory = "kafkaListenerContainerFactory",
-            autoStartup = "${coupon.kafka.consumer.enabled:true}")
+            autoStartup = "${coupon.kafka.consumer.enabled:false}")
     public void consume(ConsumerRecord<String, String> record) throws JsonProcessingException {
         CouponIssuedEvent event = objectMapper.readValue(record.value(), CouponIssuedEvent.class);
         validatePartitionKey(record.key(), event.couponId());

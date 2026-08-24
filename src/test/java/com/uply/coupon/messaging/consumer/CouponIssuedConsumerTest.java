@@ -1,5 +1,6 @@
 package com.uply.coupon.messaging.consumer;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.kafka.annotation.KafkaListener;
 
 @ExtendWith(MockitoExtension.class)
 class CouponIssuedConsumerTest {
@@ -72,5 +74,16 @@ class CouponIssuedConsumerTest {
 
         assertThatThrownBy(() -> consumer.consume(record))
                 .isInstanceOf(com.fasterxml.jackson.core.JsonProcessingException.class);
+    }
+
+    // 저장 전략을 지정하지 않은 일반 실행에서는 과거 Kafka 이벤트를 소비하지 않는지 확인
+    @Test
+    void listenerIsDisabledByDefault() throws NoSuchMethodException {
+        KafkaListener listener =
+                CouponIssuedConsumer.class
+                        .getDeclaredMethod("consume", ConsumerRecord.class)
+                        .getAnnotation(KafkaListener.class);
+
+        assertThat(listener.autoStartup()).isEqualTo("${coupon.kafka.consumer.enabled:false}");
     }
 }
