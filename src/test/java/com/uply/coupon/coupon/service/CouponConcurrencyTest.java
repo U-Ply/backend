@@ -38,11 +38,13 @@ import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 class CouponConcurrencyTest {
 
     @Nested
+    @ActiveProfiles("test")
     @SpringBootTest(properties = {"coupon.save.strategy=sync-db"})
     @DisplayName("1. 동기 DB 저장 전략 (sync-db) 동시성 테스트")
     class SyncDbStrategyConcurrencyTest {
@@ -182,6 +184,7 @@ class CouponConcurrencyTest {
     }
 
     @Nested
+    @ActiveProfiles("test")
     @SpringBootTest(properties = {"coupon.save.strategy=kafka"})
     @Transactional
     @DisplayName("2. 카프카 비동기 저장 전략 (kafka) 동시성 테스트")
