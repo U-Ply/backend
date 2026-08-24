@@ -62,10 +62,8 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
 
         // 발급 전에 Redis 캠페인·재고 키를 만들지 않았는데 성공했다.
         // NO_LOCK 경로가 캠페인 창과 stockId 를 MySQL 에서 읽는다는 증거다.
-        assertThat(redis.keys("campaign:" + CouponIntegrationFixture.CAMPAIGN_ID + ":*"))
-                .isEmpty();
-        assertThat(redis.keys("stockId:" + CouponIntegrationFixture.CAMPAIGN_ID + ":*"))
-                .isEmpty();
+        assertThat(redis.keys("campaign:" + CouponIntegrationFixture.CAMPAIGN_ID + ":*")).isEmpty();
+        assertThat(redis.keys("stockId:" + CouponIntegrationFixture.CAMPAIGN_ID + ":*")).isEmpty();
     }
 
     @Test
@@ -83,18 +81,14 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
      *
      * <p><b>이 테스트는 초과 발급을 단언하지 않는다.</b> 설계서가 그렇게 정하고 있다.
      *
-     * <p>5.4 는 V0 에서 "성공 건수와 초기 재고의 <b>불일치</b>" 를 예상한다고만 적는다.
-     * 초과인지 미달인지는 정하지 않는다. 실제로 이 환경에서는 미달이 나온다 —
-     * coupons 의 FK 가 재고 행에 공유 잠금을 걸고 그 뒤 UPDATE 가 배타 잠금으로 올라가려다
-     * 교착이 나서, 잃어버린 갱신이 커밋되기 전에 트랜잭션이 죽는다.
-     * 통제 부재가 초과 발급이 아니라 가용성 붕괴로 나타나는 것이다.
+     * <p>5.4 는 V0 에서 "성공 건수와 초기 재고의 <b>불일치</b>" 를 예상한다고만 적는다. 초과인지 미달인지는 정하지 않는다. 실제로 이 환경에서는 미달이
+     * 나온다 — coupons 의 FK 가 재고 행에 공유 잠금을 걸고 그 뒤 UPDATE 가 배타 잠금으로 올라가려다 교착이 나서, 잃어버린 갱신이 커밋되기 전에
+     * 트랜잭션이 죽는다. 통제 부재가 초과 발급이 아니라 가용성 붕괴로 나타나는 것이다.
      *
-     * <p>그리고 5.4 는 "스레드 스케줄링에 따라 매 실행에서 동일하게 발생한다고 보장할 수 없으므로
-     * 반복 실행 결과를 기록한다" 고 못 박는다. 재현을 단언하면 문서가 보장하지 않는 것을 게이트로
-     * 쓰는 셈이 된다.
+     * <p>그리고 5.4 는 "스레드 스케줄링에 따라 매 실행에서 동일하게 발생한다고 보장할 수 없으므로 반복 실행 결과를 기록한다" 고 못 박는다. 재현을 단언하면 문서가
+     * 보장하지 않는 것을 게이트로 쓰는 셈이 된다.
      *
-     * <p>그래서 여기서 단언하는 것은 5.4 가 "NoLock 에서도 별도로 확인한다" 고 나열한 네 항목뿐이고,
-     * 정합성 수치는 판정이 아니라 기록으로 남긴다.
+     * <p>그래서 여기서 단언하는 것은 5.4 가 "NoLock 에서도 별도로 확인한다" 고 나열한 네 항목뿐이고, 정합성 수치는 판정이 아니라 기록으로 남긴다.
      */
     @Test
     void V0_기준선_동시발급_결과를_기록한다() throws Exception {
@@ -131,20 +125,14 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
         //     DB 오류(교착)는 6.6 에 따라 V0 에서 정상이므로 위에 수치로만 남긴다.
 
         // (3) 캠페인별 1인 1매 UNIQUE 제약이 동작하는가
-        assertThat(duplicateUserCount())
-                .as("같은 캠페인에서 한 사용자가 두 장 이상 받았다")
-                .isZero();
+        assertThat(duplicateUserCount()).as("같은 캠페인에서 한 사용자가 두 장 이상 받았다").isZero();
 
         // (4) 쿠폰과 이력 저장 결과가 일치하는가
-        assertThat(history)
-                .as("쿠폰 수와 이력 수가 어긋났다")
-                .isEqualTo(issued);
+        assertThat(history).as("쿠폰 수와 이력 수가 어긋났다").isEqualTo(issued);
 
         // 빈 회차는 아무것도 재현하지 못한 것이다.
         // 이건 스케줄링과 무관하게 성립해야 한다.
-        assertThat(issued)
-                .as("한 장도 발급되지 않았다. 부하가 걸리지 않았다는 뜻이다")
-                .isPositive();
+        assertThat(issued).as("한 장도 발급되지 않았다. 부하가 걸리지 않았다는 뜻이다").isPositive();
 
         // 리포트는 남긴다.
         // V0 의 위반 수는 판정이 아니라 §11 비교표의 기록 항목이다.
@@ -157,16 +145,14 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
      * 한 번의 동시 발급 결과.
      *
      * @param outOfStock 재고 소진으로 정상 거절된 수
-     * @param dbConflicts DB 교착·락 획득 실패로 죽은 수.
-     *     test-plan 6.6 의 CONCURRENCY_CONFLICT 에 해당한다
+     * @param dbConflicts DB 교착·락 획득 실패로 죽은 수. test-plan 6.6 의 CONCURRENCY_CONFLICT 에 해당한다
      */
     private record BurstResult(int outOfStock, int dbConflicts) {}
 
     /**
      * BASELINE_REQUESTS 건을 같은 순간에 출발시킨다.
      *
-     * <p>래치가 없으면 요청이 흩어져 경합 자체가 약해질 수 있으므로,
-     * 모든 작업이 준비된 뒤 동시에 시작한다.
+     * <p>래치가 없으면 요청이 흩어져 경합 자체가 약해질 수 있으므로, 모든 작업이 준비된 뒤 동시에 시작한다.
      */
     private BurstResult burst() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(BASELINE_REQUESTS);
@@ -175,14 +161,11 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(BASELINE_REQUESTS);
 
-        ConcurrentLinkedQueue<IssueFailReason> issueFailures =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<IssueFailReason> issueFailures = new ConcurrentLinkedQueue<>();
 
-        ConcurrentLinkedQueue<DataAccessException> dbConflicts =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<DataAccessException> dbConflicts = new ConcurrentLinkedQueue<>();
 
-        ConcurrentLinkedQueue<Throwable> unexpected =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
 
         try {
             for (int i = 0; i < BASELINE_REQUESTS; i++) {
@@ -198,8 +181,7 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
                                         .isTrue();
 
                                 couponService.issue(
-                                        "integration-v0-base-" + userId,
-                                        request(userId));
+                                        "integration-v0-base-" + userId, request(userId));
 
                             } catch (CouponIssueException e) {
                                 issueFailures.add(e.getReason());
@@ -238,16 +220,11 @@ class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
 
             // 전체 요청도 제한 시간 안에 종료되어야 한다.
             assertThat(done.await(BASELINE_TIMEOUT_SEC, TimeUnit.SECONDS))
-                    .as(
-                            "%d 초 안에 %d 건이 종료되지 않았다",
-                            BASELINE_TIMEOUT_SEC,
-                            BASELINE_REQUESTS)
+                    .as("%d 초 안에 %d 건이 종료되지 않았다", BASELINE_TIMEOUT_SEC, BASELINE_REQUESTS)
                     .isTrue();
 
             // 도메인 거절이나 DB 동시성 오류가 아닌 예상 밖의 예외만 실패로 처리한다.
-            assertThat(unexpected)
-                    .as("V0에서 예상 범위 밖의 예외")
-                    .isEmpty();
+            assertThat(unexpected).as("V0에서 예상 범위 밖의 예외").isEmpty();
 
             int outOfStock =
                     (int)

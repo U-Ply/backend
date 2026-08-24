@@ -30,33 +30,23 @@ import org.springframework.data.redis.core.StringRedisTemplate;
         })
 class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
 
-    /**
-     * V3 초기 재고.
-     */
+    /** V3 초기 재고. */
     private static final int STOCK = 10;
 
-    /**
-     * V3 동시 발급 요청 수.
-     */
+    /** V3 동시 발급 요청 수. */
     private static final int REQUESTS = 30;
 
-    @Autowired
-    CouponService couponService;
+    @Autowired CouponService couponService;
 
-    @Autowired
-    CouponIntegrationFixture fixture;
+    @Autowired CouponIntegrationFixture fixture;
 
-    @Autowired
-    CampaignCacheWarmupService warmupService;
+    @Autowired CampaignCacheWarmupService warmupService;
 
-    @Autowired
-    StringRedisTemplate redis;
+    @Autowired StringRedisTemplate redis;
 
-    @Autowired
-    RoundReportWriter reportWriter;
+    @Autowired RoundReportWriter reportWriter;
 
-    @Autowired
-    KafkaSettlementChecker kafkaSettlementChecker;
+    @Autowired KafkaSettlementChecker kafkaSettlementChecker;
 
     @BeforeEach
     void setUp() {
@@ -68,10 +58,7 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
          * 특히 V2/V3는 동일한 campaign/stock key를 사용하므로
          * warmup 이후에 flushDb()를 실행하면 안 된다.
          */
-        redis.getConnectionFactory()
-                .getConnection()
-                .serverCommands()
-                .flushDb();
+        redis.getConnectionFactory().getConnection().serverCommands().flushDb();
 
         /*
          * 이전 회차의 DB fixture를 정리한다.
@@ -101,8 +88,7 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
          * Lua 발급 경로에서 사용할 campaign/stock/issued Redis key를
          * 현재 fixture 데이터 기준으로 준비한다.
          */
-        warmupService.warmupCampaign(
-                CouponIntegrationFixture.CAMPAIGN_ID);
+        warmupService.warmupCampaign(CouponIntegrationFixture.CAMPAIGN_ID);
     }
 
     @AfterEach
@@ -111,10 +97,7 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
         /*
          * 다음 테스트가 이전 회차의 Redis 상태를 보지 않도록 정리한다.
          */
-        redis.getConnectionFactory()
-                .getConnection()
-                .serverCommands()
-                .flushDb();
+        redis.getConnectionFactory().getConnection().serverCommands().flushDb();
 
         /*
          * 테스트 fixture도 정리한다.
@@ -123,26 +106,19 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
     }
 
     @Test
-    void V3는_Lua_Kafka_DB_전체경로에서_정확히_10건을_최종_정착시킨다()
-            throws Exception {
+    void V3는_Lua_Kafka_DB_전체경로에서_정확히_10건을_최종_정착시킨다() throws Exception {
 
-        ExecutorService pool =
-                Executors.newFixedThreadPool(REQUESTS);
+        ExecutorService pool = Executors.newFixedThreadPool(REQUESTS);
 
-        CountDownLatch ready =
-                new CountDownLatch(REQUESTS);
+        CountDownLatch ready = new CountDownLatch(REQUESTS);
 
-        CountDownLatch start =
-                new CountDownLatch(1);
+        CountDownLatch start = new CountDownLatch(1);
 
-        CountDownLatch done =
-                new CountDownLatch(REQUESTS);
+        CountDownLatch done = new CountDownLatch(REQUESTS);
 
-        ConcurrentLinkedQueue<IssueFailReason> failures =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<IssueFailReason> failures = new ConcurrentLinkedQueue<>();
 
-        ConcurrentLinkedQueue<Throwable> unexpected =
-                new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
 
         try {
 
@@ -156,7 +132,6 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
 
                 pool.submit(
                         () -> {
-
                             ready.countDown();
 
                             try {
@@ -165,12 +140,8 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
                                  * 모든 worker가 준비된 뒤
                                  * 동시에 시작하도록 한다.
                                  */
-                                assertThat(
-                                                start.await(
-                                                        10,
-                                                        TimeUnit.SECONDS))
-                                        .as(
-                                                "동시 발급 시작 신호를 10초 안에 받지 못했습니다.")
+                                assertThat(start.await(10, TimeUnit.SECONDS))
+                                        .as("동시 발급 시작 신호를 10초 안에 받지 못했습니다.")
                                         .isTrue();
 
                                 couponService.issue(
@@ -206,12 +177,8 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
             /*
              * 모든 worker가 준비될 때까지 기다린다.
              */
-            assertThat(
-                            ready.await(
-                                    10,
-                                    TimeUnit.SECONDS))
-                    .as(
-                            "모든 발급 작업이 10초 안에 준비되지 않았습니다.")
+            assertThat(ready.await(10, TimeUnit.SECONDS))
+                    .as("모든 발급 작업이 10초 안에 준비되지 않았습니다.")
                     .isTrue();
 
             /*
@@ -222,21 +189,14 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
             /*
              * 전체 요청이 제한 시간 안에 종료되어야 한다.
              */
-            assertThat(
-                            done.await(
-                                    60,
-                                    TimeUnit.SECONDS))
-                    .as(
-                            "모든 발급 요청이 60초 안에 종료되지 않았습니다. requests=%d",
-                            REQUESTS)
+            assertThat(done.await(60, TimeUnit.SECONDS))
+                    .as("모든 발급 요청이 60초 안에 종료되지 않았습니다. requests=%d", REQUESTS)
                     .isTrue();
 
             /*
              * OUT_OF_STOCK 이외의 예상하지 못한 예외는 허용하지 않는다.
              */
-            assertThat(unexpected)
-                    .as("V3에서 예상하지 못한 예외가 발생했습니다.")
-                    .isEmpty();
+            assertThat(unexpected).as("V3에서 예상하지 못한 예외가 발생했습니다.").isEmpty();
 
             /*
              * 재고 10개에 요청 30건이므로:
@@ -245,15 +205,11 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * 실패 = 20
              * 실패 사유 = OUT_OF_STOCK
              */
-            assertThat(failures)
-                    .as("재고 소진으로 거절된 요청 수가 예상과 다릅니다.")
-                    .hasSize(REQUESTS - STOCK);
+            assertThat(failures).as("재고 소진으로 거절된 요청 수가 예상과 다릅니다.").hasSize(REQUESTS - STOCK);
 
             assertThat(failures)
                     .as("V3의 정상 거절 사유는 OUT_OF_STOCK이어야 합니다.")
-                    .allMatch(
-                            reason ->
-                                    reason == IssueFailReason.OUT_OF_STOCK);
+                    .allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
 
             /*
              * Lua에서 Redis 재고를 차감한 뒤
@@ -265,22 +221,16 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * Kafka Consumer가 DB에 coupon/history/remaining을
              * 반영할 때까지 기다린다.
              */
-            await()
-                    .atMost(Duration.ofSeconds(20))
+            await().atMost(Duration.ofSeconds(20))
                     .untilAsserted(
                             () -> {
-
-                                assertThat(fixture.couponCount())
-                                        .as("최종 DB 쿠폰 수")
-                                        .isEqualTo(STOCK);
+                                assertThat(fixture.couponCount()).as("최종 DB 쿠폰 수").isEqualTo(STOCK);
 
                                 assertThat(fixture.historyCount())
                                         .as("최종 DB 발급 이력 수")
                                         .isEqualTo(STOCK);
 
-                                assertThat(fixture.remaining())
-                                        .as("최종 DB 잔여 재고")
-                                        .isZero();
+                                assertThat(fixture.remaining()).as("최종 DB 잔여 재고").isZero();
                             });
 
             /*
@@ -290,17 +240,12 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * Consumer lag과 DLT까지 정착된 뒤
              * verification report를 실행한다.
              */
-            await()
-                    .atMost(Duration.ofSeconds(30))
+            await().atMost(Duration.ofSeconds(30))
                     .pollInterval(Duration.ofMillis(200))
                     .untilAsserted(
                             () ->
-                                    assertThat(
-                                                    kafkaSettlementChecker
-                                                            .check()
-                                                            .settled())
-                                            .as(
-                                                    "Kafka consumer lag/DLT가 아직 정착되지 않았습니다.")
+                                    assertThat(kafkaSettlementChecker.check().settled())
+                                            .as("Kafka consumer lag/DLT가 아직 정착되지 않았습니다.")
                                             .isTrue());
 
             /*
@@ -308,22 +253,14 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              *
              * Kafka settlement와 관계없이 Redis stock은 이미 0이어야 한다.
              */
-            assertThat(
-                            redis.opsForValue()
-                                    .get(
-                                            "stock:"
-                                                    + CouponIntegrationFixture.STOCK_ID))
+            assertThat(redis.opsForValue().get("stock:" + CouponIntegrationFixture.STOCK_ID))
                     .as("Lua 실행 후 Redis 재고")
                     .isEqualTo("0");
 
             /*
              * Lua issued set에도 성공한 사용자 10명이 기록되어야 한다.
              */
-            assertThat(
-                            redis.opsForSet()
-                                    .size(
-                                            "issued:"
-                                                    + CouponIntegrationFixture.CAMPAIGN_ID))
+            assertThat(redis.opsForSet().size("issued:" + CouponIntegrationFixture.CAMPAIGN_ID))
                     .as("Lua issued set 크기")
                     .isEqualTo((long) STOCK);
 
@@ -334,9 +271,7 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
              * settlement 전에 report를 실행하면 REC-01이
              * SKIPPED_NOT_SETTLED가 될 수 있으므로 순서가 중요하다.
              */
-            RoundReportAssert.assertPassed(
-                    reportWriter.writeReport("V3"),
-                    "V3");
+            RoundReportAssert.assertPassed(reportWriter.writeReport("V3"), "V3");
 
         } finally {
 
