@@ -15,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.annotation.Transactional;
 
 /** CouponSaveStrategy 전략 中 1 : MySql 동기 저장 */
@@ -62,12 +63,12 @@ public class SyncMysqlSaveStrategy implements CouponSaveStrategy {
             // 재고 부족은 그대로 재전파
             throw e;
         } catch (PessimisticLockingFailureException e) {
-            // 락 대기 한계 초과. CannotAcquireLockException(MySQL lock wait timeout)도
-            // 이 타입의 하위라 함께 걸린다. k6가 coupon_lock_timeout으로 따로 집계하고
-            // 503 재시도 가능으로 응답해야 하므로 DB 저장 실패와 섞지 않는다.
+            // 락 대기 한계 초과
             throw new CouponIssueException(IssueFailReason.LOCK_TIMEOUT, e);
         } catch (DataIntegrityViolationException e) {
             throw new CouponIssueException(classifyIntegrityViolation(e), e);
+        } catch (CannotCreateTransactionException e) {
+            throw new CouponIssueException(IssueFailReason.CONNECTION_UNAVAILABLE, e);
         } catch (Exception e) {
             // Connection 고갈 등 시스템/인프라 예외 (원인 e 포함)
             throw new CouponIssueException(IssueFailReason.DB_SAVE_FAILED, e);

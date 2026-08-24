@@ -24,6 +24,7 @@ import org.apache.kafka.common.errors.RetriableException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 /**
  * CouponSaveStrategy 전략 中 1 : Kafka 이벤트 발행
@@ -141,6 +142,9 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
     private void markPending(Long couponId) {
         try {
             progressRepository.markPending(couponId);
+        } catch (CannotCreateTransactionException e) {
+            log.warn("[발급 진행 상태 저장 실패 - 커넥션 풀 고갈] couponId: {}", couponId, e);
+            throw new CouponIssueException(IssueFailReason.CONNECTION_UNAVAILABLE, e);
         } catch (RuntimeException e) {
             log.error("[발급 진행 상태 저장 실패] couponId: {}", couponId, e);
             throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);

@@ -72,6 +72,13 @@ public class GlobalExceptionHandler {
                             HttpStatus.SERVICE_UNAVAILABLE, // 불확실한 실패 -> 503
                             "SAVE_RESULT_UNKNOWN",
                             "쿠폰 발급 처리 결과가 불확실합니다. 잠시 후 발급 내역을 확인해 주세요.");
+            case CONNECTION_UNAVAILABLE -> {
+                connectionUnavailableCounter.increment();
+                yield response(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "CONNECTION_UNAVAILABLE",
+                        "일시적으로 요청을 처리할 수 없습니다.");
+            }
             case SYSTEM_ERROR ->
                     response(
                             HttpStatus.INTERNAL_SERVER_ERROR,

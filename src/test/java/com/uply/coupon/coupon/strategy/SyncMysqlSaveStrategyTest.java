@@ -28,6 +28,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 @ExtendWith(MockitoExtension.class)
 class SyncMysqlSaveStrategyTest {
@@ -250,7 +251,7 @@ class SyncMysqlSaveStrategyTest {
     }
 
     @Test
-    @DisplayName("커넥션 고갈 등 기타 인프라 예외는 DB_SAVE_FAILED로 변환되며 원인 예외가 유지된다")
+    @DisplayName("기타 DAO 자원 실패는 DB_SAVE_FAILED로 변환되며 원인 예외가 유지된다")
     void save_GeneralException_ThrowsDbSaveFailed() {
         // given
         Long couponId = 1000L;
@@ -277,5 +278,37 @@ class SyncMysqlSaveStrategyTest {
                 .hasCauseInstanceOf(DataAccessResourceFailureException.class)
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.DB_SAVE_FAILED);
+    }
+
+    @Test
+    @DisplayName("트랜잭션 시작 단계의 커넥션 풀 획득 실패는 CONNECTION_UNAVAILABLE로 변환된다")
+    void save_CannotCreateTransactionException_ThrowsConnectionUnavailable() {
+        // given
+        Long couponId = 1000L;
+        Long userId = 100L;
+        Long campaignId = 1L;
+        Long stockId = 10L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(campaignStockRepository.decreaseRemainingStockIfAvailable(stockId, campaignId))
+                .willThrow(
+                        new CannotCreateTransactionException(
+                                "Could not open JPA EntityManager for transaction"));
+
+        // when & then
+        assertThatThrownBy(
+                        () ->
+                                syncMysqlSaveStrategy.save(
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        issuedAt,
+                                        expireAt))
+                .isInstanceOf(CouponIssueException.class)
+                .hasCauseInstanceOf(CannotCreateTransactionException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.CONNECTION_UNAVAILABLE);
     }
 }

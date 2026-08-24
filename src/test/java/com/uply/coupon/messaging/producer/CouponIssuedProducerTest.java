@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -33,6 +34,7 @@ import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 @ExtendWith(MockitoExtension.class)
 class CouponIssuedProducerTest {
@@ -323,5 +325,41 @@ class CouponIssuedProducerTest {
                         .count();
 
         assertThat(count).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("markPending 단계의 커넥션 풀 획득 실패는 CONNECTION_UNAVAILABLE로 변환되고 Kafka는 발행되지 않는다")
+    void save_MarkPendingCannotCreateTransactionException_ThrowsConnectionUnavailable() {
+        // given
+        Long couponId = 1000L;
+        Long userId = 100L;
+        Long campaignId = 1L;
+        Long stockId = 10L;
+        String idempotencyKey = "idempotency-key-123";
+
+        willThrow(
+                        new CannotCreateTransactionException(
+                                "Could not open JPA EntityManager for transaction"))
+                .given(progressRepository)
+                .markPending(couponId);
+
+        // when & then
+        assertThatThrownBy(
+                        () ->
+                                couponIssuedProducer.save(
+                                        couponId,
+                                        userId,
+                                        campaignId,
+                                        stockId,
+                                        idempotencyKey,
+                                        issuedAt,
+                                        expireAt))
+                .isInstanceOf(CouponIssueException.class)
+                .hasCauseInstanceOf(CannotCreateTransactionException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.CONNECTION_UNAVAILABLE);
+
+        verify(kafkaTemplate, never())
+                .send(any(String.class), any(String.class), any(String.class));
     }
 }
