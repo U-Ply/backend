@@ -9,10 +9,14 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import com.uply.coupon.campaign.domain.Campaign;
+import com.uply.coupon.campaign.repository.CampaignRepository;
+import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
@@ -23,6 +27,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -44,6 +49,10 @@ class LuaScriptIssueStrategyUnitTest {
     @Mock private CouponIdGenerator couponIdGenerator;
 
     @Mock private CouponSaveStrategy couponSaveStrategy;
+
+    @Mock private CampaignRepository campaignRepository;
+
+    @Mock private CampaignCacheWarmupService campaignCacheWarmupService;
 
     // 보상 지표 수집용. Counter.builder().register()가 실제 동작해야 하므로 순수 Mock을 쓸 수 없다.
     @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
@@ -67,10 +76,6 @@ class LuaScriptIssueStrategyUnitTest {
         issuedAtEpochMillis = 1770000000000L;
         issuedAt =
                 LocalDateTime.ofInstant(Instant.ofEpochMilli(issuedAtEpochMillis), ZoneOffset.UTC);
-
-        // expireAt 조회는 Lua 실행보다 먼저 일어나므로 실패 시나리오에서도 스텁이 필요하다.
-        given(redisTemplate.opsForValue().get("campaign:1:expireAt"))
-                .willReturn(String.valueOf(expireAtEpochMillis));
 
         luaScriptIssueStrategy.init();
     }
@@ -152,6 +157,80 @@ class LuaScriptIssueStrategyUnitTest {
         assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
 
         verify(couponSaveStrategy, never()).save(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Lua Script 결과가 -3(미웜업)인 경우 DB 조회, 재웜업, Lua Script 1회 재시도를 실행한다")
+    void issue_NotWarmedUp_ExecutesDbLookupWarmupAndRetry() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        Campaign campaign = mock(Campaign.class);
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(campaignRepository.findById(campaignId)).willReturn(Optional.of(campaign));
+
+        // 1차 실행: -3 반환, 2차 재시도 실행: -2 반환 (재고 소진 등의 실패 상황 가정)
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-3L, issuedAtEpochMillis, expireAtEpochMillis))
+                .willReturn(List.of(-2L, issuedAtEpochMillis, expireAtEpochMillis));
+
+        // when
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+
+        // then
+        assertThat(result.success()).isFalse();
+        assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
+
+        // DB 조회, 웜업 서비스 호출, Redis Script 2회 실행 검증
+        verify(campaignRepository, times(1)).findById(campaignId);
+        verify(campaignCacheWarmupService, times(1)).warmupCampaign(campaignId);
+        verify(redisTemplate, times(2))
+                .execute(any(DefaultRedisScript.class), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName("캐시 미스(-3) 시 DB 존재 확인 후 재웜업 및 1회 재시도가 성공(1)하면 정상 발급 로직으로 복구된다")
+    void issue_NotWarmedUp_RecoversOnSuccessfulRetry() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        Campaign campaign = mock(Campaign.class);
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(campaignRepository.findById(campaignId)).willReturn(Optional.of(campaign));
+
+        // 1차 실행: -3 반환, 2차 재시도 실행: 1L 반환 (재웜업 후 성공)
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-3L, issuedAtEpochMillis, expireAtEpochMillis))
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
+
+        // when
+        IssueResult result =
+                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
+
+        // then
+        assertThat(result.success()).isTrue();
+        assertThat(result.couponId()).isEqualTo(couponId);
+
+        // DB 조회 및 재웜업 호출 검증
+        verify(campaignRepository, times(1)).findById(campaignId);
+        verify(campaignCacheWarmupService, times(1)).warmupCampaign(campaignId);
+        verify(redisTemplate, times(2))
+                .execute(any(DefaultRedisScript.class), anyList(), anyString());
+
+        // 정상 복구 후 저장 전략 save() 호출 검증
+        verify(couponSaveStrategy, times(1))
+                .save(couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
     }
 
     @Test

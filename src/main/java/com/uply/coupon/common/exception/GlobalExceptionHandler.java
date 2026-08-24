@@ -67,6 +67,11 @@ public class GlobalExceptionHandler {
                             HttpStatus.INTERNAL_SERVER_ERROR,
                             "KAFKA_PUBLISH_FAILED",
                             "이벤트 메시지 발행에 실패했습니다.");
+            case CAMPAIGN_NOT_CACHED ->
+                    response(
+                            HttpStatus.SERVICE_UNAVAILABLE,
+                            "CAMPAIGN_NOT_CACHED",
+                            "캠페인 발급 준비가 완료되지 않았습니다. 잠시 후 다시 시도해 주세요.");
             case SAVE_RESULT_UNKNOWN ->
                     response(
                             HttpStatus.SERVICE_UNAVAILABLE, // 불확실한 실패 -> 503
