@@ -4,9 +4,11 @@ import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.campaign.repository.CampaignWindow;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponHistory;
+import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.LocalDateTime;
@@ -56,14 +58,35 @@ public class NoLockIssueStrategy implements CouponIssueStrategy {
                         .findById(stockId)
                         .orElseThrow(
                                 () -> new IllegalStateException("존재하지 않는 stockId: " + stockId));
-        // 멱등성 확인
+
+        // 멱등성 확인 - 같은 키라도 캠페인/유저가 다르면 재사용으로 보고 거부한다
         Optional<CouponHistory> processed =
                 couponHistoryRepository.findByIdempotencyKey(idempotencyKey);
         if (processed.isPresent()) {
+            CouponHistory history = processed.get();
+            Coupon existingCoupon =
+                    couponRepository
+                            .findById(processed.get().getCouponId())
+                            .orElseThrow(
+                                    () ->
+                                            new IllegalStateException(
+                                                    "이력은 있는데 쿠폰이 없습니다: "
+                                                            + processed.get().getCouponId()));
+            boolean issuedHistory =
+                    history.getFromStatus() == null && history.getToStatus() == CouponStatus.ISSUED;
+            boolean sameRequest =
+                    existingCoupon.getCampaignId().equals(campaignId)
+                            && existingCoupon.getUserId().equals(userId)
+                            && existingCoupon.getStockId().equals(stockId);
+
+            if (!issuedHistory || !sameRequest) {
+                throw new IdempotencyKeyReusedException();
+            }
+
             return IssueResult.success(
-                    processed.get().getCouponId(),
-                    processed.get().getEventAt().toInstant(ZoneOffset.UTC),
-                    expireAt.toInstant(ZoneOffset.UTC));
+                    existingCoupon.getCouponId(),
+                    existingCoupon.getIssuedAt().toInstant(ZoneOffset.UTC),
+                    existingCoupon.getExpireAt().toInstant(ZoneOffset.UTC));
         }
 
         // 중복 발급 확인

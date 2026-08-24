@@ -30,3 +30,4 @@ bin/
 .gradle/
 build/
 load-tests/results/
+.acceptance/

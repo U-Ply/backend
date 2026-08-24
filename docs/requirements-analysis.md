@@ -92,7 +92,7 @@
 | --- | --- | --- |
 | `ISSUED` | 발급되어 사용자가 보유 중 | 발급 시 1 감소 |
 | `USED` | 항공권 예약에 사용 완료 | 변경 없음 |
-| `CANCELLED` | 공급자가 미사용 쿠폰을 취소 | 변경 없음 |
+| `CANCELLED` | 사용자가 예약을 취소했거나 공급자가 미사용 쿠폰을 회수 | 변경 없음 |
 | `EXPIRED` | 미사용 상태로 유효기간 경과 | 변경 없음 |
 
 허용 상태 전이는 다음과 같다.
@@ -101,18 +101,19 @@
 | --- | --- |
 | 없음 | `ISSUED` |
 | `ISSUED` | `USED`, `CANCELLED`, `EXPIRED` |
-| `USED` | 없음 |
+| `USED` | `CANCELLED` |
 | `CANCELLED` | 없음 |
 | `EXPIRED` | 없음 |
 
 모든 상태 변경은 다음 원칙을 따른다.
 
-- `USED`, `CANCELLED`, `EXPIRED`는 최종 상태다.
-- 사용, 취소, 만료는 `WHERE status = 'ISSUED'` 조건부 갱신으로 경쟁시킨다.
+- `CANCELLED`, `EXPIRED`는 최종 상태다.
+- 사용은 `ISSUED -> USED`, 사용자 예약 취소는 `USED -> CANCELLED` 조건부 갱신으로 처리한다.
+- 공급자의 미사용 쿠폰 회수와 만료는 각각 `ISSUED -> CANCELLED`, `ISSUED -> EXPIRED` 조건부 갱신으로 처리한다.
 - 갱신된 행이 한 건인 작업만 성공한 것으로 판단한다.
-- 사용 및 취소는 `expire_at > NOW(3)` 조건을 추가한다.
+- 사용은 `expire_at > NOW(3)` 조건을 추가한다.
 - DB 서버의 `NOW(3)`를 시간 판정 기준으로 사용한다.
-- 만료 배치가 실행되기 전이라도 유효기간이 지났으면 사용과 취소를 거부한다.
+- 만료 배치가 실행되기 전이라도 유효기간이 지났으면 사용을 거부한다.
 
 ## 7. 쿠폰 발급 처리
 
@@ -159,7 +160,7 @@ Redis와 Kafka는 하나의 원자적 트랜잭션으로 처리되지 않으므�
 - Kafka 저장은 비동기이므로 `200 ISSUED` 응답 직후 MySQL에 쿠폰이 없을 수 있다.
 - Kafka 비동기 발급은 이벤트 발행 전에 `coupon:pending:{couponId}`를 24시간 TTL로 저장한다.
 - Kafka 발행이 명확하게 실패하면 pending 키를 삭제하고, 결과가 불명확하면 유지한다.
-- 단건 조회 시 DB에 없고 pending 키가 있을 때만 100ms 간격으로 최대 3회 DB를 추가 조회한다.
+- 단건 조회와 사용·취소 요청 시 DB에 없고 pending 키가 있을 때만 100ms 간격으로 최대 3회 DB를 추가 조회한다.
 - 3회 추가 조회 후에도 DB에 없으면 `COUPON_NOT_READY`를 반환한다.
 - DB와 Redis pending 키에 모두 없으면 `COUPON_NOT_FOUND`를 반환한다.
 - Consumer의 MySQL 저장 트랜잭션이 커밋된 후 pending 키를 삭제한다.
@@ -302,9 +303,9 @@ Redis에는 다음 정보를 저장한다.
 | INV-02 | 1인 1매 | 동일 캠페인과 사용자 조합의 쿠폰 수 `<= 1` | `coupons` |
 | INV-03 | DB 재고 카운터 | `remaining_stock = total_stock - 전체 쿠폰 수` | `campaign_stocks` |
 | INV-04 | 현재 상태와 최종 이력 일치 | 쿠폰 상태가 마지막 이력의 `to_status`와 같고, 이력이 없는 쿠폰이 없음 | `coupons` |
-| INV-05 | 상태 전이 유효성 | 허용된 네 종류의 전이만 존재 | `coupon_history` |
+| INV-05 | 상태 전이 유효성 | 허용된 다섯 종류의 전이만 존재 | `coupon_history` |
 | INV-06 | 시각 순서 | 상태 변경 시각이 `issued_at`과 같거나 이후이며, `expired_at`은 `expire_at`과 같거나 이후 | `coupons` |
-| INV-07 | 종료 상태 타임스탬프 | 현재 상태에 대응하는 종료 시각만 존재하고 나머지 종료 시각은 NULL | `coupons` |
+| INV-07 | 종료 상태 타임스탬프 | 현재 상태와 상태 전이 경로에 맞는 종료 시각 조합인지 확인 | `coupons` |
 | INV-08 | 참조 조합 일치 | coupons.campaign_id가 stock_id로 조회한 campaign_stocks.campaign_id와 같음 | `coupons` |
 | INV-09 | 도메인 멱등성 | 같은 쿠폰의 동일 도착 상태 이력이 두 번 이상 없음 | `coupon_history` |
 | INV-10 | 고아 행 없음 | 존재하지 않는 부모 행을 참조하는 자식 행이 없음 | 각 자식 테이블 |
@@ -315,6 +316,7 @@ INV-05의 허용 전이는 다음과 같다.
 - `ISSUED -> USED`
 - `ISSUED -> CANCELLED`
 - `ISSUED -> EXPIRED`
+- `USED -> CANCELLED`
 
 INV-04의 마지막 이력은 `event_at DESC, history_id DESC` 순서로 결정한다. 이력이 없는 쿠폰도 위반으로 처리한다.
 
@@ -329,7 +331,8 @@ INV-07은 현재 상태에 따라 다음 타임스탬프 조합을 검증한다.
 
 - `ISSUED`: `used_at`, `cancelled_at`, `expired_at` 모두 NULL
 - `USED`: `used_at`만 NOT NULL
-- `CANCELLED`: `cancelled_at`만 NOT NULL
+- `CANCELLED`(공급자 회수): `cancelled_at`만 NOT NULL
+- `CANCELLED`(사용자 예약 취소): `used_at`, `cancelled_at`이 NOT NULL
 - `EXPIRED`: `expired_at`만 NOT NULL
 
 INV-10은 다음 참조 관계의 고아 행을 검사한다.

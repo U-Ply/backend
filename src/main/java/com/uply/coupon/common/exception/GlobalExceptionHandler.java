@@ -5,6 +5,7 @@ import com.uply.coupon.operation.admin.BatchConflictException;
 import com.uply.coupon.operation.admin.BatchExecutionNotFoundException;
 import com.uply.coupon.operation.admin.BatchInvalidRequestException;
 import com.uply.coupon.operation.admin.BatchNotImplementedException;
+import com.uply.coupon.operation.admin.VerificationRunNotFoundException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Objects;
@@ -167,11 +168,16 @@ public class GlobalExceptionHandler {
         return response(HttpStatus.NOT_FOUND, "BATCH_EXECUTION_NOT_FOUND", exception.getMessage());
     }
 
+    @ExceptionHandler(VerificationRunNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleVerificationRunNotFound(
+            VerificationRunNotFoundException exception) {
+        return response(HttpStatus.NOT_FOUND, "VERIFICATION_RUN_NOT_FOUND", exception.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ApiErrorResponse> handleMethodArgumentTypeMismatch(
             MethodArgumentTypeMismatchException exception) {
-        String message = exception.getName() + " 값이 올바르지 않습니다: " + exception.getValue();
-        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", message);
+        return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "잘못된 요청입니다. 다시 시도해 주세요.");
     }
 
     @ExceptionHandler(Exception.class)

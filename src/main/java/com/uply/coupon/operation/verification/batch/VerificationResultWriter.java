@@ -20,10 +20,12 @@ public class VerificationResultWriter {
             jdbcTemplate.update(
                     """
                     INSERT INTO verification_report
-                        (run_id, rule_code, rule_name, snapshot_at,
+                        (run_id, round, status, rule_code, rule_name, snapshot_at,
                          violation_count, sampled_count, checked_rows, elapsed_ms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE
+                        round           = VALUES(round),
+                        status          = VALUES(status),
                         rule_name       = VALUES(rule_name),
                         snapshot_at     = VALUES(snapshot_at),
                         violation_count = VALUES(violation_count),
@@ -32,6 +34,8 @@ public class VerificationResultWriter {
                         elapsed_ms      = VALUES(elapsed_ms)
                     """,
                     run.runId(),
+                    run.round() == null ? null : run.round().name(),
+                    r.status().name(),
                     r.code(),
                     r.name(),
                     run.snapshotAt(),

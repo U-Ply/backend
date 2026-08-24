@@ -3,7 +3,8 @@ package com.uply.coupon.operation.verification.domain;
 import java.time.LocalDateTime;
 import java.util.List;
 
-public record VerificationRun(String runId, LocalDateTime snapshotAt, List<RuleResult> results) {
+public record VerificationRun(
+        String runId, RoundVersion round, LocalDateTime snapshotAt, List<RuleResult> results) {
 
     /** CLOCK-01/02 나 REC- 는 판정에서 제외한다 (WHERE rule_code LIKE 'INV-%' 와 같은 기준). */
     public List<RuleResult> failedInvariants() {

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
@@ -30,9 +32,12 @@ public class CouponServiceImpl implements CouponService {
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
 
+        String requestHash = null;
         if (hasIdempotencyKey(idempotencyKey)) {
+            requestHash = createRequestHash(request);
             // 1.PROCESSING 일 경우 여기서 먼저 에러 발생
-            Optional<String> cachedBody = idempotencyChecker.getCachedResponse(idempotencyKey);
+            Optional<String> cachedBody =
+                    idempotencyChecker.getCachedResponse(idempotencyKey, requestHash);
             // 2.에러 없이 캐시된 데이터가 존재한다 = COMPLETED 상태이다. -> 이전의 응답 데이터를 그대로 사용자에게 반환
             if (cachedBody.isPresent()) {
                 log.info("[멱등성 처리] 이전 성공 응답 재반환 - key: {}", idempotencyKey);
@@ -81,7 +86,7 @@ public class CouponServiceImpl implements CouponService {
             // #3. 성공 응답 JSON 직렬화 후 Redis 캐싱 (COMPLETED, TTL 10분)
             if (hasIdempotencyKey(idempotencyKey)) {
                 String responseJson = toJson(response);
-                idempotencyChecker.cacheResponse(idempotencyKey, responseJson, 200);
+                idempotencyChecker.cacheResponse(idempotencyKey, requestHash, responseJson, 200);
             }
 
             return response;
@@ -114,6 +119,10 @@ public class CouponServiceImpl implements CouponService {
 
     private boolean hasIdempotencyKey(String idempotencyKey) {
         return idempotencyKey != null && !idempotencyKey.isBlank();
+    }
+
+    private String createRequestHash(CouponIssueRequest request) {
+        return IdempotencyRequestHasher.sha256("POST", CouponApiPaths.ISSUE_URI, toJson(request));
     }
 
     private String toJson(Object object) {

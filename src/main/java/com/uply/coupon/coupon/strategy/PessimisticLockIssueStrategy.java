@@ -4,9 +4,11 @@ import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.campaign.repository.CampaignWindow;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponHistory;
+import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import java.time.LocalDateTime;
@@ -57,25 +59,41 @@ public class PessimisticLockIssueStrategy implements CouponIssueStrategy {
                             .orElseThrow(
                                     () -> new IllegalStateException("존재하지 않는 stockId: " + stockId));
 
-            // 락 대기는 최대 3초(jakarta.persistence.lock.timeout)까지 걸릴 수 있다.
-            // 그 사이 캠페인이 만료되면 위 조기 판정은 이미 낡은 시각을 본 것이 된다.
-            // 락을 얻은 뒤 시각을 다시 재서 최종 판정하지 않으면, 만료 이후에 커밋되는 쿠폰이
-            // 만료 이전 issued_at을 달고 나간다. openAt은 시간이 앞으로만 흐르므로 재확인이
-            // 필요 없지만 expireAt은 반드시 다시 봐야 한다.
             LocalDateTime databaseTime = campaignStockRepository.currentDatabaseTime();
             LocalDateTime expireAt = window.getExpireAt();
             if (!expireAt.isAfter(databaseTime)) {
                 return IssueResult.fail(IssueFailReason.CAMPAIGN_EXPIRED);
             }
 
-            // 멱등성 확인
+            // 멱등성 확인 - 같은 키라도 캠페인/유저가 다르면 재사용으로 보고 거부한다
             Optional<CouponHistory> processed =
                     couponHistoryRepository.findByIdempotencyKey(idempotencyKey);
             if (processed.isPresent()) {
+                CouponHistory history = processed.get();
+                Coupon existingCoupon =
+                        couponRepository
+                                .findById(processed.get().getCouponId())
+                                .orElseThrow(
+                                        () ->
+                                                new IllegalStateException(
+                                                        "이력은 있는데 쿠폰이 없습니다: "
+                                                                + processed.get().getCouponId()));
+                boolean issuedHistory =
+                        history.getFromStatus() == null
+                                && history.getToStatus() == CouponStatus.ISSUED;
+                boolean sameRequest =
+                        existingCoupon.getCampaignId().equals(campaignId)
+                                && existingCoupon.getUserId().equals(userId)
+                                && existingCoupon.getStockId().equals(stockId);
+
+                if (!issuedHistory || !sameRequest) {
+                    throw new IdempotencyKeyReusedException();
+                }
+
                 return IssueResult.success(
-                        processed.get().getCouponId(),
-                        processed.get().getEventAt().toInstant(ZoneOffset.UTC),
-                        expireAt.toInstant(ZoneOffset.UTC));
+                        existingCoupon.getCouponId(),
+                        existingCoupon.getIssuedAt().toInstant(ZoneOffset.UTC),
+                        existingCoupon.getExpireAt().toInstant(ZoneOffset.UTC));
             }
 
             // 중복 발급 확인

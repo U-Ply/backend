@@ -72,7 +72,7 @@ public class VerificationRunner {
             results.add(evaluate(rule));
         }
 
-        return new VerificationRun(runId, snapshotAt, results);
+        return new VerificationRun(runId, round, snapshotAt, results);
     }
 
     private RuleResult evaluate(InvariantRule rule) {
@@ -107,7 +107,7 @@ public class VerificationRunner {
             int elapsedMs = (int) ((System.nanoTime() - started) / 1_000_000);
             log.info("[{}] {} — 위반 {}건, {}ms", rule.code(), rule.name(), violationCount, elapsedMs);
 
-            return new RuleResult(
+            return RuleResult.checked(
                     rule.code(),
                     rule.name(),
                     violationCount,
@@ -128,7 +128,6 @@ public class VerificationRunner {
      * 값으로 섞으면 원인을 못 가른다.
      */
     private RuleResult checkClock() {
-
         String tz = jdbcTemplate.queryForObject("SELECT @@session.time_zone", String.class);
         double dbEpoch = jdbcTemplate.queryForObject("SELECT UNIX_TIMESTAMP(NOW(3))", Double.class);
         double driftSec = System.currentTimeMillis() / 1000.0 - dbEpoch;
@@ -144,14 +143,14 @@ public class VerificationRunner {
             log.info("[CLOCK-01] {}", detail);
         }
 
-        return new RuleResult(
+        return RuleResult.checked(
                 "CLOCK-01", "앱·DB 시계 정합성 — " + detail, violations, 0, null, 0, List.of());
     }
 
     /**
      * Redis 와 DB 의 시계 오차를 잰다.
      *
-     * <p>Redis 경로 회차(V3)는 coupons.issued_at 과 coupon_history.event_at 을 Redis 시계로 기록한다. Redis-DB
+     * <p>Redis 경로 회차(V2,V3)는 coupons.issued_at 과 coupon_history.event_at 을 Redis 시계로 기록한다. Redis-DB
      * drift 가 곧 INV-04 · INV-06 · INV-11 의 오차가 되므로 그 회차에서만 판정 대상으로 올린다.
      *
      * <p>Redis 컨테이너는 V0/V1 회차에도 떠 있다. 연결 가능 여부로 판단하면 Redis 를 쓰지 않는 회차에서 없는 문제를 만든다. 그래서 회차 버전으로
@@ -160,9 +159,8 @@ public class VerificationRunner {
      * <p>측정값은 순수 시계 차이가 아니다. Redis TIME 과 NOW(3) 를 순차로 읽으므로 왕복 2회가 섞인다.
      */
     private RuleResult checkRedisClock(boolean applicable) {
-
         if (!applicable) {
-            return clockResult("CLOCK-02", "Redis 경로 회차 아님 (N/A)", false);
+            return clockResult("CLOCK-02", "Redis 경로 회차 아님", false, RuleStatus.NOT_APPLICABLE);
         }
 
         RedisConnectionFactory factory = redisConnectionFactory.getIfAvailable();
@@ -176,8 +174,8 @@ public class VerificationRunner {
             double dbEpoch =
                     jdbcTemplate.queryForObject("SELECT UNIX_TIMESTAMP(NOW(3))", Double.class);
             double driftSec = redisMillis / 1000.0 - dbEpoch;
-
             boolean violated = Math.abs(driftSec) > redisClockToleranceSec;
+
             String detail =
                     String.format("redis_drift=%.3fs tol=%.3fs", driftSec, redisClockToleranceSec);
             if (violated) {
@@ -185,6 +183,7 @@ public class VerificationRunner {
             } else {
                 log.info("[CLOCK-02] {}", detail);
             }
+
             return clockResult("CLOCK-02", detail, violated);
 
         } catch (Exception e) {
@@ -195,11 +194,17 @@ public class VerificationRunner {
 
     /** rule_name 이 VARCHAR(100) 이라 잘라 넣는다. 행 단위 위반이 아니므로 샘플은 비운다. */
     private RuleResult clockResult(String code, String detail, boolean violated) {
+        return clockResult(code, detail, violated, RuleStatus.CHECKED);
+    }
+
+    /** 검사하지 않은 회차는 CHECKED 가 아니다. 위반 0 을 통과로 읽히게 두지 않는다. */
+    private RuleResult clockResult(
+            String code, String detail, boolean violated, RuleStatus status) {
         String name = code.startsWith("CLOCK-02") ? "Redis·DB 시계 — " : "앱·DB 시계 — ";
         name = name + detail;
         if (name.length() > 100) {
             name = name.substring(0, 100);
         }
-        return new RuleResult(code, name, violated ? 1L : 0L, 0, null, 0, List.of());
+        return new RuleResult(code, name, status, violated ? 1L : 0L, 0, null, 0, List.of());
     }
 }
