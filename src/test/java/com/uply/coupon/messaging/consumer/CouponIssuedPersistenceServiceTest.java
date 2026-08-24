@@ -48,6 +48,9 @@ class CouponIssuedPersistenceServiceTest {
     // 신규 발급 이벤트의 쿠폰/이력 저장과 재고 감소가 순서대로 실행되는지 확인
     @Test
     void persistsCouponHistoryAndDecreasesStock() {
+        // [수정] existsByIdAndCampaignId 검증 통과를 위해 true 반환 설정 추가
+        when(campaignStockRepository.existsByIdAndCampaignId(EVENT.stockId(), EVENT.campaignId()))
+                .thenReturn(true);
         when(campaignStockRepository.decreaseRemainingStockIfAvailable(
                         EVENT.stockId(), EVENT.campaignId()))
                 .thenReturn(1);
@@ -83,9 +86,9 @@ class CouponIssuedPersistenceServiceTest {
     // MySQL 재고 감소가 실패하면 예외를 발생시키는지 확인
     @Test
     void stockDecreaseFailureAbortsProcessing() {
-        //        when(campaignStockRepository.findCouponExpireAt(EVENT.stockId(),
-        // EVENT.campaignId()))
-        //                .thenReturn(Optional.of(EXPIRE_AT));
+        // [수정] existsByIdAndCampaignId 검증 통과를 위해 true 반환 설정 추가
+        when(campaignStockRepository.existsByIdAndCampaignId(EVENT.stockId(), EVENT.campaignId()))
+                .thenReturn(true);
         when(campaignStockRepository.decreaseRemainingStockIfAvailable(
                         EVENT.stockId(), EVENT.campaignId()))
                 .thenReturn(0);
