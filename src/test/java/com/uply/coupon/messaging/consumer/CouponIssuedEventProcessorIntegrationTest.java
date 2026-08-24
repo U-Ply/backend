@@ -119,6 +119,7 @@ class CouponIssuedEventProcessorIntegrationTest {
                 STOCK_ID,
                 idempotencyKey,
                 Instant.parse("2026-08-15T01:00:00Z"),
+                Instant.parse("2026-09-01T00:00:00Z"),                
                 Instant.parse("2026-08-15T01:00:00.050Z"));
     }
 

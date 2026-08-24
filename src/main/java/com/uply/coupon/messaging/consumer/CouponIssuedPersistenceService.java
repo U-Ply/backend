@@ -23,16 +23,16 @@ public class CouponIssuedPersistenceService {
     @Transactional
     public void persist(CouponIssuedEvent event) {
         LocalDateTime issuedAt = LocalDateTime.ofInstant(event.issuedAt(), ZoneOffset.UTC);
-        LocalDateTime expireAt =
-                campaignStockRepository
-                        .findCouponExpireAt(event.stockId(), event.campaignId())
-                        .orElseThrow(
-                                () ->
-                                        new IllegalStateException(
-                                                "이벤트와 일치하는 캠페인 재고를 찾을 수 없습니다. stockId="
-                                                        + event.stockId()
-                                                        + ", campaignId="
-                                                        + event.campaignId()));
+        LocalDateTime expireAt = LocalDateTime.ofInstant(event.expireAt(), ZoneOffset.UTC);
+//                campaignStockRepository
+//                        .findCouponExpireAt(event.stockId(), event.campaignId())
+//                        .orElseThrow(
+//                                () ->
+//                                        new IllegalStateException(
+//                                                "이벤트와 일치하는 캠페인 재고를 찾을 수 없습니다. stockId="
+//                                                        + event.stockId()
+//                                                        + ", campaignId="
+//                                                        + event.campaignId()));
 
         if (!expireAt.isAfter(issuedAt)) {
             throw new IllegalStateException("쿠폰 만료 시각은 발급 시각보다 이후여야 합니다.");

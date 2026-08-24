@@ -38,6 +38,7 @@ class CouponIssuedPersistenceServiceTest {
                     3L,
                     "550e8400-e29b-41d4-a716-446655440000",
                     Instant.parse("2026-08-15T01:00:00Z"),
+                    Instant.parse("2026-09-01T00:00:00Z"),
                     Instant.parse("2026-08-15T01:00:00.050Z"));
 
     @Mock private CouponRepository couponRepository;
@@ -49,8 +50,6 @@ class CouponIssuedPersistenceServiceTest {
     // 신규 발급 이벤트의 쿠폰/이력 저장과 재고 감소가 순서대로 실행되는지 확인
     @Test
     void persistsCouponHistoryAndDecreasesStock() {
-        when(campaignStockRepository.findCouponExpireAt(EVENT.stockId(), EVENT.campaignId()))
-                .thenReturn(Optional.of(EXPIRE_AT));
         when(campaignStockRepository.decreaseRemainingStockIfAvailable(
                         EVENT.stockId(), EVENT.campaignId()))
                 .thenReturn(1);
@@ -83,25 +82,25 @@ class CouponIssuedPersistenceServiceTest {
                 .decreaseRemainingStockIfAvailable(EVENT.stockId(), EVENT.campaignId());
     }
 
-    // 캠페인/재고 조합을 찾지 못하면 쿠폰과 이력을 저장하지 않는지 확인
-    @Test
-    void missingCampaignStockIsRejectedBeforeSaving() {
-        when(campaignStockRepository.findCouponExpireAt(EVENT.stockId(), EVENT.campaignId()))
-                .thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> persistenceService.persist(EVENT))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("캠페인 재고");
-
-        verify(couponRepository, never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
-        verify(couponHistoryRepository, never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
-    }
+//    // 캠페인/재고 조합을 찾지 못하면 쿠폰과 이력을 저장하지 않는지 확인
+//    @Test
+//    void missingCampaignStockIsRejectedBeforeSaving() {
+////        when(campaignStockRepository.findCouponExpireAt(EVENT.stockId(), EVENT.campaignId()))
+////                .thenReturn(Optional.empty());
+//
+//        assertThatThrownBy(() -> persistenceService.persist(EVENT))
+//                .isInstanceOf(IllegalStateException.class)
+//                .hasMessageContaining("캠페인 재고");
+//
+//        verify(couponRepository, never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
+//        verify(couponHistoryRepository, never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
+//    }
 
     // MySQL 재고 감소가 실패하면 예외를 발생시키는지 확인
     @Test
     void stockDecreaseFailureAbortsProcessing() {
-        when(campaignStockRepository.findCouponExpireAt(EVENT.stockId(), EVENT.campaignId()))
-                .thenReturn(Optional.of(EXPIRE_AT));
+//        when(campaignStockRepository.findCouponExpireAt(EVENT.stockId(), EVENT.campaignId()))
+//                .thenReturn(Optional.of(EXPIRE_AT));
         when(campaignStockRepository.decreaseRemainingStockIfAvailable(
                         EVENT.stockId(), EVENT.campaignId()))
                 .thenReturn(0);

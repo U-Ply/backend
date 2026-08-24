@@ -17,4 +17,5 @@ public record CouponIssuedEvent(
         Long stockId,
         String idempotencyKey,
         Instant issuedAt,
+        Instant expireAt,
         Instant publishedAt) {}

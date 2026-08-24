@@ -1,5 +1,8 @@
 package com.uply.coupon.coupon.strategy;
 
+import com.uply.coupon.campaign.domain.Campaign;
+import com.uply.coupon.campaign.repository.CampaignRepository;
+import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
@@ -29,6 +32,8 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     private final CouponIdGenerator couponIdGenerator;
     private final CouponSaveStrategy couponSaveStrategy;
     private final MeterRegistry meterRegistry;
+    private final CampaignRepository campaignRepository;
+    private final CampaignCacheWarmupService campaignCacheWarmupService;
 
     private DefaultRedisScript<List> issueScript;
     DefaultRedisScript<Long> rollbackScript;
@@ -70,20 +75,17 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         // 캐시 존재 확인용 조회 (미기재 캠페인이면 404 CampaignNotFoundException).
         // 여기서 읽은 값 자체는 버린다 - Lua 실행 직전까지 시간이 있어 그 사이 웜업 복구가
         // 이 키를 덮어썼을 수 있다. DB에 쓰는 값은 Lua가 실제로 판정에 쓴 값(반환값)이어야 한다.
-        getExpireAt(campaignId); // 실패 가능
+        //getExpireAt(campaignId); // 실패 가능 -> 사전 조회 삭제
 
         // #3. Lua Script 실행 (Atomic 연산)
         // 오픈/만료 판정도 스크립트 안에서 한다. Java에서 미리 검사하면 검사와 차감 사이에
         // 캠페인이 만료되는 창이 열리고, 그 사이 요청은 만료 후에도 발급에 성공한다.
-        List<Object> result =
-                redisTemplate.execute(
-                        issueScript,
-                        List.of(
-                                stockIdKey,
-                                issuedCampaignKey,
-                                campaignOpenAtKey,
-                                campaignExpireAtKey),
-                        String.valueOf(userId));
+        List<String> keys = List.of(
+					                stockIdKey,
+					                issuedCampaignKey,
+					                campaignOpenAtKey,
+					                campaignExpireAtKey);
+        List<Object> result = redisTemplate.execute(issueScript, keys, String.valueOf(userId));
 
         if (result == null || result.isEmpty()) {
             return IssueResult.fail(IssueFailReason.SYSTEM_ERROR);
@@ -91,7 +93,21 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
         long resultCode = (Long) result.get(0);
 
-        // #4. 실패인 경우 처리
+        // 웜업 미완료 (Cache Miss)
+        if (resultCode == -3) { 
+            // 1. DB 조회 (DB에도 없는 캠페인이면 여기서 CampaignNotFoundException(404) 발생 후 즉시 종료)
+            Campaign campaign = campaignRepository.findById(campaignId)
+                    .orElseThrow(() -> new CampaignNotFoundException(campaignId));
+
+            // 2. DB에 존재하므로 재웜업 실행
+            campaignCacheWarmupService.warmupCampaign(campaignId);
+
+            // 3. Lua Script 1회 재시도
+            result = redisTemplate.execute(issueScript, keys, String.valueOf(userId));
+            resultCode = (Long) result.get(0);
+        }
+        
+        // #4. 실패인 경우 처리 (재시도 수행 결과 포함)
         if (resultCode != 1) {
             IssueFailReason failReason = matchFailReason(resultCode);
             return IssueResult.fail(failReason);
@@ -217,6 +233,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
         return switch ((int) resultCode) {
             case -1 -> IssueFailReason.ALREADY_ISSUED;
             case -2 -> IssueFailReason.OUT_OF_STOCK;
+            case -3 -> IssueFailReason.CAMPAIGN_NOT_CACHED;
             case -4 -> IssueFailReason.CAMPAIGN_NOT_OPEN;
             case -5 -> IssueFailReason.CAMPAIGN_EXPIRED;
             default -> IssueFailReason.SYSTEM_ERROR;
