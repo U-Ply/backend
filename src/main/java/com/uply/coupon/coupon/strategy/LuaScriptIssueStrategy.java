@@ -1,9 +1,7 @@
 package com.uply.coupon.coupon.strategy;
 
-import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
-import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
@@ -90,23 +88,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
         long resultCode = (Long) result.get(0);
 
-        // 웜업 미완료 (Cache Miss)
-        if (resultCode == -3) {
-            // 1. DB 조회 (DB에도 없는 캠페인이면 여기서 CampaignNotFoundException(404) 발생 후 즉시 종료)
-            Campaign campaign =
-                    campaignRepository
-                            .findById(campaignId)
-                            .orElseThrow(() -> new CampaignNotFoundException(campaignId));
-
-            // 2. DB에 존재하므로 재웜업 실행
-            campaignCacheWarmupService.warmupCampaign(campaignId);
-
-            // 3. Lua Script 1회 재시도
-            result = redisTemplate.execute(issueScript, keys, String.valueOf(userId));
-            resultCode = (Long) result.get(0);
-        }
-
-        // #4. 실패인 경우 처리 (재시도 수행 결과 포함)
+        // #4. 실패인 경우 처리
         if (resultCode != 1) {
             IssueFailReason failReason = matchFailReason(resultCode);
             return IssueResult.fail(failReason);
@@ -171,25 +153,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
     private String campaignExpireAtKey(Long campaignId) {
         return String.format("campaign:%d:expireAt", campaignId);
-    }
-
-    /** expireAt 조회 헬퍼 메소드 */
-    private LocalDateTime getExpireAt(Long campaignId) {
-        String expireAtStr = redisTemplate.opsForValue().get(campaignExpireAtKey(campaignId));
-
-        if (expireAtStr == null) {
-            // 캐시 누락이므로 재고 풀이 아니라 캠페인 단위 예외다 (stockId를 아는 상황이 아니다)
-            throw new CampaignNotFoundException(campaignId);
-        }
-
-        // 파싱 과정에서 에러 발생 가능 -> 쿠폰 발급 실패 예외에 담아서 전파
-        try {
-            long expireAtEpochMillis = Long.parseLong(expireAtStr);
-            return LocalDateTime.ofInstant(
-                    Instant.ofEpochMilli(expireAtEpochMillis), ZoneOffset.UTC);
-        } catch (NumberFormatException e) {
-            throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
-        }
     }
 
     /**
