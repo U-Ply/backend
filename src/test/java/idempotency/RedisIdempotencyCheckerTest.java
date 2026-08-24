@@ -106,6 +106,24 @@ class RedisIdempotencyCheckerTest {
                     .hasMessageContaining("already in progress");
         }
 
+        // SETNX 선점 실패 후 캐시를 읽지 못해도 신규 요청으로 오인하지 않는지 확인
+        @Test
+        @DisplayName("선점 실패 후 캐시 데이터가 없으면 처리 중 예외를 던진다")
+        void getCachedResponse_claimFailedAndCacheMissing_throwsException() throws Exception {
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"status\":\"PROCESSING\"}");
+            given(
+                            valueOperations.setIfAbsent(
+                                    eq(REDIS_KEY), anyString(), eq(Duration.ofSeconds(30))))
+                    .willReturn(false);
+            given(valueOperations.get(REDIS_KEY)).willReturn(null);
+
+            assertThatThrownBy(() -> idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .isInstanceOf(IdempotencyRequestInProgressException.class)
+                    .hasMessageContaining("already in progress");
+
+            verify(objectMapper, never()).readValue(anyString(), eq(IdempotencyCache.class));
+        }
+
         // 동일한 키의 처리가 완료됐다면 비즈니스 로직을 재실행하지 않고 최초 응답을 반환하는지 확인
         @Test
         @DisplayName("중복 요청 시 상태가 COMPLETED이면 캐시된 응답 body를 반환한다")
@@ -157,10 +175,10 @@ class RedisIdempotencyCheckerTest {
                     .isInstanceOf(IdempotencyKeyReusedException.class);
         }
 
-        // Redis의 캐시 데이터 복원에 실패하면 예외를 전파하지 않고 빈 결과를 반환하는지 확인
+        // 선점 실패 후 캐시 역직렬화에 실패해도 신규 요청으로 오인하지 않는지 확인
         @Test
-        @DisplayName("역직렬화 실패 시 예외를 던지지 않고 Optional.empty()를 반환한다")
-        void getCachedResponse_jsonException_returnsEmpty() throws Exception {
+        @DisplayName("선점 실패 후 캐시 역직렬화에 실패하면 처리 중 예외를 던진다")
+        void getCachedResponse_claimFailedAndJsonInvalid_throwsException() throws Exception {
             // given
             String invalidJson = "invalid-json";
 
@@ -173,11 +191,10 @@ class RedisIdempotencyCheckerTest {
             given(objectMapper.readValue(invalidJson, IdempotencyCache.class))
                     .willThrow(new JsonProcessingException("Deserialization failed") {});
 
-            // when
-            Optional<String> result = idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY);
-
-            // then
-            assertThat(result).isEmpty();
+            // when & then
+            assertThatThrownBy(() -> idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY))
+                    .isInstanceOf(IdempotencyRequestInProgressException.class)
+                    .hasMessageContaining("already in progress");
         }
     }
 
