@@ -1,7 +1,7 @@
 package com.uply.coupon.coupon.strategy;
 
 import com.uply.coupon.campaign.repository.CampaignRepository;
-import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
@@ -31,7 +31,6 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
     private final CouponSaveStrategy couponSaveStrategy;
     private final MeterRegistry meterRegistry;
     private final CampaignRepository campaignRepository;
-    private final CampaignCacheWarmupService campaignCacheWarmupService;
 
     private DefaultRedisScript<List> issueScript;
     DefaultRedisScript<Long> rollbackScript;
@@ -90,6 +89,14 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
         // #4. 실패인 경우 처리
         if (resultCode != 1) {
+            // -3 (CAMPAIGN_NOT_CACHED)인 경우만 DB에 실제 존재하는지 확인
+            if (resultCode == -3) {
+                boolean exists = campaignRepository.existsById(campaignId);
+                if (!exists) {
+                    throw new CampaignNotFoundException(campaignId);
+                }
+            }
+
             IssueFailReason failReason = matchFailReason(resultCode);
             return IssueResult.fail(failReason);
         }
