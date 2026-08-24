@@ -99,6 +99,7 @@ tasks.named('test') {
 
     // 시각 판정을 DB NOW(3)와 맞추기 위해 테스트 JVM도 UTC로 고정한다.
     systemProperty 'user.timezone', 'UTC'
+  systemProperty 'coupon.kafka.consumer.enabled', 'false'
 
     testLogging {
         events 'passed', 'skipped', 'failed'

@@ -24,7 +24,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
         properties = {
             "coupon.issue.strategy=NO_LOCK",
             "coupon.save.strategy=sync-db",
-            "coupon.idempotency.enabled=false"
+            "coupon.idempotency.enabled=false",
+            // 이 회차는 Kafka 를 쓰지 않는다. 기본값이 true 라 그대로 두면 이 컨텍스트의
+            // 컨슈머가 coupon-service 그룹에 붙어 V3 가 발행한 메시지를 가져가 버린다.
+            // Spring 은 테스트 컨텍스트를 캐시하고 닫지 않으므로 회차가 끝나도 계속 살아 있다.
+            "coupon.kafka.consumer.enabled=false"
         })
 class V0DbOnlyIntegrationTest extends IntegrationTestContainers {
 

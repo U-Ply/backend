@@ -1,0 +1,32 @@
+# integration-test 프로파일 — Testcontainers 로 뜨는 통합 테스트 전용.
+#
+# 접속 정보(datasource / redis / kafka)는 여기에 두지 않는다.
+# IntegrationTestContainers 의 @DynamicPropertySource 가 실제 컨테이너 주소로 채운다.
+# 이 파일에는 "컨텍스트마다 켜고 끌 수 있어야 하는 스위치"만 둔다.
+#
+# ── coupon.kafka.consumer.enabled 를 false 로 두는 이유 ────────────────────
+#
+# CouponIssuedConsumer 의 @KafkaListener 는
+#     autoStartup = "${coupon.kafka.consumer.enabled:true}"
+# 라서 기본값이 true 다.
+#
+# Spring 은 테스트 ApplicationContext 를 캐시하고 JVM 이 끝날 때까지 닫지 않는다.
+# 그래서 기본값을 그대로 두면, 그 시점까지 만들어진 모든 컨텍스트의 컨슈머가
+# 동시에 살아서 같은 group-id(coupon-service) 에 붙는다.
+# 실제로 실행 로그에 consumer-coupon-service-1 ~ -14 가 한 그룹에서
+# 리밸런싱하며 파티션을 나눠 갖는 것이 찍혔다.
+#
+# 그 상태에서는 V3 가 발행한 메시지를 V3 와 무관한 컨텍스트의 컨슈머가 가져간다.
+# V3 가 통과하든 실패하든 그 결과는 "Kafka 경로가 맞다"는 근거가 되지 못한다.
+# 실행할 때마다 누가 그 파티션을 잡았느냐에 따라 달라지기 때문이다.
+#
+# 그래서 기본은 꺼두고, Kafka 소비 자체가 검증 대상인 V3 에서만 켠다.
+# V3 는 @SpringBootTest(properties = "coupon.kafka.consumer.enabled=true") 로
+# 이 값을 덮는다. 인라인 테스트 프로퍼티가 프로파일 yml 보다 우선순위가 높다.
+#
+# 단위 테스트가 쓰는 application-test.yml 도 같은 이유로 이미 false 다.
+# 이 파일은 그 규칙을 integration-test 프로파일에도 똑같이 적용하는 것뿐이다.
+coupon:
+  kafka:
+    consumer:
+      enabled: false

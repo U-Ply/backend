@@ -1,11 +1,15 @@
 package com.uply.coupon.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.ConsumerGroupDescription;
+import org.apache.kafka.clients.admin.MemberDescription;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.common.errors.TopicExistsException;
@@ -26,6 +30,11 @@ import org.testcontainers.utility.MountableFile;
  * <p>컨테이너는 JVM당 한 번만 시작한다.
  *
  * <p>Kafka는 Spring ApplicationContext가 만들어지기 전에 필수 topic을 명시적으로 생성하고 실제 partition 수를 검증한다.
+ *
+ * <p>Kafka consumer는 기본적으로 꺼져 있다. application-integration-test.yml 에서 {@code
+ * coupon.kafka.consumer.enabled=false} 로 둔다. Spring이 테스트 컨텍스트를 캐시하고 닫지 않으므로, 켜 두면 JVM 안의 모든 컨텍스트가
+ * 같은 group-id로 동시에 붙어 서로의 메시지를 가져간다. 켜는 것은 Kafka 소비가 검증 대상인 V3 하나뿐이고, V3는 {@link
+ * #assertIssueConsumerGroupIsExclusive()} 로 그 사실을 실제 broker에 확인한다.
  */
 @SpringBootTest
 @ActiveProfiles("integration-test")
@@ -42,6 +51,17 @@ public abstract class IntegrationTestContainers {
 
     /** V3에서 요구하는 실제 partition 수. */
     static final int ISSUE_TOPIC_PARTITIONS = 3;
+
+    /**
+     * 애플리케이션 consumer group. KafkaConsumerConfig 와 application.yml 이 이 값을 쓴다.
+     *
+     * <p>여기서 group 이름을 새로 만들지 않는다. 테스트만 다른 group 을 쓰면 "테스트에서는 격리됐다"가 되고 실제 설정은 검증되지 않는다. 실제 group 을
+     * 그대로 쓰되, 그 group 에 컨슈머가 하나뿐인지를 확인한다.
+     */
+    static final String ISSUE_CONSUMER_GROUP = "coupon-service";
+
+    /** consumer group 멤버가 하나로 정리되기를 기다리는 최대 시간. 리밸런싱이 끝나는 데 몇 초가 걸린다. */
+    private static final Duration CONSUMER_GROUP_SETTLE_TIMEOUT = Duration.ofSeconds(30);
 
     static final MySQLContainer<?> MYSQL =
             new MySQLContainer<>("mysql:8.0.46")
@@ -105,6 +125,63 @@ public abstract class IntegrationTestContainers {
         registry.add("spring.datasource.hikari.connection-timeout", () -> "3000");
 
         registry.add("coupon.reconciliation.scheduler-enabled", () -> "false");
+
+        /*
+         * coupon.kafka.consumer.enabled 는 여기서 등록하지 않는다.
+         *
+         * @DynamicPropertySource 는 @SpringBootTest(properties = ...) 보다 우선순위가 높아서
+         * 여기에 false 로 넣으면 V3 가 인라인 프로퍼티로 다시 켤 수 없다.
+         * 기본값 false 는 application-integration-test.yml 에 둔다.
+         */
+    }
+
+    /**
+     * 이 JVM 의 Kafka consumer group 에 컨슈머가 정확히 하나만 있는지 broker 에 직접 확인한다.
+     *
+     * <p>Kafka 소비를 검증하는 회차(V3)가 호출한다. 통과하지 못하면 그 회차의 결과는 Kafka 경로의 근거가 되지 못한다. 다른 컨텍스트의 컨슈머가 같은
+     * group 에 붙어 있으면 파티션을 나눠 갖고, 어떤 메시지를 누가 처리했는지가 실행마다 달라지기 때문이다.
+     *
+     * <p>기다리기만 하지 않는다. 제한 시간 안에 멤버가 하나로 정리되지 않으면 현재 멤버 목록을 그대로 실패 메시지에 담아 실패한다.
+     */
+    protected static void assertIssueConsumerGroupIsExclusive() {
+
+        try (AdminClient admin =
+                AdminClient.create(
+                        Map.of(
+                                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
+                                KAFKA.getBootstrapServers()))) {
+
+            await().atMost(CONSUMER_GROUP_SETTLE_TIMEOUT)
+                    .pollInterval(Duration.ofMillis(500))
+                    .untilAsserted(
+                            () -> {
+                                List<String> members = consumerGroupMembers(admin);
+
+                                assertThat(members)
+                                        .as(
+                                                "Kafka consumer group '%s' 에는 이 회차의 컨슈머 하나만 있어야"
+                                                        + " 합니다. 둘 이상이면 파티션을 나눠 갖게 되어 결과를 신뢰할 수"
+                                                        + " 없습니다. 현재 멤버=%s",
+                                                ISSUE_CONSUMER_GROUP, members)
+                                        .hasSize(1);
+                            });
+        }
+    }
+
+    /** group 에 현재 붙어 있는 컨슈머 id 목록. group 이 아직 없으면 빈 목록이다. */
+    private static List<String> consumerGroupMembers(AdminClient admin) throws Exception {
+
+        ConsumerGroupDescription description =
+                admin.describeConsumerGroups(List.of(ISSUE_CONSUMER_GROUP))
+                        .all()
+                        .get()
+                        .get(ISSUE_CONSUMER_GROUP);
+
+        if (description == null) {
+            return List.of();
+        }
+
+        return description.members().stream().map(MemberDescription::consumerId).toList();
     }
 
     /**

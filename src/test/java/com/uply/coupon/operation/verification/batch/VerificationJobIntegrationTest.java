@@ -2,6 +2,7 @@ package com.uply.coupon.operation.verification.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uply.coupon.it.IntegrationTestContainers;
 import com.uply.coupon.operation.verification.InvariantFixture;
 import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import org.junit.jupiter.api.AfterEach;
@@ -17,16 +18,24 @@ import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 
-@SpringBootTest
+/*
+ * IntegrationTestContainers 를 상속한다.
+ *
+ * 전에는 @ActiveProfiles("test") 로 로컬 MySQL(coupon_db_test)을 봤다.
+ * 그 DB 는 손으로 스키마를 적용하는 곳이라, docs/schema.sql 이 바뀌면
+ * 적용한 사람 기계에서만 통과하고 다른 사람 기계에서는
+ * Unknown column 'round' / 'status' 로 깨졌다.
+ * 통과 여부가 코드가 아니라 각자 로컬 DB 상태에 달려 있었다.
+ *
+ * 이제 docs/schema.sql 로 초기화된 컨테이너를 쓴다.
+ * 스키마와 테스트가 같은 커밋에서 함께 움직인다.
+ */
 @SpringBatchTest
-@ActiveProfiles("test")
 @Import(InvariantFixture.class)
-class VerificationJobIntegrationTest {
+class VerificationJobIntegrationTest extends IntegrationTestContainers {
 
     @Autowired JobLauncherTestUtils utils;
     @Autowired JobRepositoryTestUtils jobRepositoryTestUtils;

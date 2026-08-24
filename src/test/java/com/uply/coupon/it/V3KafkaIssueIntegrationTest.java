@@ -26,7 +26,11 @@ import org.springframework.data.redis.core.StringRedisTemplate;
         properties = {
             "coupon.issue.strategy=LUA_SCRIPT",
             "coupon.save.strategy=kafka",
-            "coupon.idempotency.enabled=false"
+            "coupon.idempotency.enabled=false",
+            // Kafka 소비가 검증 대상인 회차는 여기 하나뿐이다.
+            // 나머지 통합 테스트는 모두 false 이므로 coupon-service 그룹의 멤버는 이 하나여야 한다.
+            // 그 전제는 setUp() 에서 broker 에 직접 확인한다.
+            "coupon.kafka.consumer.enabled=true"
         })
 class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
 
@@ -89,6 +93,16 @@ class V3KafkaIssueIntegrationTest extends IntegrationTestContainers {
          * 현재 fixture 데이터 기준으로 준비한다.
          */
         warmupService.warmupCampaign(CouponIntegrationFixture.CAMPAIGN_ID);
+
+        /*
+         * 컨슈머를 켠 컨텍스트가 이 회차 하나뿐인지 broker 에 직접 확인한다.
+         *
+         * 설정을 넣었으니 됐겠지로 넘기지 않는다.
+         * 다른 컨텍스트의 컨슈머가 같은 group 에 붙어 있으면 파티션을 나눠 갖게 되고,
+         * 그러면 이 회차의 결과는 Kafka 경로의 근거가 되지 못한다.
+         * 멤버가 둘 이상이면 현재 멤버 목록을 그대로 담아 실패한다.
+         */
+        assertIssueConsumerGroupIsExclusive();
     }
 
     @AfterEach
