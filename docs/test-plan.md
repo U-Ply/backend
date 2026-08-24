@@ -402,8 +402,9 @@ Windows PowerShell:
 기존 DB volume을 유지하는 경우 `docs/schema.sql`은 기존 테이블에
 자동으로 다시 적용되지 않으므로 다음 migration을 1회 실행한다.
 
-```sql
-docs/migration/2026-08-21-verification-report-round-status.sql
+```bash
+docker exec -i coupon-mysql mysql -uroot -proot1234 coupon_db < docs/migration/2026-08-21-verification-report-round-status.sql
+docker exec -i coupon-mysql mysql -uroot -proot1234 coupon_db_test < docs/migration/2026-08-21-verification-report-round-status.sql
 ```
 ### 8.4 부하 발생기 분리
 
