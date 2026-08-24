@@ -94,4 +94,7 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
     List<CampaignStock> findAllByCampaignId(Long campaignId);
 
     List<CampaignStock> findAllByCampaignIdOrderByRouteIdAscFareClassAsc(Long campaignId);
+
+    // stockId(id)와 campaignId 조합의 존재 여부만 boolean으로 반환
+    boolean existsByIdAndCampaignId(Long id, Long campaignId);
 }

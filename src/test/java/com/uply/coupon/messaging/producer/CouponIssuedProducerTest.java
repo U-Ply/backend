@@ -93,6 +93,16 @@ class CouponIssuedProducerTest {
         verify(objectMapper).writeValueAsString(eventCaptor.capture());
         CouponIssuedEvent published = eventCaptor.getValue();
 
+        // 1. Long 타입 필드들의 순서 및 값 일치 검증 (인자 섞임 방지)
+        assertThat(published.couponId()).isEqualTo(couponId);
+        assertThat(published.userId()).isEqualTo(userId);
+        assertThat(published.campaignId()).isEqualTo(campaignId);
+        assertThat(published.stockId()).isEqualTo(stockId);
+
+        // 2. 멱등성 키 및 만료 시각(expireAt) 변환 값 검증
+        assertThat(published.idempotencyKey()).isEqualTo(idempotencyKey);
+        assertThat(published.expireAt()).isEqualTo(expireAt.toInstant(ZoneOffset.UTC));
+
         // issuedAt은 전략이 확정한 발급 시각 그대로여야 한다 (여기서 새로 만들면 D-1이 깨진다)
         assertThat(published.issuedAt()).isEqualTo(issuedAt.toInstant(ZoneOffset.UTC));
 

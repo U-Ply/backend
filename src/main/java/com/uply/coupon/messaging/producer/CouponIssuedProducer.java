@@ -68,6 +68,7 @@ public class CouponIssuedProducer implements CouponSaveStrategy {
                         stockId,
                         idempotencyKey,
                         issuedAt.toInstant(ZoneOffset.UTC),
+                        expireAt.toInstant(ZoneOffset.UTC),
                         Instant.now());
 
         // #2. 직렬화 (확실한 실패 지점)
