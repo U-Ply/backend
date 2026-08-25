@@ -24,7 +24,7 @@
 | 레벨 | 핵심 목적 | 규모 | 실행 환경·도구 |
 | --- | --- | --- | --- |
 | Level 1 | 전략별 기능, 비즈니스 규칙 및 소규모 동시성 오류를 빠르게 검출한다. 성능 수치가 아니라 코드 회귀 여부를 판정한다. | 재고 10장, 사용자 30명 | 로컬 Docker, JUnit, Spring Boot Test |
-| Level 2 | 동일한 AWS 환경에서 V0~V3을 비교해 Redis와 Kafka 도입 효과 및 비용을 분리하고 기술 선택의 근거를 만든다. | 사용자·요청 20,000건, VU 단계적 증가 | AWS EC2, k6, Prometheus, Grafana |
+| Level 2 | 동일한 AWS 환경에서 V0~V3을 비교해 Redis와 Kafka 도입 효과 및 비용을 분리하고 기술 선택의 근거를 만든다. | 사용자·요청 20,000건 | AWS EC2, k6, Prometheus, Grafana |
 | Level 3 | 최종 채택 전략이 API 서버 2대 이상의 분산 환경에서 필수 요구사항을 만족하는지 인수 판정한다. | 재고 10,000장, 동시 사용자 20,000명 | AWS EC2, k6, 검증 배치, Prometheus, Grafana |
 
 ## 4. 비교 대상
@@ -103,6 +103,42 @@ docker compose up -d mysql
 
 `docs/schema.sql`은 테스트 실행마다 다시 적용하지 않는다. 로컬 스키마를 완전히 재생성해야 할 때만 운영체제별 `reset-schema` 스크립트를 사용하며, 이 작업은 기존 테스트 데이터를 모두 삭제한다.
 
+
+#### 5.3.1 Testcontainers 통합 테스트
+
+`com.uply.coupon.it` 패키지의 통합 테스트는 Testcontainers를 사용한다.
+
+실행 전 Docker Desktop이 실행 중이어야 한다.
+
+실행 명령:
+
+```bash
+./gradlew test --tests "com.uply.coupon.it.*"
+```
+
+Testcontainers 통합 테스트는 로컬 개발 환경의 MySQL, Redis, Kafka를 사용하거나 초기화하지 않는다.
+
+테스트 실행 시 다음 컨테이너가 자동으로 생성된다.
+
+* MySQL 컨테이너
+* Redis 컨테이너
+* Kafka 컨테이너
+
+따라서 Testcontainers 통합 테스트를 실행하기 위해 로컬 개발 DB의 데이터를 삭제하거나 Redis 재고 키를 초기화하거나 Kafka 토픽을 삭제할 필요가 없다.
+
+Testcontainers 통합 테스트의 결과는 다음 위치에 저장한다.
+
+```text
+build/round-results
+```
+여기에 생성된 결과 중 대표 회차를 공식 테스트 결과로 반영할 경우, 결과를 검토한 후 다음 문서에 반영한다.
+
+```text
+docs/round-results
+```
+Testcontainers 통합 테스트는 로컬 개발 환경의 데이터를 변경하지 않는 것을 원칙으로 한다.
+
+
 ### 5.4 Level 1 공통 검증 항목 및 전략별 판정
 
 - 처리되지 않은 예외가 없어야 한다.
@@ -169,14 +205,13 @@ Level 2는 로컬 PC 성능이 아니라 팀이 합의한 동일한 AWS 환경�
 - 동일한 k6 시나리오를 모든 전략에 적용한다.
 - 전체 요청은 정확히 20,000건이다.
 - 워밍업 결과는 본 측정 결과에서 제외한다.
-- 본 측정은 전략별 최소 3회 실행한다.
-- 비교값은 기본적으로 3회 실행의 중앙값을 사용한다.
+- 본 측정은 전략별 1회 실행한다.
 - 전략 변경 이외의 애플리케이션·인프라 설정은 고정한다.
 
 동시 VU는 AWS 환경이 부하를 감당할 수 있는지 단계적으로 확인한다.
 
 ```text
-500 → 1,000 → 5,000 VU
+	1,000 VU
 ```
 
 각 단계의 전체 요청 수는 20,000건으로 유지한다. 모든 전략은 팀이 선택한 동일한 VU 단계에서 비교하며, 특정 전략에만 유리한 VU 결과를 선택하지 않는다. 20,000명 동시 요청 요구사항 충족 여부는 Level 3에서 별도로 판정한다.
@@ -402,8 +437,9 @@ Windows PowerShell:
 기존 DB volume을 유지하는 경우 `docs/schema.sql`은 기존 테이블에
 자동으로 다시 적용되지 않으므로 다음 migration을 1회 실행한다.
 
-```sql
-docs/migration/2026-08-21-verification-report-round-status.sql
+```bash
+docker exec -i coupon-mysql mysql -uroot -proot1234 coupon_db < docs/migration/2026-08-21-verification-report-round-status.sql
+docker exec -i coupon-mysql mysql -uroot -proot1234 coupon_db_test < docs/migration/2026-08-21-verification-report-round-status.sql
 ```
 ### 8.4 부하 발생기 분리
 

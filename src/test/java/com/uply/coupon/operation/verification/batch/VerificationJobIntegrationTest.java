@@ -2,6 +2,7 @@ package com.uply.coupon.operation.verification.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uply.coupon.it.IntegrationTestContainers;
 import com.uply.coupon.operation.verification.InvariantFixture;
 import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import org.junit.jupiter.api.AfterEach;
@@ -17,16 +18,24 @@ import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 
-@SpringBootTest
+/*
+ * IntegrationTestContainers 를 상속한다.
+ *
+ * 전에는 @ActiveProfiles("test") 로 로컬 MySQL(coupon_db_test)을 봤다.
+ * 그 DB 는 손으로 스키마를 적용하는 곳이라, docs/schema.sql 이 바뀌면
+ * 적용한 사람 기계에서만 통과하고 다른 사람 기계에서는
+ * Unknown column 'round' / 'status' 로 깨졌다.
+ * 통과 여부가 코드가 아니라 각자 로컬 DB 상태에 달려 있었다.
+ *
+ * 이제 docs/schema.sql 로 초기화된 컨테이너를 쓴다.
+ * 스키마와 테스트가 같은 커밋에서 함께 움직인다.
+ */
 @SpringBatchTest
-@ActiveProfiles("test")
 @Import(InvariantFixture.class)
-class VerificationJobIntegrationTest {
+class VerificationJobIntegrationTest extends IntegrationTestContainers {
 
     @Autowired JobLauncherTestUtils utils;
     @Autowired JobRepositoryTestUtils jobRepositoryTestUtils;
@@ -180,5 +189,28 @@ class VerificationJobIntegrationTest {
         assertThat(md).contains("CLOCK-02");
         assertThat(md).containsPattern("`CLOCK-02`[^\\n]*\\| N/A \\|");
         assertThat(md).doesNotContainPattern("`CLOCK-02`[^\\n]*\\| 통과 \\|");
+    }
+
+    /**
+     * V2·V3 는 Lua 가 반환한 nowMillis 를 issued_at·event_at 에 쓰므로 Redis 시계 회차다. 여기서 N/A 가 나오면
+     * RoundVersion 이 false 로 되돌아갔다는 뜻이고, 그러면 검사하지 않은 것을 통과로 세게 된다.
+     */
+    @Test
+    @DisplayName("Redis 시계 회차에서 CLOCK-02 는 실제로 검사된다 - N/A 로 새면 안 된다")
+    void clock02_checked_on_redis_round() throws Exception {
+        utils.launchJob(params("job-v2", null, "V2"));
+
+        String status =
+                jdbc.queryForObject(
+                        "SELECT status FROM verification_report WHERE run_id='job-v2' AND rule_code='CLOCK-02'",
+                        String.class);
+        assertThat(status).isEqualTo("CHECKED");
+
+        // N/A 가 하나도 없어야 한다. V1 회차의 2건과 대비된다.
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM verification_report WHERE run_id='job-v2' AND status='NOT_APPLICABLE'",
+                                Integer.class))
+                .isZero();
     }
 }

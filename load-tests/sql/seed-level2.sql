@@ -3,6 +3,9 @@
 
 USE coupon_db;
 
+-- mysql CLI의 기본 client charset이 latin1인 환경에서도 한글 시드가 깨지지 않게 한다.
+SET NAMES utf8mb4;
+
 SET FOREIGN_KEY_CHECKS = 0;
 TRUNCATE TABLE verification_violation;
 TRUNCATE TABLE verification_report;
