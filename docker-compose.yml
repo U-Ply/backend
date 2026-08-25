@@ -30,7 +30,8 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # 로컬은 localhost, AWS 분리 배치는 데이터·관측 EC2의 사설 IP를 전달한다.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_ADVERTISED_HOST:-localhost}:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@coupon-kafka:9093
@@ -43,7 +44,8 @@ services:
     image: prom/prometheus:v2.53.0
     container_name: coupon-prometheus
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # AWS에서는 Git 밖에 생성한 설정 파일의 절대 경로를 전달해 작업트리를 깨끗하게 유지한다.
+      - ${PROMETHEUS_CONFIG_FILE:-./prometheus/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
     extra_hosts:

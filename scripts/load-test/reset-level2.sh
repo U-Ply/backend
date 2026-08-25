@@ -8,7 +8,10 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 echo "WARNING: This deletes the previous Level 2 run results from MySQL and Redis."
-read -r -p "Type RESET to continue: " confirmation
+confirmation="${LEVEL2_RESET_CONFIRM:-}"
+if [[ -z "${confirmation}" ]]; then
+    read -r -p "Type RESET to continue: " confirmation
+fi
 
 if [[ "${confirmation}" != "RESET" ]]; then
     echo "Cancelled. No data was changed."

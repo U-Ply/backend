@@ -8,7 +8,10 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 echo "WARNING: This replaces all coupon_db and Redis data with the Level 2 seed."
-read -r -p "Type SEED to continue: " confirmation
+confirmation="${LEVEL2_SEED_CONFIRM:-}"
+if [[ -z "${confirmation}" ]]; then
+    read -r -p "Type SEED to continue: " confirmation
+fi
 
 if [[ "${confirmation}" != "SEED" ]]; then
     echo "Cancelled. No data was changed."
