@@ -10,7 +10,6 @@ import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,7 +27,7 @@ class RedisStockIdLookupTest {
     @Mock private StringRedisTemplate redisTemplate;
 
     @Mock private ValueOperations<String, String> valueOperations;
-    
+
     @Mock private CampaignStockRepository campaignStockRepository;
 
     @Test
@@ -53,7 +52,8 @@ class RedisStockIdLookupTest {
     }
 
     @Test
-    @DisplayName("Redis에 stockId 키가 없으나(null) DB에 존재할 경우 CouponIssueException(CAMPAIGN_NOT_CACHED)이 발생한다.")
+    @DisplayName(
+            "Redis에 stockId 키가 없으나(null) DB에 존재할 경우 CouponIssueException(CAMPAIGN_NOT_CACHED)이 발생한다.")
     void lookupStockId_NotFound_ThrowsException() {
         // given
         Long campaignId = 1L;
@@ -64,8 +64,10 @@ class RedisStockIdLookupTest {
         given(redisTemplate.opsForValue()).willReturn(valueOperations);
         given(valueOperations.get(expectedKey)).willReturn(null);
         // DB에는 존재한다는 가정
-        given(campaignStockRepository.existsByCampaignIdAndRouteIdAndFareClass(campaignId, routeId, fareClass))
-        .willReturn(true);
+        given(
+                        campaignStockRepository.existsByCampaignIdAndRouteIdAndFareClass(
+                                campaignId, routeId, fareClass))
+                .willReturn(true);
 
         // when & then
         assertThatThrownBy(() -> redisStockIdLookup.lookupStockId(campaignId, routeId, fareClass))
@@ -74,9 +76,10 @@ class RedisStockIdLookupTest {
                 .isEqualTo(IssueFailReason.CAMPAIGN_NOT_CACHED);
 
         verify(valueOperations).get(expectedKey);
-        verify(campaignStockRepository).existsByCampaignIdAndRouteIdAndFareClass(campaignId, routeId, fareClass);
+        verify(campaignStockRepository)
+                .existsByCampaignIdAndRouteIdAndFareClass(campaignId, routeId, fareClass);
     }
-    
+
     @Test
     @DisplayName("Redis와 DB 모두에 존재하지 않을 경우 CampaignNotFoundException이 발생한다.")
     void lookupStockId_CacheMiss_NotInDb_ThrowsCampaignNotFoundException() {
@@ -88,7 +91,9 @@ class RedisStockIdLookupTest {
 
         given(redisTemplate.opsForValue()).willReturn(valueOperations);
         given(valueOperations.get(expectedKey)).willReturn(null);
-        given(campaignStockRepository.existsByCampaignIdAndRouteIdAndFareClass(campaignId, routeId, fareClass))
+        given(
+                        campaignStockRepository.existsByCampaignIdAndRouteIdAndFareClass(
+                                campaignId, routeId, fareClass))
                 .willReturn(false);
 
         // when & then
@@ -96,6 +101,7 @@ class RedisStockIdLookupTest {
                 .isInstanceOf(CampaignNotFoundException.class);
 
         verify(valueOperations).get(expectedKey);
-        verify(campaignStockRepository).existsByCampaignIdAndRouteIdAndFareClass(campaignId, routeId, fareClass);
+        verify(campaignStockRepository)
+                .existsByCampaignIdAndRouteIdAndFareClass(campaignId, routeId, fareClass);
     }
 }
