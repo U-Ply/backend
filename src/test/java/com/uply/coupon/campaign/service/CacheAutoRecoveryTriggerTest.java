@@ -125,6 +125,43 @@ class CacheAutoRecoveryTriggerTest {
                 .recoverMissingCache(CAMPAIGN_ID);
     }
 
+    // 리뷰에서 지적된 핵심 결함: 락은 이미 잡혔는데(setIfAbsent 성공) Executor 큐가 가득 차
+    // execute()가 RejectedExecutionException을 던지면, 복구는 한 번도 안 도는데 락만
+    // lockSeconds 동안 남아 다음 시도(자동이든 수동이든)를 막는다. 이 테스트가 실패한다면
+    // 그 결함이 재발한 것이다.
+    @Test
+    @DisplayName("Executor가 작업 제출을 거부하면 락을 즉시 해제하고 카운터도 증가시키지 않는다")
+    void onCacheMiss_ExecutorRejects_ReleasesLockImmediatelyAndDoesNotIncrementCounter() {
+        // given — 큐 포화를 흉내내는 Executor: 항상 제출을 거부한다.
+        java.util.concurrent.Executor rejectingExecutor =
+                task -> {
+                    throw new java.util.concurrent.RejectedExecutionException("queue full");
+                };
+        CacheAutoRecoveryTrigger triggerWithFullQueue =
+                new CacheAutoRecoveryTrigger(
+                        redisTemplate,
+                        campaignCacheWarmupService,
+                        rejectingExecutor,
+                        meterRegistry,
+                        THRESHOLD,
+                        WINDOW_SECONDS,
+                        LOCK_SECONDS);
+
+        given(valueOperations.increment("cache:recovery:trigger-count:1"))
+                .willReturn((long) THRESHOLD);
+        given(
+                        valueOperations.setIfAbsent(
+                                "cache:recovery:lock:1", "1", Duration.ofSeconds(LOCK_SECONDS)))
+                .willReturn(true);
+
+        triggerWithFullQueue.onCacheMiss(CAMPAIGN_ID);
+
+        // then — 락을 잡았던 그 키를 즉시 지워야 lockSeconds를 기다리지 않고 재시도할 수 있다.
+        verify(redisTemplate).delete("cache:recovery:lock:1");
+        verifyNoInteractions(campaignCacheWarmupService);
+        assertCounterEquals("coupon.cache.auto_recovery.triggered", 0.0);
+    }
+
     @Test
     @DisplayName("복구 실행 도중 예외가 나도 트리거 판정 자체는 실패하지 않는다")
     void onCacheMiss_RecoveryThrows_DoesNotPropagate() {

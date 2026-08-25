@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -87,8 +88,21 @@ public class CacheAutoRecoveryTrigger {
                     windowSeconds,
                     thresholdCount,
                     campaignId);
+
+            // 락은 이미 잡혔으므로, 작업 제출 자체가 실패하면(Executor 큐 포화 등) 곧바로
+            // 풀어줘야 한다. 그러지 않으면 복구가 한 번도 안 돌았는데 lockSeconds 동안
+            // 다음 시도(자동이든 수동이든)를 막는 셈이 된다 — 하필 이 기능이 필요한
+            // "다수 캠페인이 동시에 CAMPAIGN_NOT_CACHED를 쏟아내는" 상황에서 가장
+            // 발생하기 쉬운 실패 모드다. 카운터도 실제 제출에 성공했을 때만 올린다.
+            try {
+                cacheRecoveryExecutor.execute(() -> runRecovery(campaignId));
+            } catch (RejectedExecutionException e) {
+                log.error(
+                        "자동 복구 작업 제출 실패(Executor 포화) — 락을 즉시 해제한다. campaignId: {}", campaignId, e);
+                releaseLock(campaignId);
+                return;
+            }
             autoRecoveryTriggeredCounter.increment();
-            cacheRecoveryExecutor.execute(() -> runRecovery(campaignId));
         } catch (Exception e) {
             log.error("자동 캐시 복구 트리거 판정 중 예외 발생 — campaignId: {}", campaignId, e);
         }
@@ -119,5 +133,9 @@ public class CacheAutoRecoveryTrigger {
                         .opsForValue()
                         .setIfAbsent(key, LOCK_VALUE, Duration.ofSeconds(lockSeconds));
         return Boolean.TRUE.equals(acquired);
+    }
+
+    private void releaseLock(Long campaignId) {
+        redisTemplate.delete(String.format(LOCK_KEY, campaignId));
     }
 }
