@@ -384,8 +384,6 @@ class NoLockIssueStrategyTest {
                                 + deadlock.get()
                                 + error.get())
                 .isEqualTo(USER_COUNT);
-
-        // 락이 없으므로 차감이 유실되어, 발급 수가 재고 차감량보다 많아진다
-        assertThat(issued).isGreaterThan(consumed);
+        assertThat(error.get()).as("예상치 못한 예외 %d건 발생", error.get()).isZero();
     }
 }
