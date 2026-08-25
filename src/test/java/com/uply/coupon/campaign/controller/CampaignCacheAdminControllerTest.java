@@ -1,5 +1,6 @@
 package com.uply.coupon.campaign.controller;
 
+import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -12,6 +13,7 @@ import com.uply.coupon.common.exception.CacheRecoveryNotSettledException;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -85,6 +87,20 @@ class CampaignCacheAdminControllerTest {
                 .andExpect(jsonPath("$.status").value("RECOVERED"));
 
         verify(campaignCacheWarmupService).recoverMissingCache(CAMPAIGN_ID);
+    }
+
+    // 자체 점검에서 불일치가 나오면 200이라도 호출자가 로그를 안 보고도 응답만으로
+    // 알 수 있어야 한다 — status와 mismatches 배열 둘 다로 노출한다.
+    @Test
+    @DisplayName("자체 점검에서 불일치가 발견되면 200이지만 RECOVERED_WITH_MISMATCH와 상세를 반환한다")
+    void recoverWithMismatchReturns200WithMismatchStatus() throws Exception {
+        given(campaignCacheWarmupService.recoverMissingCache(CAMPAIGN_ID))
+                .willReturn(List.of("stockId=100 redis=999 db=70"));
+
+        mockMvc.perform(post("/api/admin/campaigns/{campaignId}/cache/recover", CAMPAIGN_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RECOVERED_WITH_MISMATCH"))
+                .andExpect(jsonPath("$.mismatches[0]").value("stockId=100 redis=999 db=70"));
     }
 
     @Test

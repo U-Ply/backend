@@ -1,5 +1,6 @@
 package com.uply.coupon.campaign.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -12,9 +13,7 @@ import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
-import com.uply.coupon.operation.reconciliation.domain.StockReconcileRun;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
-import com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
@@ -53,8 +52,6 @@ class CampaignCacheWarmupServiceTest {
     @Mock private ObjectProvider<KafkaSettlementChecker> kafkaSettlementCheckerProvider;
 
     @Mock private KafkaSettlementChecker kafkaSettlementChecker;
-
-    @Mock private RedisStockReconcileRunner redisStockReconcileRunner;
 
     @Mock private CampaignStock stock1;
 
@@ -217,8 +214,6 @@ class CampaignCacheWarmupServiceTest {
         Long campaignId = 1L;
         givenSingleStockCampaign(campaignId);
         given(redisTemplate.hasKey("issued:1")).willReturn(true);
-        given(redisStockReconcileRunner.run())
-                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
 
         // when
         campaignCacheWarmupService.recoverMissingCache(campaignId);
@@ -240,8 +235,6 @@ class CampaignCacheWarmupServiceTest {
         Long campaignId = 1L;
         givenSingleStockCampaign(campaignId);
         given(redisTemplate.hasKey("issued:1")).willReturn(true);
-        given(redisStockReconcileRunner.run())
-                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
 
         // when
         campaignCacheWarmupService.recoverMissingCache(campaignId);
@@ -260,8 +253,6 @@ class CampaignCacheWarmupServiceTest {
         given(redisTemplate.hasKey("issued:1")).willReturn(false);
         given(redisTemplate.opsForSet()).willReturn(setOperations);
         given(couponRepository.findUserIdsByCampaignId(campaignId)).willReturn(List.of(100L, 101L));
-        given(redisStockReconcileRunner.run())
-                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
 
         // when
         campaignCacheWarmupService.recoverMissingCache(campaignId);
@@ -281,8 +272,6 @@ class CampaignCacheWarmupServiceTest {
         given(redisTemplate.hasKey("issued:1")).willReturn(false);
         given(couponRepository.findUserIdsByCampaignId(campaignId))
                 .willReturn(Collections.emptyList());
-        given(redisStockReconcileRunner.run())
-                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
 
         // when
         campaignCacheWarmupService.recoverMissingCache(campaignId);
@@ -303,24 +292,64 @@ class CampaignCacheWarmupServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Kafka 미정착");
 
-        verifyNoInteractions(campaignStockRepository, redisStockReconcileRunner);
+        verifyNoInteractions(campaignStockRepository);
     }
 
+    // 복구 직후 자체 점검: REC-01(시스템 전체 배치)을 트리거하지 않고, 지금 복구한
+    // 캠페인의 재고풀만 Redis-DB로 비교한다. 코드 리뷰에서 REC-01을 그대로 호출하면
+    // (1) campaign_id 조건 없이 전체 스캔이라 무관한 캠페인 불일치까지 섞이고
+    // (2) VerificationResultWriter 기록·MISMATCH 실패 처리를 우회한다는 지적을 받아
+    // 이 스코프 한정 자체 점검으로 대체했다.
+
     @Test
-    @DisplayName("복구 완료 후 REC-01(Redis-DB 재고 대사)을 1회 실행한다")
-    void recoverMissingCache_TriggersReconciliationAfterSuccess() {
+    @DisplayName("자체 점검: 복구한 재고풀의 Redis 값이 DB와 일치하면 빈 리스트를 반환한다")
+    void recoverMissingCache_ScopedCheck_PassesWhenValuesMatch() {
         // given
         Long campaignId = 1L;
         givenSingleStockCampaign(campaignId);
         given(redisTemplate.hasKey("issued:1")).willReturn(true);
-        given(redisStockReconcileRunner.run())
-                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
+        given(valueOperations.get("stock:100")).willReturn("70"); // DB remainingStock과 동일
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        assertThat(mismatches).isEmpty();
+    }
+
+    @Test
+    @DisplayName("자체 점검: SETNX가 안 건드린 기존 키 값이 DB와 다르면 불일치로 보고한다")
+    void recoverMissingCache_ScopedCheck_ReportsMismatch_WhenExistingValueIsWrong() {
+        // given — stock:100은 이미 존재하므로(setIfAbsent가 손대지 않음) 오염된 값이 그대로 남는다.
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.get("stock:100")).willReturn("999"); // DB(70)와 다른 오염값
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        assertThat(mismatches).hasSize(1);
+        assertThat(mismatches.get(0)).contains("stockId=100", "redis=999", "db=70");
+    }
+
+    @Test
+    @DisplayName("자체 점검은 지금 복구한 캠페인의 재고풀만 보고, 시스템 전체 REC-01 배치를 트리거하지 않는다")
+    void recoverMissingCache_DoesNotTriggerSystemWideReconciliation() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.get("stock:100")).willReturn("70");
 
         // when
         campaignCacheWarmupService.recoverMissingCache(campaignId);
 
-        // then
-        verify(redisStockReconcileRunner).run();
+        // then — campaign_stocks 전체를 훑는 배치용 JdbcTemplate 조회가 이 메서드 경로에는 없다.
+        // campaignStockRepository(JPA)만 쓰였는지로 간접 확인한다.
+        verify(campaignStockRepository).findAllByCampaignId(campaignId);
+        verifyNoMoreInteractions(campaignStockRepository);
     }
 
     /** 재고 풀 하나짜리 정상 캠페인 스텁 (오픈·만료 시각 포함) */

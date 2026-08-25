@@ -2,6 +2,7 @@ package com.uply.coupon.campaign.controller;
 
 import com.uply.coupon.campaign.dto.response.CampaignCacheWarmupResponse;
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -45,8 +46,8 @@ public class CampaignCacheAdminController {
     @PostMapping("/{campaignId}/cache/recover")
     public ResponseEntity<CampaignCacheWarmupResponse> recover(
             @PathVariable("campaignId") Long campaignId) {
-        campaignCacheWarmupService.recoverMissingCache(campaignId);
-        log.info("캠페인 캐시 부분 복구 완료 — campaignId: {}", campaignId);
-        return ResponseEntity.ok(CampaignCacheWarmupResponse.recovered(campaignId));
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+        log.info("캠페인 캐시 부분 복구 완료 — campaignId: {}, mismatches: {}", campaignId, mismatches.size());
+        return ResponseEntity.ok(CampaignCacheWarmupResponse.recovered(campaignId, mismatches));
     }
 }

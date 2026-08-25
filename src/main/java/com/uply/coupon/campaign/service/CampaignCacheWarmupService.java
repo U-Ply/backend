@@ -7,10 +7,9 @@ import com.uply.coupon.common.exception.CacheRecoveryNotSettledException;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
-import com.uply.coupon.operation.reconciliation.domain.StockReconcileRun;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
-import com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -48,8 +47,6 @@ public class CampaignCacheWarmupService {
     // V3(coupon.save.strategy=kafka)에서만 빈이 존재한다. V0~V2에서는 비어 있으므로
     // 직접 주입하면 컨텍스트 기동이 깨진다.
     private final ObjectProvider<KafkaSettlementChecker> kafkaSettlementCheckerProvider;
-
-    private final RedisStockReconcileRunner redisStockReconcileRunner;
 
     /**
      * 특정 캠페인의 잔여 재고 및 발급 이력을 RDB에서 조회하여 Redis 캐시에 적재/복구
@@ -134,12 +131,21 @@ public class CampaignCacheWarmupService {
      * 감소 중인 {@code stock:{stockId}}가 DB 스냅샷 값으로 되돌아가 초과 발급을 유발하는 일이 없다. {@code
      * issued:{campaignId}}도 키 자체가 없을 때만 DB 기준으로 채우며, 이미 있으면(빈 캠페인이라 회원이 0명인 정상 상태 포함) 손대지 않는다.
      *
-     * <p>복구가 실제로 무언가를 채웠는지와 무관하게, 완료 후 REC-01(Redis-DB 재고 대사)을 1회 실행해 결과를 로그로 남긴다.
+     * <p>복구 직후, 이번에 복구한 캠페인의 재고풀만 대상으로 Redis {@code stock:{stockId}} 값과 DB {@code remainingStock}을
+     * 비교하는 가벼운 자체 점검을 수행한다. 시스템 전체를 훑는 REC-01({@code stockReconcileJob})은 여기서 트리거하지 않는다 — REC-01은
+     * {@code campaign_stocks} 테이블을 캠페인 조건 없이 전수 스캔하도록 설계돼 있어({@link
+     * com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner}), 이 메서드 안에서 부르면
+     * 지금 복구한 캠페인과 무관한 다른 캠페인의 기존 불일치까지 이 호출의 성패에 섞여 들어간다. 시스템 전체 정합성은 기존 REC-01 스케줄러·수동 배치를 그대로 쓴다.
+     *
+     * <p>이 자체 점검은 SETNX가 "이미 있어서" 건드리지 않은 키에 실제로는 잘못된 값이 들어있는 경우(유실이 아니라 오염)도 잡아낸다 — SETNX 자체는 그런
+     * 손상을 고쳐주지 않으므로, 발견되면 로그와 응답으로 알리고 실제 수정은 운영자가 {@link #warmupCampaign}(트래픽 차단 후 전체 재구축)으로 판단하게
+     * 한다.
      *
      * @param campaignId 복구 대상 캠페인 ID
+     * @return 불일치 상세 목록. 비어 있으면 이번에 복구한 캠페인의 재고풀이 전부 Redis·DB 일치.
      */
     @Transactional(readOnly = true)
-    public void recoverMissingCache(Long campaignId) {
+    public List<String> recoverMissingCache(Long campaignId) {
         log.info("Starting selective cache recovery for campaignId: {}", campaignId);
 
         requireKafkaSettled();
@@ -150,7 +156,7 @@ public class CampaignCacheWarmupService {
                 throw new CampaignNotFoundException(campaignId);
             }
             log.warn("No stocks found for campaignId: {}", campaignId);
-            return;
+            return List.of();
         }
 
         long openAtEpochMillis =
@@ -176,14 +182,19 @@ public class CampaignCacheWarmupService {
 
         rebuildIssuedSetIfMissing(campaignId);
 
-        StockReconcileRun reconcileRun = redisStockReconcileRunner.run();
-        log.info(
-                "Post-recovery REC-01 check for campaignId {}: status={}, detail={}",
-                campaignId,
-                reconcileRun.status(),
-                reconcileRun.detail());
+        List<String> mismatches = verifyRecoveredStocks(stocks);
+        if (mismatches.isEmpty()) {
+            log.info("Post-recovery consistency check passed for campaignId: {}", campaignId);
+        } else {
+            log.warn(
+                    "Post-recovery consistency check found {} mismatch(es) for campaignId {}: {}",
+                    mismatches.size(),
+                    campaignId,
+                    mismatches);
+        }
 
         log.info("Selective cache recovery completed for campaignId: {}", campaignId);
+        return mismatches;
     }
 
     /**
@@ -271,5 +282,46 @@ public class CampaignCacheWarmupService {
                 "Rebuilt missing issued Set for campaignId: {} with {} users",
                 campaignId,
                 userIdStrs.length);
+    }
+
+    /**
+     * 지금 복구한 캠페인의 재고풀만 대상으로 Redis {@code stock:{stockId}}와 DB {@code remainingStock}을 비교한다.
+     * REC-01({@link com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner})과
+     * 같은 판정 방식을 쓰되, 시스템 전체가 아니라 이 캠페인의 재고풀로만 범위를 좁힌 것이다.
+     */
+    private List<String> verifyRecoveredStocks(List<CampaignStock> stocks) {
+        List<String> mismatches = new ArrayList<>();
+        for (CampaignStock stock : stocks) {
+            String key = String.format(KEY_STOCK, stock.getId());
+            String redisValue = redisTemplate.opsForValue().get(key);
+            int dbRemaining = stock.getRemainingStock();
+
+            if (redisValue == null) {
+                mismatches.add("stockId=" + stock.getId() + " redis=MISSING db=" + dbRemaining);
+                continue;
+            }
+
+            try {
+                int redisRemaining = Integer.parseInt(redisValue);
+                if (redisRemaining != dbRemaining) {
+                    mismatches.add(
+                            "stockId="
+                                    + stock.getId()
+                                    + " redis="
+                                    + redisRemaining
+                                    + " db="
+                                    + dbRemaining);
+                }
+            } catch (NumberFormatException e) {
+                mismatches.add(
+                        "stockId="
+                                + stock.getId()
+                                + " redis=INVALID("
+                                + redisValue
+                                + ") db="
+                                + dbRemaining);
+            }
+        }
+        return mismatches;
     }
 }

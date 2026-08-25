@@ -265,4 +265,105 @@ class CampaignCacheWarmupIntegrationTest {
         Boolean hasIssuedKey = redisTemplate.hasKey(issuedKey);
         assertThat(hasIssuedKey).isFalse();
     }
+
+    // recoverMissingCache: 운영 중 부분 유실 복구. warmupCampaign 테스트와 달리, 실제
+    // Redis GET/SETNX로 "살아있는 키는 절대 덮어쓰지 않는다"를 직접 검증한다.
+
+    @Test
+    @DisplayName("부분 복구: 실시간으로 감소 중인 stock 값은 그대로 두고, 없는 expireAt만 채운다.")
+    void recoverMissingCache_PreservesLiveStockValue_FillsOnlyMissingKey() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+        Campaign campaign =
+                Campaign.builder()
+                        .name("나고야 노선 할인 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-NGO")
+                        .fareClass("Y")
+                        .totalStock(100)
+                        .build();
+        stock.decreaseStock(30); // DB 기준 잔여 70
+        CampaignStock savedStock = campaignStockRepository.save(stock);
+
+        // 이미 웜업된 상태에서, 발급이 계속 진행돼 Redis 재고가 DB보다 한 걸음 더 앞선(65) 상황을
+        // 흉내낸다. expireAt 키만 유실됐다고 가정한다 (openAt은 이 테스트의 관심사가 아니다).
+        String stockKey = String.format("stock:%d", savedStock.getId());
+        redisTemplate.opsForValue().set(stockKey, "65");
+
+        // when
+        List<String> mismatches =
+                campaignCacheWarmupService.recoverMissingCache(savedCampaign.getId());
+
+        // then
+        // stock 값이 SETNX로 덮어써졌다면 70(DB 스냅샷)이 됐을 것이다. 65 그대로면 살아있는
+        // 값을 건드리지 않았다는 뜻이다.
+        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("65");
+
+        String expireAtKey = String.format("campaign:%d:expireAt", savedCampaign.getId());
+        assertThat(redisTemplate.opsForValue().get(expireAtKey)).isNotNull();
+
+        // 자체 점검은 Redis(65)와 DB(70)의 불일치를 있는 그대로 보고해야 한다 — 숨기면 안 된다.
+        assertThat(mismatches).hasSize(1);
+        assertThat(mismatches.get(0))
+                .contains("stockId=" + savedStock.getId(), "redis=65", "db=70");
+    }
+
+    @Test
+    @DisplayName("부분 복구: issued Set이 없으면 DB 기준으로 SADD만으로 채운다 (RENAME 없음).")
+    void recoverMissingCache_RebuildsIssuedSetAdditively() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+        Campaign campaign =
+                Campaign.builder()
+                        .name("싱가포르 노선 할인 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-SIN")
+                        .fareClass("Y")
+                        .totalStock(50)
+                        .build();
+        CampaignStock savedStock = campaignStockRepository.save(stock);
+
+        jdbcTemplate.update(
+                "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?)",
+                200L,
+                "recover-user200@test.com",
+                "유저200");
+        Coupon coupon =
+                Coupon.issue(
+                        4001L,
+                        200L,
+                        savedCampaign.getId(),
+                        savedStock.getId(),
+                        savedCampaign.getOpenAt(),
+                        savedCampaign.getExpireAt());
+        couponRepository.save(coupon);
+
+        // issued Set 자체가 Redis에 없는 상태(유실) — 다른 키는 아무것도 준비하지 않는다.
+
+        // when
+        List<String> mismatches =
+                campaignCacheWarmupService.recoverMissingCache(savedCampaign.getId());
+
+        // then
+        String issuedKey = String.format("issued:%d", savedCampaign.getId());
+        Set<String> issuedUsers = redisTemplate.opsForSet().members(issuedKey);
+        assertThat(issuedUsers).containsExactly("200");
+
+        // 총재고 50, 발급 0건 상태로 채워졌으므로(DB remainingStock=50) 자체 점검은 통과한다.
+        assertThat(mismatches).isEmpty();
+    }
 }
