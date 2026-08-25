@@ -17,8 +17,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Slf4j
@@ -146,7 +148,11 @@ public class GlobalExceptionHandler {
         return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", exception.getMessage());
     }
 
-    @ExceptionHandler({MethodArgumentNotValidException.class, MissingRequestHeaderException.class})
+    @ExceptionHandler({
+        MethodArgumentNotValidException.class,
+        MissingRequestHeaderException.class,
+        MissingServletRequestParameterException.class
+    })
     public ResponseEntity<ApiErrorResponse> handleInvalidRequest(Exception exception) {
         return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "요청 값이 올바르지 않습니다.");
     }
@@ -219,6 +225,11 @@ public class GlobalExceptionHandler {
         log.debug("Concurrency conflict detail", exception);
         return response(
                 HttpStatus.SERVICE_UNAVAILABLE, "CONCURRENCY_CONFLICT", "동시 요청 경합으로 처리하지 못했습니다.");
+    }
+
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleClientDisconnect(AsyncRequestNotUsableException exception) {
+        log.debug("SSE 클라이언트 연결이 이미 끊어졌습니다", exception);
     }
 
     private ResponseEntity<ApiErrorResponse> conflict(String errorCode, String message) {
