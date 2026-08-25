@@ -1,7 +1,10 @@
 package com.uply.coupon.campaign.service;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
+import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.common.exception.CacheRecoveryNotSettledException;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
@@ -35,6 +38,7 @@ public class CampaignCacheWarmupService {
     private static final String KEY_ISSUED = "issued:%d";
     private static final String KEY_TEMP_ISSUED = "temp:issued:%d";
 
+    private final CampaignRepository campaignRepository;
     private final CampaignStockRepository campaignStockRepository;
     private final CouponRepository couponRepository;
     private final StringRedisTemplate redisTemplate;
@@ -62,6 +66,11 @@ public class CampaignCacheWarmupService {
         // 1. 해당 캠페인의 전체 Stock 목록 DB 조회
         List<CampaignStock> stocks = campaignStockRepository.findAllByCampaignId(campaignId);
         if (stocks.isEmpty()) {
+            // 재고 풀이 없는 원인이 "존재하지 않는 캠페인"이면 호출자가 성공으로 오인하면 안 된다.
+            // 실제 캠페인인데 재고 풀만 아직 없는 경우에만 조용히 넘어간다.
+            if (!campaignRepository.existsById(campaignId)) {
+                throw new CampaignNotFoundException(campaignId);
+            }
             log.warn("No stocks found for campaignId: {}", campaignId);
             return;
         }
@@ -130,7 +139,7 @@ public class CampaignCacheWarmupService {
 
         KafkaSettlement settlement = checker.check();
         if (!settlement.settled()) {
-            throw new IllegalStateException(
+            throw new CacheRecoveryNotSettledException(
                     "Kafka 미정착 상태에서는 캐시 복구를 실행할 수 없습니다. lag="
                             + settlement.lag()
                             + ", dlt="

@@ -111,6 +111,16 @@ public class GlobalExceptionHandler {
         return response(HttpStatus.NOT_FOUND, "CAMPAIGN_NOT_FOUND", exception.getMessage());
     }
 
+    @ExceptionHandler(CacheRecoveryNotSettledException.class)
+    public ResponseEntity<ApiErrorResponse> handleCacheRecoveryNotSettled(
+            CacheRecoveryNotSettledException exception) {
+        log.warn("Cache recovery rejected: {}", exception.getMessage());
+        return response(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "CACHE_RECOVERY_NOT_SETTLED",
+                exception.getMessage());
+    }
+
     @ExceptionHandler(CampaignNotOpenException.class)
     public ResponseEntity<ApiErrorResponse> handleCampaignNotOpen(
             CampaignNotOpenException exception) {

@@ -6,7 +6,9 @@ import static org.mockito.Mockito.*;
 
 import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.domain.CampaignStock;
+import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
@@ -30,6 +32,8 @@ import org.springframework.data.redis.core.ValueOperations;
 class CampaignCacheWarmupServiceTest {
 
     @InjectMocks private CampaignCacheWarmupService campaignCacheWarmupService;
+
+    @Mock private CampaignRepository campaignRepository;
 
     @Mock private CampaignStockRepository campaignStockRepository;
 
@@ -163,17 +167,38 @@ class CampaignCacheWarmupServiceTest {
     }
 
     @Test
-    @DisplayName("캠페인 재고 목록이 비어있으면 Redis 상호작용 없이 조기 리턴된다.")
-    void warmupCampaign_EmptyStocks_EarlyReturn() {
+    @DisplayName("존재하는 캠페인에 재고 풀만 없으면 Redis 상호작용 없이 조기 리턴된다.")
+    void warmupCampaign_ExistingCampaignWithNoStocks_EarlyReturn() {
         // given
         Long campaignId = 1L;
         given(campaignStockRepository.findAllByCampaignId(campaignId))
                 .willReturn(Collections.emptyList());
+        given(campaignRepository.existsById(campaignId)).willReturn(true);
 
         // when
         campaignCacheWarmupService.warmupCampaign(campaignId);
 
         // then
+        verifyNoInteractions(redisTemplate);
+    }
+
+    // 이전에는 존재하지 않는 campaignId로 호출해도 재고 풀이 비어있는 것과 구분하지
+    // 못해 조용히 성공 처리됐다(docs/round-results.md 2026-08-21 미해소 항목).
+    // 관리자 API 호출자가 "복구 성공"으로 오인하지 않도록 404로 구분한다.
+    @Test
+    @DisplayName("존재하지 않는 캠페인이면 CampaignNotFoundException을 던진다.")
+    void warmupCampaign_CampaignDoesNotExist_ThrowsException() {
+        // given
+        Long campaignId = 999L;
+        given(campaignStockRepository.findAllByCampaignId(campaignId))
+                .willReturn(Collections.emptyList());
+        given(campaignRepository.existsById(campaignId)).willReturn(false);
+
+        // when & then
+        assertThatThrownBy(() -> campaignCacheWarmupService.warmupCampaign(campaignId))
+                .isInstanceOf(CampaignNotFoundException.class)
+                .hasMessageContaining(String.valueOf(campaignId));
+
         verifyNoInteractions(redisTemplate);
     }
 
