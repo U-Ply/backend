@@ -3,7 +3,9 @@ package com.uply.coupon.campaign.controller;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -14,7 +16,9 @@ import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -36,14 +40,21 @@ class CampaignStatusStreamControllerTest {
     // 정상 요청이 200과 text/event-stream Content-Type을 반환하는지 검증
     @Test
     void stream_returns200WithEventStreamContentType() throws Exception {
-        given(campaignStatusStreamService.subscribe(1L, "JEJU", "ECONOMY"))
-                .willReturn(new SseEmitter());
+        SseEmitter emitter = new SseEmitter();
+        emitter.complete();
+        given(campaignStatusStreamService.subscribe(1L, "JEJU", "ECONOMY")).willReturn(emitter);
 
-        mockMvc.perform(
-                        get("/api/campaigns/{campaignId}/status/stream", 1L)
-                                .param("routeId", "JEJU")
-                                .param("fareClass", "ECONOMY"))
-                .andExpect(request().asyncStarted());
+        MvcResult mvcResult =
+                mockMvc.perform(
+                                get("/api/campaigns/{campaignId}/status/stream", 1L)
+                                        .param("routeId", "JEJU")
+                                        .param("fareClass", "ECONOMY"))
+                        .andExpect(request().asyncStarted())
+                        .andReturn();
+
+        mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM));
     }
 
     // campaignId, routeId, fareClass가 서비스에 정확히 전달되는지

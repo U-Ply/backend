@@ -48,28 +48,36 @@ public class CampaignStatusStreamService {
 
         Integer remainingStock = campaignCacheRepository.getRemainingStock(stock.getId());
 
-        StockChannel channel =
-                channels.computeIfAbsent(
-                        stock.getId(),
-                        id ->
-                                new StockChannel(
-                                        stock.getId(),
-                                        campaignId,
-                                        stock.getRouteId(),
-                                        stock.getFareClass(),
-                                        stock.getTotalStock(),
-                                        remainingStock));
-
         SseEmitter emitter = new SseEmitter(timeoutMs);
         String emitterId = UUID.randomUUID().toString();
+
+        // 채널 조회/생성과 emitter 등록을 같은 compute() 안에서 원자적으로 처리한다.
+        // 분리돼 있으면 이 사이에 다른 스레드가 채널을 비우고 지워서, 새 emitter가
+        // 폴링 Map에서 빠진 "고아 채널"에 붙는 경쟁 조건이 생긴다.
+        StockChannel channel =
+                channels.compute(
+                        stock.getId(),
+                        (id, existing) -> {
+                            StockChannel target =
+                                    existing != null
+                                            ? existing
+                                            : new StockChannel(
+                                                    stock.getId(),
+                                                    campaignId,
+                                                    stock.getRouteId(),
+                                                    stock.getFareClass(),
+                                                    stock.getTotalStock(),
+                                                    remainingStock);
+                            target.addEmitter(emitterId, emitter);
+                            return target;
+                        });
 
         Runnable cleanup = () -> removeEmitter(channel, emitterId);
         emitter.onCompletion(cleanup);
         emitter.onTimeout(cleanup);
         emitter.onError(ex -> cleanup.run());
 
-        channel.addEmitter(emitterId, emitter);
-        sendEvent(emitter, "stock-update", toResponse(channel));
+        sendEvent(channel, emitterId, emitter, "stock-update", toResponse(channel));
 
         return emitter;
     }
@@ -110,10 +118,17 @@ public class CampaignStatusStreamService {
 
     private void broadcast(StockChannel channel, String eventName, Object payload) {
         channel.getEmitters()
-                .forEach((emitterId, emitter) -> sendEvent(emitter, eventName, payload));
+                .forEach(
+                        (emitterId, emitter) ->
+                                sendEvent(channel, emitterId, emitter, eventName, payload));
     }
 
-    private void sendEvent(SseEmitter emitter, String eventName, Object payload) {
+    private void sendEvent(
+            StockChannel channel,
+            String emitterId,
+            SseEmitter emitter,
+            String eventName,
+            Object payload) {
         try {
             emitter.send(
                     SseEmitter.event()
@@ -122,15 +137,24 @@ public class CampaignStatusStreamService {
                             .reconnectTime(reconnectTimeMs)
                             .data(payload, MediaType.APPLICATION_JSON));
         } catch (Exception e) {
-            log.debug("SSE 이벤트 전송 실패, emitter는 onError 콜백에서 정리됨: eventName={}", eventName, e);
+            // onError 콜백 발생 여부에 의존하지 않고, 전송 실패 시점에 바로 제거한다.
+            log.debug("SSE 이벤트 전송 실패, emitter를 명시적으로 제거함: eventName={}", eventName, e);
+            removeEmitter(channel, emitterId);
         }
     }
 
     private void removeEmitter(StockChannel channel, String emitterId) {
-        channel.removeEmitter(emitterId);
-        if (channel.isEmpty()) {
-            channels.remove(channel.getStockId(), channel);
-        }
+        // emitter 제거와 "비어있으면 채널도 제거"를 같은 compute() 안에서 처리해
+        // subscribe()의 compute()와 상호 배타적으로 만든다(같은 키에 대해 동시에 안 겹침).
+        channels.compute(
+                channel.getStockId(),
+                (id, existing) -> {
+                    if (existing == null) {
+                        return null;
+                    }
+                    existing.removeEmitter(emitterId);
+                    return existing.isEmpty() ? null : existing;
+                });
     }
 
     private CampaignStatusResponse toResponse(StockChannel channel) {

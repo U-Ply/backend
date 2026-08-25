@@ -17,6 +17,11 @@ import com.uply.coupon.common.exception.CampaignNotFoundException;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -192,6 +197,7 @@ class CampaignStatusStreamServiceTest {
             service.pollChannel(channel, channel.getLastHeartbeatAt());
 
             verify(healthyEmitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+            assertThat(channel.getEmitters().values()).doesNotContain(brokenEmitter);
         }
     }
 
@@ -277,6 +283,54 @@ class CampaignStatusStreamServiceTest {
 
             verify(emitterA, times(1)).send(any(SseEmitter.SseEventBuilder.class));
             verify(emitterB, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+    }
+
+    // 새 구독과 마지막 emitter의 완료 정리가 동시에 일어나도
+    // 채널이 폴링 대상 Map에서 고아가 되지 않는지 검증한다.
+    @Test
+    void subscribeAndCleanup_concurrentRace_neverOrphansChannel() throws Exception {
+        givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
+        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
+            for (int i = 0; i < 200; i++) {
+                service.subscribe(1L, "JEJU", "ECONOMY");
+                SseEmitter emitter = mocked.constructed().get(mocked.constructed().size() - 1);
+
+                ArgumentCaptor<Runnable> completionCaptor = ArgumentCaptor.forClass(Runnable.class);
+                verify(emitter).onCompletion(completionCaptor.capture());
+                Runnable cleanup = completionCaptor.getValue();
+
+                CyclicBarrier barrier = new CyclicBarrier(2);
+                Future<?> subscribeAgain =
+                        executor.submit(
+                                () -> {
+                                    awaitBarrier(barrier);
+                                    service.subscribe(1L, "JEJU", "ECONOMY");
+                                });
+                Future<?> cleanupTask =
+                        executor.submit(
+                                () -> {
+                                    awaitBarrier(barrier);
+                                    cleanup.run();
+                                });
+                subscribeAgain.get(5, TimeUnit.SECONDS);
+                cleanupTask.get(5, TimeUnit.SECONDS);
+
+                assertThat(channelsMap()).as("iteration %d", i).containsKey(10L);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static void awaitBarrier(CyclicBarrier barrier) {
+        try {
+            barrier.await(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 }

@@ -227,10 +227,9 @@ public class GlobalExceptionHandler {
                 HttpStatus.SERVICE_UNAVAILABLE, "CONCURRENCY_CONFLICT", "동시 요청 경합으로 처리하지 못했습니다.");
     }
 
-    @ExceptionHandler({AsyncRequestNotUsableException.class, java.io.IOException.class})
-    public void handleClientDisconnect(Exception exception) {
-        // 클라이언트가 이미 연결을 끊은 상태 — 응답을 쓸 수 없으므로 로그만 남기고 무시한다.
-        log.debug("SSE/스트리밍 클라이언트 연결이 이미 끊어졌습니다", exception);
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleClientDisconnect(AsyncRequestNotUsableException exception) {
+        log.debug("SSE 클라이언트 연결이 이미 끊어졌습니다", exception);
     }
 
     private ResponseEntity<ApiErrorResponse> conflict(String errorCode, String message) {
