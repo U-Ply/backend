@@ -54,8 +54,12 @@ class LuaScriptIntegrationTest {
         String expireAtKey = "campaign:" + campaignId + ":expireAt";
 
         // 재고 키 누락 검증을 위해 openAt, expireAt은 정상값으로 적재 (외생 변수 통제)
-        redisTemplate.opsForValue().set(openAtKey, String.valueOf(System.currentTimeMillis() - 10000));
-        redisTemplate.opsForValue().set(expireAtKey, String.valueOf(System.currentTimeMillis() + 10000));
+        redisTemplate
+                .opsForValue()
+                .set(openAtKey, String.valueOf(System.currentTimeMillis() - 10000));
+        redisTemplate
+                .opsForValue()
+                .set(expireAtKey, String.valueOf(System.currentTimeMillis() + 10000));
 
         List<String> keys = List.of(stockKey, issuedKey, openAtKey, expireAtKey);
         createdKeys.addAll(keys);
@@ -82,8 +86,12 @@ class LuaScriptIntegrationTest {
         String expireAtKey = "campaign:" + campaignId + ":expireAt";
 
         redisTemplate.opsForValue().set(stockKey, "0");
-        redisTemplate.opsForValue().set(openAtKey, String.valueOf(System.currentTimeMillis() - 10000));
-        redisTemplate.opsForValue().set(expireAtKey, String.valueOf(System.currentTimeMillis() + 10000));
+        redisTemplate
+                .opsForValue()
+                .set(openAtKey, String.valueOf(System.currentTimeMillis() - 10000));
+        redisTemplate
+                .opsForValue()
+                .set(expireAtKey, String.valueOf(System.currentTimeMillis() + 10000));
 
         List<String> keys = List.of(stockKey, issuedKey, openAtKey, expireAtKey);
         createdKeys.addAll(keys);
