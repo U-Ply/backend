@@ -11,6 +11,7 @@ import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.stereotype.Service;
 
@@ -33,14 +34,22 @@ public class BatchLaunchService {
     private final Map<String, Job> jobs;
     private final JobExplorer jobExplorer;
     private final TaskExecutorJobLauncher launcher;
+    private final String issueStrategy;
+    private final String saveStrategy;
 
     /** Spring 이 Map&lt;String, Job&gt; 에 빈 이름 → 빈 을 채워준다. 빈 이름이 곧 Job 이름이다. */
     public BatchLaunchService(
-            Map<String, Job> jobs, JobExplorer jobExplorer, JobRepository jobRepository)
+            Map<String, Job> jobs,
+            JobExplorer jobExplorer,
+            JobRepository jobRepository,
+            @Value("${coupon.issue.strategy:LUA_SCRIPT}") String issueStrategy,
+            @Value("${coupon.save.strategy:sync-db}") String saveStrategy)
             throws Exception {
 
         this.jobs = jobs;
         this.jobExplorer = jobExplorer;
+        this.issueStrategy = issueStrategy;
+        this.saveStrategy = saveStrategy;
 
         TaskExecutorJobLauncher taskExecutorJobLauncher = new TaskExecutorJobLauncher();
         taskExecutorJobLauncher.setJobRepository(jobRepository);
@@ -70,11 +79,7 @@ public class BatchLaunchService {
         // 검증 회차는 round 가 필수다. 없으면 CLOCK-02 가 조용히 N/A 로 넘어간다.
         // Tasklet 에서도 parse 하지만, Job 실행이 비동기라 여기서 막아야 400 이 나간다.
         if ("verificationJob".equals(jobName)) {
-            try {
-                RoundVersion.parse(round);
-            } catch (IllegalArgumentException e) {
-                throw new BatchInvalidRequestException(e.getMessage());
-            }
+            requireRoundMatchesRunningStrategy(round);
         }
 
         String runId =
@@ -92,6 +97,39 @@ public class BatchLaunchService {
         }
 
         return launcher.run(jobs.get(jobName), builder.toJobParameters());
+    }
+
+    /**
+     * 회차 라벨과 실제 실행 설정이 일치하는지 확인한다.
+     *
+     * <p>{@code round} 는 요청자가 URL 로 지정하고, 실제 전략은 애플리케이션 설정에서 온다. 둘이 모순돼도 아무도 확인하지 않으면 리포트에 잘못된 라벨이
+     * 남는다. 실제로 {@code BULK-02} 는 앱이 {@code PESSIMISTIC_LOCK} 으로 떠 있는 상태에서 {@code round=V2} 로 기록됐고
+     * 판정은 {@code PASSED} 였다. Level 2/3 공식 회차에서 같은 일이 생기면 §11 비교표가 잘못된 라벨로 채워진다.
+     *
+     * <p>기록을 남기고 넘어가지 않고 거절한다. 잘못 붙은 라벨은 나중에 구분할 방법이 없어서, 지우는 것보다 만들지 않는 편이 싸다.
+     */
+    private void requireRoundMatchesRunningStrategy(String round) {
+        RoundVersion version;
+        try {
+            version = RoundVersion.parse(round);
+        } catch (IllegalArgumentException e) {
+            throw new BatchInvalidRequestException(e.getMessage());
+        }
+
+        if (!version.matches(issueStrategy, saveStrategy)) {
+            throw new BatchInvalidRequestException(
+                    "round="
+                            + version
+                            + " 은 issue.strategy="
+                            + version.issueStrategy()
+                            + ", save.strategy="
+                            + version.saveStrategy()
+                            + " 를 요구하지만 현재 애플리케이션은 issue.strategy="
+                            + issueStrategy
+                            + ", save.strategy="
+                            + saveStrategy
+                            + " 로 실행 중이다.");
+        }
     }
 
     public JobExecution findExecution(long executionId) {
