@@ -47,4 +47,16 @@ class PrivacyMaskerTest {
     void fullyMasksInvalidEmail(String email) {
         assertThat(PrivacyMasker.maskEmail(email)).isEqualTo("***");
     }
+
+    // 로그 문장에 포함된 여러 이메일을 모두 마스킹하고 나머지 문장은 유지하는지 검증합니다.
+    @DisplayName("로그 메시지 안의 모든 이메일을 마스킹한다")
+    @ParameterizedTest
+    @CsvSource({
+        "'사용자 이메일: kim123@example.com', '사용자 이메일: kim***@example.com'",
+        "'from=a@example.com to=hong123@example.org', 'from=a***@example.com to=hon***@example.org'",
+        "'이메일이 없는 로그', '이메일이 없는 로그'"
+    })
+    void masksEmailsInLogMessage(String message, String expected) {
+        assertThat(PrivacyMasker.maskEmails(message)).isEqualTo(expected);
+    }
 }
