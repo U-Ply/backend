@@ -17,6 +17,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -33,7 +34,9 @@ class CampaignCacheAdminControllerTest {
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CampaignCacheAdminController(campaignCacheWarmupService))
-                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
+                        .setControllerAdvice(
+                                new GlobalExceptionHandler(
+                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
                         .build();
     }
 

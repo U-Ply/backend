@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -40,7 +41,9 @@ class AdminBatchControllerTest {
 
         mockMvc =
                 MockMvcBuilders.standaloneSetup(controller)
-                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
+                        .setControllerAdvice(
+                                new GlobalExceptionHandler(
+                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
                         .build();
     }
 

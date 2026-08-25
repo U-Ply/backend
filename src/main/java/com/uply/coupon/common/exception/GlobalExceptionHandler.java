@@ -1,5 +1,6 @@
 package com.uply.coupon.common.exception;
 
+import com.uply.coupon.campaign.service.CacheAutoRecoveryTrigger;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.operation.admin.BatchConflictException;
 import com.uply.coupon.operation.admin.BatchExecutionNotFoundException;
@@ -11,6 +12,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -29,7 +31,15 @@ public class GlobalExceptionHandler {
     private final Counter connectionUnavailableCounter;
     private final Counter campaignNotCachedCounter;
 
-    public GlobalExceptionHandler(MeterRegistry meterRegistry) {
+    // 자동 트리거는 coupon.cache-recovery.auto-trigger-enabled=true일 때만 빈이 존재한다
+    // (기본 비활성화). ObjectProvider로 받아 없으면 조용히 건너뛴다 — V3 전용
+    // KafkaSettlementChecker와 같은 패턴.
+    private final ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider;
+
+    public GlobalExceptionHandler(
+            MeterRegistry meterRegistry,
+            ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider) {
+        this.cacheAutoRecoveryTriggerProvider = cacheAutoRecoveryTriggerProvider;
         this.concurrencyConflictCounter =
                 Counter.builder("coupon.issue.failure")
                         .tag("reason", "concurrency_conflict")
@@ -79,6 +89,7 @@ public class GlobalExceptionHandler {
                             "이벤트 메시지 발행에 실패했습니다.");
             case CAMPAIGN_NOT_CACHED -> {
                 campaignNotCachedCounter.increment();
+                notifyCacheMiss(exception.getCampaignId());
                 yield response(
                         HttpStatus.SERVICE_UNAVAILABLE,
                         "CAMPAIGN_NOT_CACHED",
@@ -241,6 +252,13 @@ public class GlobalExceptionHandler {
         log.debug("Concurrency conflict detail", exception);
         return response(
                 HttpStatus.SERVICE_UNAVAILABLE, "CONCURRENCY_CONFLICT", "동시 요청 경합으로 처리하지 못했습니다.");
+    }
+
+    private void notifyCacheMiss(Long campaignId) {
+        CacheAutoRecoveryTrigger trigger = cacheAutoRecoveryTriggerProvider.getIfAvailable();
+        if (trigger != null) {
+            trigger.onCacheMiss(campaignId);
+        }
     }
 
     private ResponseEntity<ApiErrorResponse> conflict(String errorCode, String message) {

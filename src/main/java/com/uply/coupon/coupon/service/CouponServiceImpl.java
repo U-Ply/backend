@@ -68,7 +68,7 @@ public class CouponServiceImpl implements CouponService {
                             request.campaignId(), request.userId(), stockId, idempotencyKey);
 
             if (!result.success()) {
-                throw new CouponIssueException(result.reason());
+                throw new CouponIssueException(result.reason(), request.campaignId());
             }
 
             // 이 시점부터 쿠폰은 이미 발급된 것으로 본다. 이후 실패는 응답 생성 실패일 뿐이다.

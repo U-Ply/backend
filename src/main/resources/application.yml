@@ -75,6 +75,15 @@ coupon:
     scheduler-enabled: ${RECONCILIATION_SCHEDULER_ENABLED:false}
     initial-delay: ${RECONCILIATION_INITIAL_DELAY:PT1M}
     fixed-delay: ${RECONCILIATION_FIXED_DELAY:PT5M}
+  cache-recovery:
+    # CAMPAIGN_NOT_CACHED가 짧은 시간창 안에 threshold-count회 이상 발생하면
+    # recoverMissingCache를 자동 트리거한다. 기본 비활성화 — 수동 관리자 API(2단계)로
+    # 충분히 검증한 뒤 팀 합의로 켠다. 여러 인스턴스가 동시에 켜도 Redis 분산 락으로
+    # 한 대만 실제 복구를 실행한다.
+    auto-trigger-enabled: ${CACHE_RECOVERY_AUTO_TRIGGER_ENABLED:false}
+    threshold-count: ${CACHE_RECOVERY_THRESHOLD_COUNT:5}
+    window-seconds: ${CACHE_RECOVERY_WINDOW_SECONDS:5}
+    lock-seconds: ${CACHE_RECOVERY_LOCK_SECONDS:30}
   verification:
         # CLOCK-02 의 Redis-DB 시계 허용 오차.
         # INV-04(이력 순서) · INV-06(시각 순서) · INV-11(캠페인 기간)의 경계가 밀리초라

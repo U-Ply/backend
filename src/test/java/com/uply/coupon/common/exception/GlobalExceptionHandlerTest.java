@@ -5,11 +5,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.campaign.service.CacheAutoRecoveryTrigger;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.coupon.controller.CouponController;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
@@ -21,6 +24,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -34,11 +38,18 @@ class GlobalExceptionHandlerTest {
     private MockMvc mockMvc;
     private CouponService couponService;
     private SimpleMeterRegistry meterRegistry;
+    private CacheAutoRecoveryTrigger cacheAutoRecoveryTrigger;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
         couponService = mock(CouponService.class);
         meterRegistry = new SimpleMeterRegistry();
+        cacheAutoRecoveryTrigger = mock(CacheAutoRecoveryTrigger.class);
+        ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider =
+                mock(ObjectProvider.class);
+        given(cacheAutoRecoveryTriggerProvider.getIfAvailable())
+                .willReturn(cacheAutoRecoveryTrigger);
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CouponController(
@@ -47,7 +58,9 @@ class GlobalExceptionHandlerTest {
                                         mock(CouponQueryService.class),
                                         mock(IdempotencyChecker.class),
                                         new ObjectMapper().findAndRegisterModules()))
-                        .setControllerAdvice(new GlobalExceptionHandler(meterRegistry))
+                        .setControllerAdvice(
+                                new GlobalExceptionHandler(
+                                        meterRegistry, cacheAutoRecoveryTriggerProvider))
                         .build();
     }
 
@@ -114,7 +127,7 @@ class GlobalExceptionHandlerTest {
     @DisplayName("캠페인 캐시 미스는 503 CAMPAIGN_NOT_CACHED로 응답하고 전용 카운터를 증가시킨다")
     void campaignNotCachedReturns503AndIncrementsCounter() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
-                .willThrow(new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED));
+                .willThrow(new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, 1L));
 
         mockMvc.perform(
                         post("/api/coupons/issue")
@@ -134,9 +147,27 @@ class GlobalExceptionHandlerTest {
         assertThat(count).isEqualTo(1.0);
     }
 
-    // 다른 503 사유는 이 카운터를 건드리면 안 된다 — 섞이면 감지 신호로서 무의미해진다.
+    // 3단계(자동 트리거): CAMPAIGN_NOT_CACHED 발생 시 GlobalExceptionHandler가
+    // CacheAutoRecoveryTrigger로 campaignId를 그대로 넘겨야 임계치 판정이 캠페인 단위로 된다.
     @Test
-    @DisplayName("CONNECTION_UNAVAILABLE 발생은 campaign_not_cached 카운터를 증가시키지 않는다")
+    @DisplayName("캠페인 캐시 미스는 예외에 담긴 campaignId로 자동 복구 트리거를 호출한다")
+    void campaignNotCachedNotifiesAutoRecoveryTriggerWithCampaignId() throws Exception {
+        given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
+                .willThrow(new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, 1L));
+
+        mockMvc.perform(
+                post("/api/coupons/issue")
+                        .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validRequest()));
+
+        verify(cacheAutoRecoveryTrigger).onCacheMiss(1L);
+    }
+
+    // 다른 503 사유는 이 카운터를 건드리면 안 된다 — 섞이면 감지 신호로서 무의미해진다.
+    // 자동 복구 트리거도 마찬가지로, CAMPAIGN_NOT_CACHED가 아닌 사유로는 절대 호출되면 안 된다.
+    @Test
+    @DisplayName("CONNECTION_UNAVAILABLE 발생은 campaign_not_cached 카운터도, 자동 복구 트리거도 건드리지 않는다")
     void connectionUnavailableDoesNotIncrementCampaignNotCachedCounter() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
                 .willThrow(
@@ -157,6 +188,7 @@ class GlobalExceptionHandlerTest {
                         .counter()
                         .count();
         assertThat(count).isEqualTo(0.0);
+        verifyNoInteractions(cacheAutoRecoveryTrigger);
     }
 
     private String validRequest() {

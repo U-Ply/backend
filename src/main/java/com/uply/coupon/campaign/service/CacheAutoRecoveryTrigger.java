@@ -1,0 +1,123 @@
+package com.uply.coupon.campaign.service;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.Executor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
+
+/**
+ * {@code CAMPAIGN_NOT_CACHED}가 짧은 시간창 안에 임계치 이상 발생하면 {@link
+ * CampaignCacheWarmupService#recoverMissingCache}를 자동으로 트리거한다.
+ *
+ * <p>기본 비활성화({@code coupon.cache-recovery.auto-trigger-enabled=false}). 이 빈은 그 프로퍼티가 {@code true}일
+ * 때만 생성되므로, {@link com.uply.coupon.common.exception.GlobalExceptionHandler}는 {@code
+ * ObjectProvider}로 조회해 없으면(=비활성화) 그냥 건너뛴다 — V3 전용 {@code KafkaSettlementChecker}와 같은 패턴이다.
+ *
+ * <p>임계치 카운트는 Redis {@code INCR}로 세므로 API 서버가 여러 대여도 전체 인스턴스 합산으로 판정된다. 실제 복구 실행은 Redis 분산 락({@code
+ * SET NX PX})으로 한 인스턴스만 수행한다 — 여러 인스턴스가 동시에 같은 캠페인을 복구하면 낭비이고, 서로 다른 타이밍에 REC-01류 자체 점검 로그가 중복돼 원인
+ * 추적만 어려워진다.
+ */
+@Slf4j
+@Component
+@ConditionalOnProperty(name = "coupon.cache-recovery.auto-trigger-enabled", havingValue = "true")
+public class CacheAutoRecoveryTrigger {
+
+    private static final String COUNT_KEY = "cache:recovery:trigger-count:%d";
+    private static final String LOCK_KEY = "cache:recovery:lock:%d";
+    private static final String LOCK_VALUE = "1";
+
+    private final StringRedisTemplate redisTemplate;
+    private final CampaignCacheWarmupService campaignCacheWarmupService;
+    private final Executor cacheRecoveryExecutor;
+    private final Counter autoRecoveryTriggeredCounter;
+
+    private final int thresholdCount;
+    private final long windowSeconds;
+    private final long lockSeconds;
+
+    public CacheAutoRecoveryTrigger(
+            StringRedisTemplate redisTemplate,
+            CampaignCacheWarmupService campaignCacheWarmupService,
+            Executor cacheRecoveryExecutor,
+            MeterRegistry meterRegistry,
+            @Value("${coupon.cache-recovery.threshold-count:5}") int thresholdCount,
+            @Value("${coupon.cache-recovery.window-seconds:5}") long windowSeconds,
+            @Value("${coupon.cache-recovery.lock-seconds:30}") long lockSeconds) {
+        this.redisTemplate = redisTemplate;
+        this.campaignCacheWarmupService = campaignCacheWarmupService;
+        this.cacheRecoveryExecutor = cacheRecoveryExecutor;
+        this.thresholdCount = thresholdCount;
+        this.windowSeconds = windowSeconds;
+        this.lockSeconds = lockSeconds;
+        this.autoRecoveryTriggeredCounter =
+                Counter.builder("coupon.cache.auto_recovery.triggered")
+                        .description("CAMPAIGN_NOT_CACHED 임계치 도달로 자동 복구가 실제로 트리거된 횟수")
+                        .register(meterRegistry);
+    }
+
+    /**
+     * 발급 요청 스레드에서 호출된다 — 여기서 시간이 걸리면 실패 응답(503) 자체가 늦어지므로, 임계치 판정과 락 선점까지만 동기로 하고 실제 복구는 {@link
+     * #cacheRecoveryExecutor}로 넘긴다. 이 메서드 자체가 실패해도(Redis 순간 장애 등) 원래의 503 응답에는 영향을 주면 안 되므로 예외를
+     * 삼킨다.
+     */
+    public void onCacheMiss(Long campaignId) {
+        if (campaignId == null) {
+            return;
+        }
+
+        try {
+            long count = incrementAndGetCount(campaignId);
+            if (count < thresholdCount) {
+                return;
+            }
+
+            if (!tryAcquireLock(campaignId)) {
+                log.debug("자동 복구 락 선점 실패(다른 인스턴스가 이미 처리 중) — campaignId: {}", campaignId);
+                return;
+            }
+
+            log.warn(
+                    "CAMPAIGN_NOT_CACHED가 {}초 내 {}회 발생 — 자동 캐시 복구를 트리거한다. campaignId: {}",
+                    windowSeconds,
+                    thresholdCount,
+                    campaignId);
+            autoRecoveryTriggeredCounter.increment();
+            cacheRecoveryExecutor.execute(() -> runRecovery(campaignId));
+        } catch (Exception e) {
+            log.error("자동 캐시 복구 트리거 판정 중 예외 발생 — campaignId: {}", campaignId, e);
+        }
+    }
+
+    private void runRecovery(Long campaignId) {
+        try {
+            List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+            log.info("자동 캐시 복구 완료 — campaignId: {}, mismatches: {}", campaignId, mismatches.size());
+        } catch (Exception e) {
+            log.error("자동 캐시 복구 실행 실패 — campaignId: {}", campaignId, e);
+        }
+    }
+
+    private long incrementAndGetCount(Long campaignId) {
+        String key = String.format(COUNT_KEY, campaignId);
+        Long count = redisTemplate.opsForValue().increment(key);
+        if (count != null && count == 1L) {
+            redisTemplate.expire(key, Duration.ofSeconds(windowSeconds));
+        }
+        return count == null ? 0L : count;
+    }
+
+    private boolean tryAcquireLock(Long campaignId) {
+        String key = String.format(LOCK_KEY, campaignId);
+        Boolean acquired =
+                redisTemplate
+                        .opsForValue()
+                        .setIfAbsent(key, LOCK_VALUE, Duration.ofSeconds(lockSeconds));
+        return Boolean.TRUE.equals(acquired);
+    }
+}

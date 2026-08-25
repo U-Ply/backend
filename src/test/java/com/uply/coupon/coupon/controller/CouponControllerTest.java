@@ -40,6 +40,7 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -76,7 +77,9 @@ class CouponControllerTest {
                                         couponQueryService,
                                         idempotencyChecker,
                                         objectMapper))
-                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
+                        .setControllerAdvice(
+                                new GlobalExceptionHandler(
+                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
                         .build();
     }
 
