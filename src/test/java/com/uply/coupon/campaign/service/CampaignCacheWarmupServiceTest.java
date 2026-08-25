@@ -302,13 +302,33 @@ class CampaignCacheWarmupServiceTest {
     // 이 스코프 한정 자체 점검으로 대체했다.
 
     @Test
-    @DisplayName("자체 점검: 복구한 재고풀의 Redis 값이 DB와 일치하면 빈 리스트를 반환한다")
+    @DisplayName("자체 점검: 복구한 재고풀의 Redis 값이 DB와 정확히 일치하면 빈 리스트를 반환한다")
     void recoverMissingCache_ScopedCheck_PassesWhenValuesMatch() {
         // given
         Long campaignId = 1L;
         givenSingleStockCampaign(campaignId);
         given(redisTemplate.hasKey("issued:1")).willReturn(true);
-        given(valueOperations.get("stock:100")).willReturn("70"); // DB remainingStock과 동일
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("70")); // DB와 동일
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        assertThat(mismatches).isEmpty();
+    }
+
+    // 리뷰에서 지적된 핵심 결함: recoverMissingCache는 트래픽 차단을 전제하지 않으므로,
+    // 메서드 시작 시점 DB 스냅샷과 끝난 시점 Redis 현재값 사이에는 트래픽이 있는 한
+    // 정상적인 시간차가 항상 생긴다(Redis가 Lua로 계속 더 감소함). 이 테스트가 원래는
+    // "redis=65, db=70"을 불일치로 잘못 보고했었다 — 실시간 트래픽을 오탐한 것이다.
+    @Test
+    @DisplayName("자체 점검: Redis가 DB보다 더 감소해 있는 정상적인 시간차는 보고하지 않는다")
+    void recoverMissingCache_ScopedCheck_DoesNotReportNormalLag() {
+        // given — Redis(65)가 DB 스냅샷(70)보다 더 진행됨: 트래픽이 계속돼 DB가 못 따라온 정상 상태
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("65"));
 
         // when
         List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
@@ -318,13 +338,13 @@ class CampaignCacheWarmupServiceTest {
     }
 
     @Test
-    @DisplayName("자체 점검: SETNX가 안 건드린 기존 키 값이 DB와 다르면 불일치로 보고한다")
-    void recoverMissingCache_ScopedCheck_ReportsMismatch_WhenExistingValueIsWrong() {
-        // given — stock:100은 이미 존재하므로(setIfAbsent가 손대지 않음) 오염된 값이 그대로 남는다.
+    @DisplayName("자체 점검: Redis 재고가 DB보다 많으면(재고가 되살아난 방향) 초과 발급 위험으로 보고한다")
+    void recoverMissingCache_ScopedCheck_ReportsMismatch_WhenRedisExceedsDb() {
+        // given — Redis(999)가 DB(70)보다 많음: SETNX가 손대지 않은 기존 값이 부풀려져 있는 위험한 방향
         Long campaignId = 1L;
         givenSingleStockCampaign(campaignId);
         given(redisTemplate.hasKey("issued:1")).willReturn(true);
-        given(valueOperations.get("stock:100")).willReturn("999"); // DB(70)와 다른 오염값
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("999"));
 
         // when
         List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
@@ -335,13 +355,29 @@ class CampaignCacheWarmupServiceTest {
     }
 
     @Test
+    @DisplayName("자체 점검: multiGet 결과 수가 재고풀 수와 다르면(Redis 이상) 점검만 건너뛰고 복구는 실패시키지 않는다")
+    void recoverMissingCache_ScopedCheck_SkipsWhenMultiGetSizeMismatches() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of());
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then — 예외 없이 정상 반환되고, 점검할 데이터가 없었으므로 위험 신호도 없다.
+        assertThat(mismatches).isEmpty();
+    }
+
+    @Test
     @DisplayName("자체 점검은 지금 복구한 캠페인의 재고풀만 보고, 시스템 전체 REC-01 배치를 트리거하지 않는다")
     void recoverMissingCache_DoesNotTriggerSystemWideReconciliation() {
         // given
         Long campaignId = 1L;
         givenSingleStockCampaign(campaignId);
         given(redisTemplate.hasKey("issued:1")).willReturn(true);
-        given(valueOperations.get("stock:100")).willReturn("70");
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("70"));
 
         // when
         campaignCacheWarmupService.recoverMissingCache(campaignId);

@@ -137,12 +137,13 @@ public class CampaignCacheWarmupService {
      * com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner}), 이 메서드 안에서 부르면
      * 지금 복구한 캠페인과 무관한 다른 캠페인의 기존 불일치까지 이 호출의 성패에 섞여 들어간다. 시스템 전체 정합성은 기존 REC-01 스케줄러·수동 배치를 그대로 쓴다.
      *
-     * <p>이 자체 점검은 SETNX가 "이미 있어서" 건드리지 않은 키에 실제로는 잘못된 값이 들어있는 경우(유실이 아니라 오염)도 잡아낸다 — SETNX 자체는 그런
-     * 손상을 고쳐주지 않으므로, 발견되면 로그와 응답으로 알리고 실제 수정은 운영자가 {@link #warmupCampaign}(트래픽 차단 후 전체 재구축)으로 판단하게
-     * 한다.
+     * <p>이 자체 점검은 트래픽 진행 중의 정상적인 시간차와 진짜 위험을 구분하려고 단순 불일치가 아니라 방향성으로 판정한다 — 상세 기준은 {@link
+     * #verifyRecoveredStocks} 참고. SETNX가 "이미 있어서" 건드리지 않은 키에 재고를 부풀리는 방향의 잘못된 값이 들어있는 경우를 잡아내며,
+     * 발견되면 로그와 응답으로 알리고 실제 수정은 운영자가 {@link #warmupCampaign}(트래픽 차단 후 전체 재구축)으로 판단하게 한다.
      *
      * @param campaignId 복구 대상 캠페인 ID
-     * @return 불일치 상세 목록. 비어 있으면 이번에 복구한 캠페인의 재고풀이 전부 Redis·DB 일치.
+     * @return 위험 신호 상세 목록. 비어 있으면 이번에 복구한 캠페인의 재고풀 중 재고가 부풀려진 것으로 보이는 항목이 없다는 뜻이다(정상 시간차는 보고하지
+     *     않는다).
      */
     @Transactional(readOnly = true)
     public List<String> recoverMissingCache(Long campaignId) {
@@ -286,14 +287,36 @@ public class CampaignCacheWarmupService {
 
     /**
      * 지금 복구한 캠페인의 재고풀만 대상으로 Redis {@code stock:{stockId}}와 DB {@code remainingStock}을 비교한다.
-     * REC-01({@link com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner})과
-     * 같은 판정 방식을 쓰되, 시스템 전체가 아니라 이 캠페인의 재고풀로만 범위를 좁힌 것이다.
+     *
+     * <p>REC-01({@link
+     * com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner})과 판정 기준이 다르다 —
+     * REC-01은 lag=0으로 정착된(트래픽이 멈춘) 시점의 정확한 일치를 본다. 이 메서드는 {@link #recoverMissingCache}가 트래픽 차단을
+     * 전제하지 않으므로, 메서드 시작 시점에 읽은 DB 스냅샷과 끝난 시점의 Redis 현재값 사이에 정상적인 시간차가 항상 존재한다 — 그동안 Lua가 계속 {@code
+     * stock:{stockId}}를 깎았을 수 있기 때문이다. 그래서 단순 불일치({@code redis != db})가 아니라 방향성으로 판정한다: {@code
+     * redis <= db}는 Redis가 DB보다 더(또는 같게) 진행된 정상 상태이므로 무시하고, {@code redis > db}(재고가 DB보다 더 많이 남은 것처럼
+     * 되돌아간 경우)만 보고한다 — 이 방향만 초과 발급으로 이어질 수 있는 진짜 위험 신호다.
      */
     private List<String> verifyRecoveredStocks(List<CampaignStock> stocks) {
+        List<String> keys =
+                stocks.stream().map(stock -> String.format(KEY_STOCK, stock.getId())).toList();
+        List<String> redisValues =
+                keys.isEmpty() ? List.of() : redisTemplate.opsForValue().multiGet(keys);
+
+        // 이 점검은 보조 안전장치일 뿐이다. multiGet이 예상과 다른 행 수를 반환하면(Redis 장애
+        // 등) 이미 성공한 SETNX 복구까지 예외로 무너뜨리지 않고, 점검만 건너뛴다.
+        if (redisValues == null || redisValues.size() != stocks.size()) {
+            log.warn(
+                    "Post-recovery consistency check skipped — multiGet returned {} rows for {}"
+                            + " stocks",
+                    redisValues == null ? "null" : redisValues.size(),
+                    stocks.size());
+            return List.of();
+        }
+
         List<String> mismatches = new ArrayList<>();
-        for (CampaignStock stock : stocks) {
-            String key = String.format(KEY_STOCK, stock.getId());
-            String redisValue = redisTemplate.opsForValue().get(key);
+        for (int index = 0; index < stocks.size(); index++) {
+            CampaignStock stock = stocks.get(index);
+            String redisValue = redisValues.get(index);
             int dbRemaining = stock.getRemainingStock();
 
             if (redisValue == null) {
@@ -303,14 +326,15 @@ public class CampaignCacheWarmupService {
 
             try {
                 int redisRemaining = Integer.parseInt(redisValue);
-                if (redisRemaining != dbRemaining) {
+                if (redisRemaining > dbRemaining) {
                     mismatches.add(
                             "stockId="
                                     + stock.getId()
                                     + " redis="
                                     + redisRemaining
                                     + " db="
-                                    + dbRemaining);
+                                    + dbRemaining
+                                    + " (redis > db, 초과 발급 위험)");
                 }
             } catch (NumberFormatException e) {
                 mismatches.add(
