@@ -97,4 +97,8 @@ public interface CampaignStockRepository extends JpaRepository<CampaignStock, Lo
 
     // stockId(id)와 campaignId 조합의 존재 여부만 boolean으로 반환
     boolean existsByIdAndCampaignId(Long id, Long campaignId);
+
+    // stockIdLookup 조회 실패 시 DB 존재여부 확인
+    boolean existsByCampaignIdAndRouteIdAndFareClass(
+            Long campaignId, String routeId, String fareClass);
 }
