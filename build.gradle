@@ -70,10 +70,10 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Testcontainers 기반 격리 Integration Test
-    testImplementation 'org.testcontainers:junit-jupiter:1.20.6'
-    testImplementation 'org.testcontainers:mysql:1.20.6'
-    testImplementation 'org.testcontainers:kafka:1.20.6'
-    testImplementation 'org.testcontainers:testcontainers:1.20.6'
+  testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+  testImplementation 'org.testcontainers:mysql:1.21.4'
+  testImplementation 'org.testcontainers:kafka:1.21.4'
+  testImplementation 'org.testcontainers:testcontainers:1.21.4'
 
     testImplementation 'org.awaitility:awaitility:4.2.2'
 
