@@ -6,6 +6,7 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -19,6 +20,7 @@ import org.springframework.util.backoff.FixedBackOff;
  * Kafka Consumer 신뢰성 설정. - 처리 실패 시 1초 간격으로 3회 재시도 - 3회 모두 실패하면 DLQ({원본토픽}.DLT)로 격리하여 정상 흐름을 막지 않음
  */
 @Configuration
+@ConditionalOnProperty(name = "coupon.save.strategy", havingValue = "kafka")
 public class KafkaConsumerConfig {
 
     @Value("${spring.kafka.bootstrap-servers}")
