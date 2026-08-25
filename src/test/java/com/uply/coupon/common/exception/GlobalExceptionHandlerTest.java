@@ -15,6 +15,7 @@ import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.service.CouponQueryService;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -72,6 +73,26 @@ class GlobalExceptionHandlerTest {
                 .willThrow(
                         new CannotCreateTransactionException(
                                 "Could not open JPA EntityManager for transaction"));
+
+        mockMvc.perform(
+                        post("/api/coupons/issue")
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(validRequest()))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("CONNECTION_UNAVAILABLE"))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    @DisplayName("V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답한다")
+    void connectionUnavailableReasonReturns503() throws Exception {
+        given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
+                .willThrow(
+                        new CouponIssueException(
+                                IssueFailReason.CONNECTION_UNAVAILABLE,
+                                new CannotCreateTransactionException(
+                                        "Could not open JPA EntityManager for transaction")));
 
         mockMvc.perform(
                         post("/api/coupons/issue")

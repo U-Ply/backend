@@ -1,533 +1,393 @@
+# 소규모 실전 회차 결과 (L1)
 
-# 통합 테스트 격리 및 미니 인수 테스트 보강 내역
+검증 배치가 픽스처가 아니라 **실제 발급 경로가 만든 데이터**를 검사한 첫 기록.
+어제까지의 검출력 시험(주입한 위반을 잡는가)과 달리, 이 회차는 남의 코드가 만든
+산출물이 12개 불변식을 지키는가를 본다.
 
-기존 로컬 DB/Redis/Kafka 공유 환경에서 발생할 수 있는 데이터 오염과 테스트 간 간섭을 제거하고, V0~V3 통합 테스트를 **실제 MySQL·Redis·Kafka Testcontainers 기반의 완전 격리 환경**에서 실행하도록 변경했다.
+- 환경 ID: `LOCAL-DOCKER-01`
+- gitCommit: `bd7d513`
+- 일시: 2026-08-21 01:2x ~ 01:4x (UTC)
+- 공통 조건: 캠페인 31 / 재고풀 301 (JEJU·ECONOMY) / 초기 재고 30 / 요청 100 / 사용자 100명 고유
+- 회차마다 쿠폰·이력 삭제 후 `remaining_stock=30` 으로 되돌리고 시작
 
-## 1. 통합 테스트 전용 인프라를 Testcontainers로 완전 격리
-
-모든 통합 테스트가 `IntegrationTestContainers`를 상속하도록 구성했다.
-
-테스트 JVM이 시작되면 다음 컨테이너를 독립적으로 기동한다.
-
-* MySQL `8.0.46`
-* Redis `7.4.10`
-* Kafka `apache/kafka:3.7.0`
-
-MySQL은 `docs/schema.sql`을 컨테이너 초기화 시 적용하며, 테스트 전용 데이터베이스와 계정을 사용한다.
-
-```text
-MySQL
-  └─ coupon_db
-Redis
-Kafka
-```
-
-각 테스트는 기존 개발/로컬 실행 환경의 DB, Redis, Kafka를 사용하지 않고 **테스트 컨테이너 내부의 리소스만 사용**한다.
-
-Spring Context에는 `@DynamicPropertySource`를 통해 컨테이너의 실제 접속 정보를 주입한다.
-
-```text
-spring.datasource.url        -> Testcontainers MySQL
-spring.data.redis.host      -> Testcontainers Redis
-spring.data.redis.port      -> Testcontainers Redis
-spring.kafka.bootstrap-servers -> Testcontainers Kafka
-```
-
-따라서 테스트 실행 시 실제 개발 환경의 공유 DB나 Redis 상태에 의존하지 않는다.
+> 이 문서는 시간순 기록이다. 이후 회차에서 해소되거나 뒤집힌 항목은 삭제하지 않고
+> `→ 갱신` 표시를 달아 둔다. 무엇이 언제 왜 바뀌었는지가 결과 자체만큼 중요하다.
 
 ---
 
-# 2. Kafka topic을 Spring Context 생성 전에 명시적으로 생성
+## L1-BASE-01 — 기준선 (회차 전 더미데이터)
 
-기존처럼 `@BeforeEach`에서 Kafka topic을 생성하는 방식은 제거했다.
+회차 결과에서 이 값을 빼야 코드 결함만 남는다. 검증 배치는 캠페인별로 거르지 않고
+테이블 전체를 훑기 때문에, 더미데이터의 위반이 회차 결과에 섞여 들어온다.
 
-`IntegrationTestContainers`의 static 초기화 단계에서:
+| 항목 | 값 |
+| --- | ---: |
+| coupons | 99,900 |
+| coupon_history | 127,605 |
+| campaign_stocks | 300 |
+| INV-01~12 위반 | 0 |
+| CLOCK-01 | 통과 (drift 0.002s) |
+| CLOCK-02 | N/A |
+| 총 소요 | 약 1.2초 |
 
-```text
-MySQL start
-Redis start
-Kafka start
-    ↓
-Kafka AdminClient로 topic 생성
-    ↓
-partition 수 검증
-    ↓
-Spring ApplicationContext 생성
+규칙별 최대 비용: INV-04 409ms, INV-09 267ms. 300만 건 적재 시 이 둘이 먼저 늘어난다.
+
+> **→ 2026-08-21 무효화.** 만료 배치를 처음 돌렸을 때 더미데이터의 `ISSUED` 34,796건이
+> 함께 `EXPIRED` 로 바뀌었다(아래 8-21 회차 참고). 이 기준선의 상태별 분포는 더 이상
+> 현재 DB 와 일치하지 않는다. 행 수 자체는 그대로다.
+
+---
+
+## 회차별 결과
+
+| 항목 | V1 (PESSIMISTIC_LOCK + sync-db) | V2 (LUA_SCRIPT + sync-db) | V3 (LUA_SCRIPT + kafka) |
+| --- | ---: | ---: | ---: |
+| runId | L1-V1-01 | L1-V2-01 | L1-V3-01 |
+| 200 OK | 30 | 30 | 30 |
+| 409 OUT_OF_STOCK | 70 | 70 | 70 |
+| 409 ALREADY_ISSUED | 0 | 0 | 0 |
+| 5xx | 0 | 0 | 0 |
+| 응답 합계 | 100 | 100 | 100 |
+| DB 쿠폰 | 30 | 30 | 30 |
+| DB 이력 | 30 | 30 | 30 |
+| DB remaining_stock | 0 | 0 | 0 |
+| Redis stock:301 | N/A | 0 | 0 |
+| Redis issued:31 | N/A | 30 | 30 |
+| Kafka 발행 | N/A | N/A | 30 (offset 14+8+8) |
+| 최종 Consumer lag | N/A | N/A | 0 |
+| DLT | N/A | N/A | 0 (토픽 미생성) |
+| INV-01~12 위반 | 0 | 0 | 0 |
+| CLOCK-01 | 통과 (0.000s) | 통과 (0.000s) | 통과 (0.000s) |
+| CLOCK-02 | N/A | N/A | N/A |
+| REC-01 | N/A | COMPLETED | COMPLETED |
+
+### 검사 범위 확인
+
+"위반 0건"이 의미를 가지려면 검사 대상이 실제로 있었어야 한다. BASE 대비 증가분:
+
+| 규칙 | BASE | 회차 | 증가 |
+| --- | ---: | ---: | ---: |
+| INV-02/04/06/07/08/11/12 | 99,900 | 99,930 | +30 |
+| INV-05/09 | 127,605 | 127,635 | +30 |
+| INV-01/03 | 300 | 301 | +1 |
+
+회차가 만든 쿠폰 30건·이력 30건·재고풀 1개가 검사 범위 안에 들어갔음을 확인했다.
+검사 범위가 늘지 않았다면 "0건"은 아무것도 보지 않았다는 뜻이므로 함께 기록한다.
+
+---
+
+## 발견 사항
+
+### 1. V0/V1이 Redis에 의존한다 — 실험 통제가 깨진다
+
+V1 첫 시도에서 100건 전부 `404 CAMPAIGN_NOT_FOUND` 로 실패했다.
+
+```
+{"errorCode":"CAMPAIGN_NOT_FOUND","message":"Campaign stock not found: campaignId=31, stockId=31"}
 ```
 
-순서가 보장되도록 변경했다.
-
-필수 topic은 다음 두 개다.
-
-```text
-coupon-issued
-coupon-issued.DLT
-```
-
-두 topic 모두 **3 partitions**를 요구한다.
+`CouponServiceImpl` 이 **전략을 고르기 전에** Redis를 읽는다.
 
 ```java
-static final int ISSUE_TOPIC_PARTITIONS = 3;
+Instant openAt = campaignCacheRepository.getOpenAt(request.campaignId());
+Instant expireAt = campaignCacheRepository.getExpireAt(request.campaignId());
+...
+CouponIssueStrategy issueStrategy = strategySelector.current();   // 그 뒤
 ```
 
-topic이 없으면 명시적으로 3개 partition으로 생성하고, 이미 존재하더라도 단순히 `TopicExistsException`을 무시하지 않는다.
+`CampaignCacheRepository` 구현체는 `RedisCampaignCacheRepository` 하나뿐이라
+전략과 무관하게 Redis 왕복 2회가 요청 경로에 들어간다.
+`campaign:31:openAt` · `campaign:31:expireAt` 를 수동 주입한 뒤에야 회차가 진행됐다.
 
-실제 broker에 생성된 topic을 `describeTopics()`로 조회하여 다음을 검증한다.
+test-plan §4 는 V0/V1 을 "MySQL 동기"로, §11 비교표는 Redis 항목을 N/A 로 규정한다.
+현재 구현은 이와 어긋나며, 기준선에 이미 Redis가 포함되므로
+"Redis 도입 효과"를 재는 Level 2 실험의 통제가 성립하지 않는다.
 
-```java
-assertThat(description.partitions())
-        .hasSize(ISSUE_TOPIC_PARTITIONS);
+**제안**: `StockIdLookupSelector` 와 같은 방식으로 전략별 조회처를 분리한다.
+DB 구현체(`DbCampaignCacheRepository`)를 추가하고 selector 를 두면,
+전략 선택을 시각 조회보다 앞으로 옮기는 것만으로 해결된다.
+
+> **→ 2026-08-21 해소.** `CouponServiceImpl` 이 전략을 먼저 고르고
+> `StockIdLookupSelector` 로 조회처를 나눈다
+> (`NO_LOCK`·`PESSIMISTIC_LOCK` → MySQL, `LUA_SCRIPT` → Redis).
+> 오픈/만료 판정도 전략 안으로 들어가 DB 경로는 `findCampaignWindow` 로 읽는다.
+> V0/V1 발급 경로에 Redis 왕복이 없다.
+>
+> 단, `IdempotencyChecker` 는 전략과 무관하게 Redis 를 쓴다. 발급 판정과는
+> 별개이고 `COUPON_IDEMPOTENCY_ENABLED=false` 로 끌 수 있으므로 Level 2 순수
+> 비교에서는 통제 가능하다.
+>
+> `acceptance.sh` 4단계가 회차와 무관하게 캠페인 창 키를 쓰고 있는데, 이는
+> 수정 전 코드에 맞춘 잔재다. 아직 정리하지 않았으므로 "키 없이도 V0/V1 이
+> 발급된다" 는 실증은 없다. 4단계를 Redis 회차로 한정해 다시 돌리면 확인된다.
+
+### 2. lag 게이트는 이 규모에서 재현되지 않는다
+
+V3 회차 직후(`L1-V3-00-LAGGY`) 고의로 lag 을 남긴 채 검증을 돌려
+INV-03 오검출을 재현하려 했으나, 컨슈머가 2초 안에 100건을 모두 소화해
+`checked_rows` 가 이미 99,930 이었고 위반은 0 이었다.
+
+즉 **100건 규모에서는 lag 창이 너무 좁아 게이트가 무의미하다.**
+test-plan §14.4 의 lag=0 선행 조건은 Level 2/3 규모에서만 실제로 작동한다.
+게이트 자체를 검증하려면 부하 테스트 중에 확인해야 한다.
+
+### 3. REC-01 이 검증 회차와 이어지지 않는다
+
+REC-01 결과는 `verification_report` 에 `rule_code='REC-01'` 로 정상 저장된다.
+다만 reconcile 배치를 runId 없이 호출하면 서버가 `20260821-013046782` 같은 값을
+자동 생성하므로, 같은 회차의 INV 결과와 다른 run_id 로 흩어진다.
+
+`uk_run_rule (run_id, rule_code)` 는 규칙 코드가 달라 충돌하지 않으므로,
+**검증과 같은 runId 로 실행하면 한 리포트에 합쳐진다.**
+
+    curl -X POST ".../batch/verification?runId=L1-V3-01&round=V3"
+    curl -X POST ".../batch/reconcile?runId=L1-V3-01"
+
+앞으로 회차 실행은 이 방식으로 통일한다.
+
+> **→ 2026-08-21 해소.** `acceptance.sh` 7·8단계가 검증과 reconcile 을 같은
+> runId 로 호출한다. 회차를 사람이 손으로 돌리지 않는 한 흩어질 수 없다.
+
+### 4. REC-01은 전체 재고풀을 대조한다
+
+첫 실행이 `MISMATCH` 로 실패했다.
+
+```
+REC-01 Redis-DB 재고 불일치 — checkedStocks=301, mismatches=300
 ```
 
-따라서 Kafka가 잘못된 partition 수로 topic을 자동 생성했을 경우 테스트 초기화 단계에서 즉시 실패한다.
+회차용 풀 301 은 일치했으나, 더미 풀 300개는 Redis 키가 없어 전부 불일치로 잡혔다.
+소규모 회차에서 REC-01 을 의미 있게 돌리려면 전체 풀을 먼저 웜업해야 한다.
+`checkedStocks` 를 남기고 있어 무엇을 검사했는지는 드러난다 — 이 부분은 잘 되어 있다.
 
-`coupon-issued`뿐 아니라:
+> **→ 2026-08-21 회차 절차에 반영.** `acceptance.sh` 4단계가 회차용 풀 외의
+> 전체 풀을 DB 값으로 동기화한 뒤 발급을 시작한다("other pools synced for REC-01").
+> 규칙 자체는 그대로다. 전수 대조는 의도된 동작이다.
 
-```text
-coupon-issued.DLT
-```
+### 5. 캐시 웜업을 호출하는 운영 코드가 없다
 
-역시 동일하게 **3 partitions**인지 검증한다.
+`CampaignCacheWarmupService.warmupCampaign` 은 테스트에서만 호출된다.
+현재 시스템은 셸 스크립트를 사람이 손으로 돌려야만 Lua 경로 발급이 가능하다.
+`scripts/load-test/initialize-level2-redis.sh` 는 `campaign_id=1 / stock_id=1` 로
+하드코딩되어 있고 `FLUSHDB` 까지 수행하므로 다른 캠페인에는 쓸 수 없다.
 
-즉, 이제 V3 테스트가 실행될 때는 Spring의 `@KafkaListener`가 기동하기 전에 Kafka topic 구조가 이미 확정되어 있다.
+관리자 API 에 웜업 엔드포인트를 추가하는 것이 적절하다. (담당: 3번)
+
+> **→ 2026-08-21 현재 미해소.** `acceptance.sh` 가 셸에서 Redis 키를 직접
+> 써 넣는 방식이 그대로다. 운영 경로에는 여전히 웜업 진입점이 없다.
+> 덧붙여 `warmupCampaign` 은 재고풀이 하나도 없어도 경고 로그만 남기고 정상 종료한다.
+> 존재하지 않는 campaignId 로 복구를 돌려도 호출자는 성공으로 받는다. (담당: Redis 경로)
 
 ---
 
-# 3. V0~V3 테스트를 실제 격리된 컨테이너 환경에서 실행
+## 확인된 것
 
-V0~V3 테스트는 모두 다음 공통 기반을 사용한다.
+- **INV-12 (만료 시각 캠페인 상속)** — Lua 경로가 `expire_at` 을 캠페인 값 그대로 전달한다.
+  `CampaignCacheWarmupService` 가 epoch millis 로 캐싱하고 `LuaScriptIssueStrategy.getExpireAt`
+  이 되읽는데, 스키마가 `DATETIME(3)` 이라 왕복이 무손실이다. 양쪽 다 `ZoneOffset.UTC` 로
+  고정되어 있어 JVM 시계에 걸리지 않는다. 단건 응답에서도 확인:
+  `expireAt=2026-08-28T01:00:52.345Z` = DB `expire_at`.
 
-```java
-extends IntegrationTestContainers
-```
+  > **→ 2026-08-21 의미 변경.** Lua 가 판정에 실제로 쓴 `expireAtMillis` 를 반환하고
+  > DB 에는 그 값을 쓰도록 바뀌었다. V2·V3 에서 `coupons.expire_at` 의 출처가
+  > **Redis 에 캐싱된 값** 이 되었으므로, INV-12 는 이제 "DB 안에서 캠페인과 쿠폰이
+  > 일치하는가" 가 아니라 "웜업된 값과 DB 캠페인 행이 일치하는가" 를 간접 검사한다.
+  > 웜업 절차가 INV-12 의 사실상 입력이다.
 
-각 회차의 테스트 데이터는 `CouponIntegrationFixture`를 통해 생성하고 테스트 종료 전후로 정리한다.
+- **CLOCK-01** — 세 회차 모두 `session_tz=+00:00`, drift 0.000~0.001s.
+  8/18 시점의 9시간 어긋남이 완전히 해소됐다.
+- **V3 메시지 유실 없음** — 파티션별 오프셋 14+8+8 = 30 으로 성공 응답 수와 일치.
 
-Redis 역시 테스트 시작/종료 시 flush하여 이전 회차의 cache state가 다음 회차로 넘어가지 않도록 한다.
+## 검증하지 못한 것
 
-특히 V2/V3에서는:
+- **`DataIntegrityViolationException` → `DB_SAVE_FAILED` 변경의 영향**.
+  회차마다 새 캠페인에 고유 사용자를 썼기 때문에 `uk_campaign_user` 에 걸리는 경로가
+  한 번도 실행되지 않았다. 이 변경으로 중복 발급 시도가 409 대신 500 이 되는지는
+  아직 실측되지 않았다. Redis `issued` Set 과 DB 가 어긋난 상태를 만들어야 확인 가능하다.
 
-```text
-Redis flush
-↓
-DB fixture reset
-↓
-campaign 생성
-↓
-user 생성
-↓
-Redis warmup
-```
+  > **→ 2026-08-21 현재도 미검증.** 8-21 세 회차 역시 고유 사용자만 사용했다.
+  > 이 경로를 태우려면 별도의 시나리오가 필요하다.
 
-순서를 지켜서 warmup으로 생성한 Redis 상태를 다시 삭제하지 않도록 했다.
+- **CLOCK-02** — 세 회차 모두 N/A. Redis 시계로 `issued_at` 을 기록하는 경로가 아직 없다.
 
----
+  > **→ 2026-08-21 해소.** Lua 가 반환한 `nowMillis` 가 `issued_at` 과 `event_at` 에
+  > 그대로 들어가도록 합쳐졌고(`SyncMysqlSaveStrategy` ·
+  > `CouponIssuedPersistenceService` 둘 다 `issuedAt` 전달), V2·V3 를
+  > `usesRedisClock=true` 로 올렸다. 아래 8-21 회차 참고.
 
-# 4. V0 DB-only baseline 검증 강화
+- **만료 배치** — 회차 체인에 포함되어 있지 않다. 지금까지의 모든 회차는 발급까지만
+  수행했고 쿠폰은 전부 `ISSUED` 상태로 남았다. 따라서 INV-05(상태 전이 유효성),
+  INV-06(시각 순서), INV-07(종료 상태 타임스탬프)의 사용·취소·만료 관련 절은
+  실제 발급 경로가 만든 데이터로 한 번도 검사된 적이 없다. 더미데이터에 종료 상태
+  행이 있지만 그것은 배치가 만든 것이 아니라 직접 INSERT 한 값이다.
+  상태 전이 회차(발급 → 사용 → 취소 → 만료)가 필요하다.
 
-V0은:
-
-```text
-NO_LOCK
-sync-db
-idempotency disabled
-```
-
-조건으로 실행한다.
-
-DB-only 경로가 실제로 Redis campaign/stock cache에 의존하지 않는지를 검증하기 위해 발급 전에 Redis를 warmup하지 않는다.
-
-발급 이후 다음 Redis key가 존재하지 않는 것을 확인한다.
-
-```text
-campaign:{campaignId}:*
-stockId:{campaignId}:*
-```
-
-즉 V0은 Redis cache가 없어도 MySQL 기반으로 발급되는 경로임을 실제 통합 테스트에서 확인한다.
-
-또한 동시 발급 baseline에서는:
-
-```text
-stock = 10
-requests = 30
-```
-
-조건으로 실제 경합을 발생시킨다.
-
-V0에서는 설계상 동시성 오류 자체를 무조건 실패로 판정하지 않고:
-
-```text
-outOfStock
-dbConflicts
-issued
-remaining
-```
-
-등의 실제 실행 결과를 기록한다.
-
-동시에 다음과 같은 불변 조건은 단언한다.
-
-* 동일 campaign에서 사용자 중복 발급 없음
-* coupon/history 개수 일치
-* 최소 1건 이상의 실제 발급 발생
-* 모든 worker가 제한 시간 안에 종료
-* 예상하지 못한 예외 없음
-
-그리고 `RoundReportWriter`를 통해 V0 baseline 결과를 기록한다.
+  > **→ 2026-08-21 해소.** `acceptance.sh` 5b·5c 가 발급 → 사용 → 취소 → 만료를
+  > 모두 태운다. 아래 8-21 회차 참고.
 
 ---
 
-# 5. V0의 무제한 await 제거
+## 2026-08-21 회차 (commit `c52d2b8`, LOCAL-DOCKER-01)
 
-기존 V0 동시성 테스트에 존재하던 무제한:
+이날 두 번의 변경이 있었다.
 
-```java
-ready.await();
-```
+1. `8e49e4f` — CLOCK-02 활성화, 리포트 판정 버그 수정, 회차 게이트 보강
+2. `c52d2b8` — 상태 전이 회차(5b/5c) 추가
 
-형태를 제거하고 제한 시간을 적용했다.
+아래 표는 **최종 상태(`c52d2b8`)에서 다시 돌린 결과**다. 중간 회차 리포트는
+상태 전이 회차가 그대로 포함하므로 남기지 않았다.
 
-현재는:
+세 회차 모두 `DB_POOL_SIZE=30`, 요청 100건, 재고 30장, campaign 31 / stock 301.
+회차 전 구간을 `scripts/test/acceptance.sh` 가 수행하므로 단계 누락이 불가능하다.
 
-```java
-assertThat(
-        ready.await(10, TimeUnit.SECONDS))
-        .as("모든 발급 작업이 10초 안에 준비되지 않았습니다.")
-        .isTrue();
-```
+| runId | 회차 | 판정 | 규칙 | 비고 |
+| --- | --- | --- | --- | --- |
+| `SMOKE-V1-20260821-181339` | V1 | 통과 | 검사 13 / N/A 2 | CLOCK-02·REC-01 은 DB 경로라 N/A |
+| `SMOKE-V2-20260821-182008` | V2 | 통과 | 검사 15 / N/A 0 | CLOCK-02 실측 판정 |
+| `SMOKE-V3-20260821-183336` | V3 | 통과 | 검사 15 / N/A 0 | lag 0, DLT 0 |
+| `LEAK-V2-01` | V2 | **불일치** | 검사 15 / N/A 0 | 아래 참고 |
 
-형태로 worker 준비 단계부터 timeout을 갖는다.
+세 정상 회차 모두 `미실행 0` 이다. V1 의 `N/A 2` 는 DB 시계·DB 전용 경로라
+해당 규칙이 성립하지 않는 경우이며, 검사를 건너뛴 것이 아니다.
 
-또한 V1~V3와 동일하게 Executor를 `try/finally`로 관리하여 테스트 성공/실패와 관계없이 worker pool이 정리되도록 구성했다.
-
-따라서 스레드 생성이나 작업 제출에 문제가 생겼을 때 CI가 무한 대기하는 문제를 방지한다.
-
----
-
-# 6. V1 Pessimistic Lock 동시성 검증
-
-V1은:
+세 회차가 만든 최종 상태 분포는 동일하다.
 
 ```text
-PESSIMISTIC_LOCK
-sync-db
-idempotency disabled
+stock 301 -> ISSUED 20 / USED 5 / CANCELLED 5
+stock 302 -> EXPIRED 10          (만료 전용 캠페인)
+이력 65행 (발급 30 + 사용 10 + 취소 5 + 만료캠페인 발급 10 + 만료 10)
 ```
 
-조건으로 실행한다.
+### 상태 전이 회차 — 만료 배치가 회차에서 처음 실행됐다
 
-테스트 조건은:
+이전까지 모든 회차는 발급까지만 하고 끝나 쿠폰이 전부 `ISSUED` 로 남았다.
+INV-05 · INV-06 · INV-07 의 사용·취소·만료 관련 절은 실제 발급 경로가 만든
+데이터로 검사된 적이 없었다.
 
-```text
-초기 재고 = 10
-동시 요청 = 30
+- **5b** — 발급분 중 10건 사용, 그중 5건 취소.
+  `USED → CANCELLED` 는 INV-07 의 "취소 시각과 만료 시각이 함께 있는" 절을
+  처음으로 태우는 경로다.
+- **5c** — 만료 전용 캠페인 32(재고 10, 창 30초)에서 발급한 뒤
+  창이 닫히고 5초 더 기다렸다가 만료 배치를 돌린다.
+
+만료를 별도 캠페인에서 하는 이유는 캠페인 31 의 `expire_at` 을 과거로 옮기면
+INV-11(`issued_at >= expire_at`)이 이미 발급된 30건 전부에 걸리기 때문이다.
+창이 닫히기 전에 배치를 돌리면 `expired_at < expire_at` 이 되어 INV-06 이 걸린다.
+
+추가한 게이트 세 개:
+
+- **사용·취소가 재고를 되돌리지 않는지** 확인한다(test-plan §2.8).
+  지금까지 어디서도 검사되지 않던 규정이다
+- **만료 배치가 살아 있는 캠페인 31 을 건드리지 않았는지** 확인한다
+- **만료가 상태만 바꾸고 이력을 빠뜨리지 않았는지** 확인한다.
+  INV-04 가 잡아야 할 사안이지만, 여기서 먼저 원인이 드러나게 했다
+
+### 만료 배치는 캠페인 범위를 가리지 않는다
+
+첫 실행에서 만료 대상이 **34,806건**이었다. 우리 10건 외에 더미데이터 34,796건이
+함께 만료됐다. 배치 동작으로는 정상이다 — `expire_at` 이 지난 `ISSUED` 를 전부 처리한다.
+
+주목할 점은 **3만 건 대량 상태 전이 직후에도 INV-01~12 가 전부 통과했다**는 것이다.
+배치가 한 번에 3만 행의 상태와 타임스탬프를 바꿔도 불변식이 깨지지 않았다.
+
+부작용도 있다.
+
+- 더미데이터의 상태별 분포가 영구히 바뀌었다. `L1-BASE-01` 의 분포와 더는 일치하지 않는다
+- 다음 회차부터 만료 대상은 10건(그 회차분)으로 떨어졌고 이 대량 전이는 재현되지 않는다
+
+운영상 함의가 더 크다. **공유 환경에서 만료 배치를 무심코 돌리면 다른 사람의 회차
+데이터까지 만료된다.** Level 2/3 에서 배치 실행 시점을 팀이 합의해야 한다.
+
+### 부하 발생기 결함 (수정함)
+
+V1 전이 회차에서 `IDEMPOTENCY_REQUEST_IN_PROGRESS` 가 1건 나왔다.
+
+```
+69 409 OUT_OF_STOCK
+30 200 OK
+ 1 409 IDEMPOTENCY_REQUEST_IN_PROGRESS
 ```
 
-이다.
-
-모든 worker가 준비된 후 하나의 `CountDownLatch`로 동시에 출발시켜 실제 재고 경합을 발생시킨다.
-
-최종적으로 다음을 검증한다.
-
-```text
-성공 = 10
-실패 = 20
-실패 사유 = OUT_OF_STOCK
-coupon = 10
-history = 10
-remaining = 0
-```
-
-또한 Redis campaign/stock cache 없이도 DB 기반 Pessimistic Lock 경로가 동작하는 것을 확인한다.
-
----
-
-# 7. V2 Redis Lua 동시성 검증
-
-V2는:
-
-```text
-LUA_SCRIPT
-sync-db
-idempotency disabled
-```
-
-조건이다.
-
-테스트 시작 시 fixture 데이터를 생성한 뒤 `CampaignCacheWarmupService`를 통해 Redis의 campaign/stock/issued 상태를 준비한다.
-
-동일하게:
-
-```text
-재고 10
-요청 30
-```
-
-을 동시에 실행한다.
-
-Lua script의 원자적인 재고 차감 결과를 검증하여:
-
-```text
-성공 = 10
-실패 = 20
-실패 사유 = OUT_OF_STOCK
-```
-
-을 확인한다.
-
-그리고 Redis와 DB 양쪽 상태를 함께 검증한다.
-
-```text
-Redis stock = 0
-Redis issued set size = 10
-DB coupon = 10
-DB history = 10
-DB remaining = 0
-```
-
-따라서 V2는 Redis Lua의 원자적 재고 차감과 DB 동기 저장 결과가 일치하는지를 실제 컨테이너 환경에서 확인한다.
-
----
-
-# 8. V3 Lua → Kafka → DB 전체 비동기 경로 검증
-
-V3은:
-
-```text
-LUA_SCRIPT
-kafka
-idempotency disabled
-```
-
-조건으로 실행한다.
-
-전체 흐름은 실제 Kafka Testcontainer를 통해:
-
-```text
-Client
-  ↓
-Redis Lua
-  ↓
-Kafka coupon-issued
-  ↓
-Kafka Consumer
-  ↓
-MySQL settlement
-```
-
-으로 검증한다.
-
-테스트 조건은:
-
-```text
-재고 = 10
-요청 = 30
-```
-
-이며 최종 발급 결과는:
-
-```text
-성공 = 10
-실패 = 20
-실패 사유 = OUT_OF_STOCK
-```
-
-이어야 한다.
-
-여기서 V3는 DB 저장이 비동기이므로 `couponService.issue()`가 끝난 직후 DB를 단언하지 않는다.
-
-Awaitility를 이용하여 Kafka consumer가 settlement를 완료할 때까지 기다린다.
-
-최종적으로:
-
-```text
-DB coupon count = 10
-DB history count = 10
-DB remaining = 0
-```
-
-을 확인한다.
-
----
-
-# 9. Kafka settlement 완료까지 별도 검증
-
-DB 값이 맞는 것만으로 Kafka 처리가 완전히 끝났다고 판단하지 않도록 했다.
-
-`KafkaSettlementChecker`를 사용하여:
-
-```text
-consumer lag
-DLT 상태
-settlement 상태
-```
-
-가 모두 정착될 때까지 별도로 기다린다.
-
-즉 V3의 검증 순서는:
-
-```text
-동시 발급 완료
-        ↓
-DB settlement 완료
-        ↓
-Kafka lag / DLT 정착 확인
-        ↓
-Redis 상태 확인
-        ↓
-최종 verification report 생성
-```
-
-으로 고정했다.
-
-따라서 settlement가 끝나기 전에 report가 실행되어 `SKIPPED_NOT_SETTLED`가 발생하는 문제도 방지한다.
-
----
-
-# 10. V3 Kafka partition 조건을 실제 broker에서 검증
-
-V3 테스트 자체에서 topic을 생성하지 않는다.
-
-Kafka topic의 생성 책임은 `IntegrationTestContainers`로 이동했다.
-
-컨테이너 기동 직후:
-
-```text
-coupon-issued       -> 3 partitions
-coupon-issued.DLT   -> 3 partitions
-```
-
-을 생성하고 실제 broker의 metadata를 조회하여 partition 수를 검증한다.
-
-따라서 다음과 같은 잘못된 상태가 더 이상 테스트를 통과할 수 없다.
-
-```text
-coupon-issued = 1 partition
-coupon-issued.DLT = 1 partition
-```
-
-또는
-
-```text
-topic이 자동 생성된 후
-createTopics()에서 TopicExistsException만 무시
-```
-
-하는 경우도 허용하지 않는다.
-
----
-
-# 11. 관리자 API의 판정 테스트도 Mock 기반 검증에서 실제 SQL 통합 검증으로 변경
-
-관리자 API 테스트 역시 단순히:
-
-```java
-given(jdbcTemplate.queryForList(...))
-        .willReturn(...)
-```
-
-하여 controller가 가짜 결과를 전달하는지만 확인하는 방식에서 벗어난다.
-
-실제 MySQL Testcontainer에 테스트 데이터를 구성하고 **실제 SQL 판정 결과를 검증하는 통합 테스트**로 변경한다.
-
-판정 규칙은 다음을 실제 DB 상태에서 검증한다.
-
-| 조건                | 판정           |
-| ----------------- | ------------ |
-| V0 baseline + 위반  | `BASELINE`   |
-| `SKIPPED` 존재      | `INCOMPLETE` |
-| `CHECKED` 위반 존재   | `FAILED`     |
-| 위반 및 `SKIPPED` 없음 | `PASSED`     |
-
-또한 관리자 API의 상세 응답에서:
-
-```json
-"passed": true
-```
-
-또는
-
-```json
-"passed": false
-```
-
-가 실제 JSON boolean으로 반환되는지도 검증한다.
-
-즉 SQL 판정 로직 자체를 삭제하거나 변경했을 때 테스트가 함께 실패하도록 테스트의 검증 범위를 확대했다.
-
----
-
-# 12. 테스트 결과를 Round Report로 남기도록 통일
-
-각 회차 테스트가 단순 assertion만 수행하는 것이 아니라 실제 실행 결과를 회차별 report로 남긴다.
-
-```text
-V0 -> build/round-results/V0.md
-V1 -> build/round-results/V1.md
-V2 -> build/round-results/V2.md
-V3 -> build/round-results/V3.md
-```
-
-V0은 baseline 결과를 기록하고, V1~V3은 해당 회차의 최종 검증을 통과했는지 확인한다.
-
-특히 V3은 Kafka settlement가 완료된 이후 report를 생성하여 비동기 처리 중간 상태를 최종 결과로 기록하지 않는다.
-
----
-
-# 13. 테스트 규모와 SSOT 기준 정리
-
-테스트 계획과 실제 테스트 규모가 서로 다른 문제도 정리한다.
-
-Level 1 미니 통합 테스트의 기준은:
-
-```text
-재고 10
-사용자/요청 30
-```
-
-으로 통일한다.
-
-따라서 현재 V0~V3의 기본 동시성 검증은 모두 동일한 기준에서 비교할 수 있다.
-
-```text
-V0: stock 10 / requests 30
-V1: stock 10 / requests 30
-V2: stock 10 / requests 30
-V3: stock 10 / requests 30
-```
-
-이를 통해 V0 → V1 → V2 → V3 전략 변경에 따른 동시성/정합성 차이를 동일한 조건에서 비교할 수 있다.
-
-별도의 미니 인수 테스트가 더 큰 부하를 사용하는 경우에는 Level 1 테스트와 목적을 분리하여 문서에 명시한다.
-
----
-
-## 최종적으로 반영된 구조
-
-```text
-                    IntegrationTestContainers
-                              │
-          ┌───────────────────┼───────────────────┐
-          │                   │                   │
-       MySQL               Redis               Kafka
-   Testcontainer        Testcontainer       Testcontainer
-          │                   │                   │
-          │                   │            topic 생성/검증
-          │                   │             ├─ coupon-issued (3)
-          │                   │             └─ coupon-issued.DLT (3)
-          │                   │                   │
-          └───────────────────┼───────────────────┘
-                              │
-                       Spring Context
-                              │
-                ┌─────────────┼─────────────┐
-                │             │             │
-               V0            V1            V2/V3
-             NO_LOCK    PESSIMISTIC       LUA
-                          LOCK             │
-                                          │
-                                     V2 → DB
-                                     V3 → Kafka → DB
-```
-
+`acceptance.sh` 의 `uuid4` 가 `$RANDOM` 만 쓰는데, 100개 서브셸이 같은 RANDOM 상태를
+물려받아 키가 겹쳤다. **앱이 중복 키를 정확히 거절한 것이므로 앱 결함이 아니다.**
+다만 그대로 두면 회차마다 성공 건수가 흔들려 게이트가 우연히 깨진다.
+회차 고유 salt 와 요청 번호를 키 마지막 12자리에 박아 해소했다.
+
+`coupons.user_id` 에 `users` FK 가 걸려 있어, 만료 캠페인에 존재하지 않는 사용자로
+발급하면 전부 500 이 된다. 사전 검사를 넣어 원인이 응답만으로 드러나게 했다.
+
+### 이번 회차에서 바뀐 것
+
+- **CLOCK-02 활성화** — `RoundVersion` 의 V2·V3 를 `usesRedisClock=true` 로 올렸다.
+  허용 오차는 실측 후 0.1s → 0.3s 로 조정했다. 0.1s 는 근거 없이 정한 값이었다.
+
+  | 측정 | drift | 비고 |
+  | --- | ---: | --- |
+  | 컨테이너 외부(`docker exec` 왕복) | -0.085 ~ +0.058s | 측정 window 1.7~2.0s. 대부분이 왕복 잡음 |
+  | 앱 내부(CLOCK-02 규칙) | -0.002s | 실제 시계 차이 |
+
+  외부 측정은 왕복 지연이 지배하므로 상한을 잡는 용도로만 쓴다.
+  회차 데이터가 쌓이면 앱 내부 측정값을 근거로 허용치를 조일 수 있다.
+
+- **리포트 판정이 REC-01 위반을 통과로 기록하던 버그 수정** — 판정 계산이
+  `rule_code` 가 `INV-` 로 시작하는 규칙만 세고 있었다. REC-01 은 검증 배치가
+  끝난 뒤 정합성 배치가 써 넣는 행이라, 위반 1건이 있어도 헤더에는 "통과" 가 찍혔다.
+  리포트 맨 위 한 줄만 읽는 사람에게 거짓말을 하는 상태였다.
+  REC-01 위반은 **불일치** 등급으로 분리하되 통과로 뭉개지 않는다.
+  분류되지 않은 규칙 코드가 조용히 통과하지 않도록 `failedOther` 도 함께 둔다.
+
+- **회차 게이트 보강** — `acceptance.sh` 9단계가 총 위반 수와 리포트 판정을
+  검사한다. 기존에는 실행 상태와 미실행 규칙만 봤기 때문에, REC-01 위반이 있어도
+  `PASSED` 가 찍혔다. 게이트는 `PASSED` 출력보다 앞에 둔다.
+
+- **커넥션 풀 오버라이드** — `maximum-pool-size` 를 `DB_POOL_SIZE` 로 뺐다.
+  기본값은 test-plan §6.1 의 고정값 10 을 유지하고, 다른 값으로 돌린 회차는
+  이 문서에 값을 남긴다(§8.2).
+
+### LEAK-V2-01 — REC-01 이 실제 재고 누수를 검출한 사례
+
+`DB_POOL_SIZE` 기본값 10 으로 V2 를 돌렸을 때 100 요청 중 1 건이 5xx 로 끝났다.
+
+1. HikariCP 풀(10) 이 포화되어 커넥션 획득이 3 초 타임아웃에 걸림
+   (`CannotCreateTransactionException: Could not open JPA EntityManager`)
+2. `LuaScriptIssueStrategy` 가 저장 결과를 알 수 없어 `SAVE_RESULT_UNKNOWN` 전파.
+   이 경로는 중복 발급을 막기 위해 Redis 보상을 의도적으로 생략한다
+3. Redis `stock:301` = 0, DB `remaining_stock` = 1 로 어긋남
+4. REC-01 이 `redis=0, db=1, diff=-1` 로 검출
+
+INV-01~12 는 전부 통과했다. DB 자체는 정합하고 Redis 만 어긋난 상태였다.
+커넥션 타임아웃이 반쪽짜리 행을 남기지 않았다는 뜻이다.
+설계상 의도된 동작이며 REC-01 이 그 안전망으로 작동했다.
+
+지금까지 REC-01 은 Redis 키를 사람이 손으로 어긋나게 만들어 검출력을 시험했다.
+실제 코드가 만든 불일치를 잡은 것은 이번이 처음이다.
+
+**왜 V1 은 통과하고 V2 에서만 터졌는가.** V1 은 비관적 락이 요청을 직렬화하므로
+DB 작업이 시간축으로 퍼져 동시 커넥션이 10 을 넘지 않는다. V2 는 Lua 가 재고 판정을
+원자적으로 끝내므로 통과한 30건이 거의 동시에 DB 로 몰린다. **게이트가 빨라질수록
+병목이 락에서 커넥션 풀로 옮겨간다.** 부하 테스트에서 V2·V3 가 V1 보다 빠를 것을
+기대한다면 풀 크기를 함께 정해야 한다.
+
+풀을 30 으로 올려도 성질은 그대로다. 동시 요청이 300 이면 같은 일이 난다.
+
+해결됨:
+
+- **커넥션 풀 고갈이 500 으로 나가던 문제.** `IssueFailReason`에 `CONNECTION_UNAVAILABLE`을
+  추가하고, `SyncMysqlSaveStrategy.save()`(V2)와 `CouponIssuedProducer.markPending()`(V3)
+  두 지점에서 `CannotCreateTransactionException`을 일반 `Exception`/`RuntimeException`
+  catch보다 먼저 잡아 이 사유로 매핑하도록 수정했다. `GlobalExceptionHandler`가 이 사유를
+  503 `CONNECTION_UNAVAILABLE`로 응답하며, test-plan §6.6의 분류 정의와 일치한다.
+  `SyncMysqlSaveStrategyTest`, `CouponIssuedProducerTest`, `GlobalExceptionHandlerTest`에
+  회귀 테스트를 추가해 검증했다. 이 절의 실제 100동시요청 재현(1)은 아직 다시 돌리지
+  않았고, 단위/슬라이스 테스트로만 확인한 상태다.
+
+미해결 과제:
+
+- **풀 크기 10 은 V2/V3 에서 100 동시요청만으로 포화된다.** Level 2 는 500~5,000 VU
+  이므로 §8.2 기록 항목으로 풀 크기를 명시적으로 확정해야 한다. 전략 간 비교가
+  성립하려면 모든 회차가 같은 값을 써야 한다. (팀 합의 필요)
+
+### 남은 일
+- 캐시 웜업 관리자 API (발견 사항 5). 회차 4단계가 셸로 Redis 키를 직접 쓰고 있어,
+  지금은 회차가 운영 코드가 아니라 스크립트를 검증한다
+- `uk_campaign_user` 충돌 경로 시나리오 (검증하지 못한 것 첫 항목)

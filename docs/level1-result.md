@@ -7,14 +7,19 @@ Level 1은 전략별 기능·비즈니스 규칙과 소규모 동시성 오류�
 
 | 항목 | 값 |
 | --- | --- |
-| gitCommit | 3d52e75 |
+| gitCommit | a8133d6 |
 | environmentId | LOCAL-NATIVE-01 |
-| runNumber | 3 |
-| 실행 일시 | 2026-08-19 00:22:53 (KST) |
+| runNumber | 4 |
+| 실행 일시 | 2026-08-24 15:18:43 (KST) |
 | 실행 명령 | `./gradlew cleanTest test --tests "*IssueStrategyTest" --tests "CouponIssueValidationIntegrationTest"` |
 
 `cleanTest`를 함께 실행한다. Gradle의 `test` 태스크는 입력이 바뀌지 않으면 `UP-TO-DATE`로
 건너뛰기 때문에, 재실행한 것처럼 보여도 이전 회차의 결과가 그대로 남는다.
+
+run 3와의 차이는 `IdempotencyKeyValidator`/`IdempotencyKeyReusedException`이
+`NoLockIssueStrategy`, `PessimisticLockIssueStrategy` 양쪽에 추가된 것이다(`a8133d6`에
+포함됨, run 3의 `3d52e75` 이후 커밋). 멱등성 키를 다른 캠페인·유저·재고 풀에 재사용하거나
+발급이 아닌 상태 변경 이력의 키를 재사용하는 시도를 `IDEMPOTENCY_KEY_REUSED`로 거부한다.
 
 ### 1.1 환경
 
@@ -32,6 +37,9 @@ Level 1은 전략별 기능·비즈니스 규칙과 소규모 동시성 오류�
 | HikariCP | maximum-pool-size 10, connection-timeout 3000ms |
 | Redis | 미사용 (V0·V1 측정 범위 밖) |
 | Kafka | 리스너 비활성 (`coupon.kafka.consumer.enabled=false`) |
+
+이 표는 1절 실행 명령(V0·V1만 실행)의 환경이다. V2·V3는 별도 실행이며 로컬 Redis를
+띄우고 측정했다 — 5.2절 참고.
 
 `LOCAL-DOCKER-01`이 아니다. 테스트 계획 8.2의 Docker 이미지(`mysql:8.0.46`)와 다른
 네이티브 MySQL 8.0.45 환경이므로 별도 환경 ID로 기록한다.
@@ -64,12 +72,12 @@ KST 환경과 UTC 환경에서 각각 반복 측정한 결과도 유의한 차�
 | 항목 | 값 |
 | --- | --- |
 | 실행한 테스트 클래스 | `NoLockIssueStrategyTest`, `PessimisticLockIssueStrategyTest`, `CouponIssueValidationIntegrationTest` |
-| 전체 테스트 수 | 20 |
-| 성공 | 20 |
+| 전체 테스트 수 | 30 |
+| 성공 | 30 |
 | 실패 | 0 |
 | 오류 | 0 |
 | 실패 시 첫 번째 원인 | 해당 없음 |
-| 테스트 실행 시간 | 총 2.343s (NoLock 0.797s / 비관적 락 0.840s / 공통 검증 0.706s) |
+| 테스트 실행 시간 | 총 3.428s (공통 검증 0.8s / NoLock 1.37s / 비관적 락 1.258s) |
 
 공통 테스트 데이터: 캠페인 1건, 재고 풀 1건(JEJU / ECONOMY), 초기 재고 10장, 사용자 30명.
 
@@ -77,6 +85,11 @@ run 2 대비 테스트가 10개에서 20개로 늘었다. 트랜잭션 롤백 �
 발급 시각 기준, campaignId–stockId 조합 불일치를 전략별로 추가했고,
 `CampaignStockIdLookup`을 거쳐야 발동하는 공통 사전 검증(오픈 시각, 재고 풀 존재 여부)은
 전략 빈을 직접 호출하는 구조로는 잡히지 않아 서비스 계층 통합 테스트를 따로 두었다.
+
+run 3 대비 테스트가 20개에서 30개로 늘었다. `IDEMPOTENCY_KEY_REUSED` 거부 테스트가
+전략별로 4개씩(다른 재고 풀 재사용, 다른 캠페인 재사용, 다른 유저 재사용, 상태 변경
+이력 키 재사용) 총 8개 추가됐고, 나머지 2개는 `campaignId`·`stockId` 조합 불일치
+검증 등 무관한 보강이다. 새 테스트는 전부 통과했고, 회귀는 관측되지 않았다.
 
 실행 시간이 늘어난 주된 원인은 테스트 수가 아니라 Spring 컨텍스트 수다.
 `@SpyBean`과 `@TestPropertySource`가 각각 별도 컨텍스트를 요구한다.
@@ -171,16 +184,16 @@ Level 2(재고 10,000 / 요청 20,000)에서 이 값이 얼마로 나오는지�
 ### 3.2 반복 실행
 
 NoLock의 결과는 스레드 스케줄링에 따라 매 실행 달라진다.
-run 3 코드에서 5회 반복 관측한 범위는 다음과 같다.
+run 3 코드에서 5회 반복 관측한 범위는 다음과 같다(run 4 값은 괄호로 병기).
 
 | 항목 | 관측 범위 |
 | --- | --- |
-| 성공 응답 수 | 6 ~ 8 |
-| 실제 쿠폰 수 | 6 ~ 8 |
+| 성공 응답 수 | 6 ~ 8 (run 4: 7 ~ 8) |
+| 실제 쿠폰 수 | 6 ~ 8 (run 4: 7 ~ 8) |
 | 재고 차감량 | 3 ~ 4 |
-| 차이(유실) | 2 ~ 4 |
+| 차이(유실) | 2 ~ 4 (run 4: 4 ~ 5) |
 | 초과 발급 | 0 |
-| 락 경합 실패 | 22 ~ 24 |
+| 락 경합 실패 | 22 ~ 24 (run 4: 22 ~ 23) |
 
 교착 발생 자체는 모든 실행에서 재현됐다.
 
@@ -191,6 +204,12 @@ run 3 코드에서 5회 반복 관측한 범위는 다음과 같다.
 | run 1 | `36cf2dc`, `coupon_db`, JVM KST | 7회 | 8 ~ 9 | 4 | 4 ~ 5 | 21 ~ 22 |
 | run 2 | `5996522`, `coupon_db_test`, JVM KST | 7회 | 6 ~ 8 | 4 | 2 ~ 4 | 22 ~ 24 |
 | run 3 | `3d52e75`, `coupon_db_test`, JVM UTC | 5회 | 6 ~ 8 | 3 ~ 4 | 2 ~ 4 | 22 ~ 24 |
+| run 4 | `a8133d6`, 멱등성 키 재사용 검증 추가 | 5회 | 7 ~ 8 | 3 ~ 4 | 4 ~ 5 | 22 ~ 23 |
+
+셋째, 멱등성 키 재사용 검증 추가(run 3 → run 4)는 관측 분포를 바꾸지 않았다.
+range가 run 3의 부분집합(7~8 ⊂ 6~8, 22~23 ⊂ 22~24)으로 좁혀졌을 뿐 벗어나지
+않는다. 재사용 검증은 재고 행을 잠그기 전에 끝나는 조회이므로 락 경합 시점의
+직렬화 구간에 관여하지 않는다.
 
 두 가지를 정정한다.
 
@@ -236,6 +255,8 @@ run 3 코드에서는 요청당 쿼리가 2개 늘었다(`currentDatabaseTime`, 
 비관적 락은 같은 재고 행을 `SELECT ... FOR UPDATE`로 직렬화하므로 결과가 결정적이다.
 run 1·run 2의 측정값과도 완전히 일치한다. 그 사이 만료·발급 시각 산출 방식 변경,
 JVM 타임존 UTC 고정, 요청당 쿼리 2개 추가가 있었으나 발급 정합성에는 영향이 없었다.
+run 4에서 멱등성 키 재사용 검증이 추가된 뒤에도 같은 값(성공 10 / 재고소진 20 / 락
+timeout 0)이 그대로 재현돼, 이 전제도 여전히 성립한다.
 
 ### 4.1 판정
 
@@ -264,12 +285,36 @@ Level 1 규모(재고 10 / 사용자 30)에서는 0건이지만, 대규모 부�
 
 | 버전 | 판정 | 비고 |
 | --- | --- | --- |
-| V0 NoLock | 기준선 목적 달성 | 재고 차감 유실 재현. 교착 24건 관측(5회 범위 22~24). 재고 10장에서는 초과 발급 0건이나 재고 2장 조건에서는 재현됨(3.1.1) |
+| V0 NoLock | 기준선 목적 달성 | 재고 차감 유실 재현. 교착 24건 관측(5회 범위 22~24, run 4는 22~23). 재고 10장에서는 초과 발급 0건이나 재고 2장 조건에서는 재현됨(3.1.1) |
 | V1 비관적 락 | 공통 검증 항목 충족 | 초과 발급 0건, 락 timeout 0건. 5회 전부 동일 |
-| V2 Redis Lua | 1-B 담당, 별도 기록 | `CouponConcurrencyTest` 구현됨(`a9da0e2`) |
+| V2 Redis Lua | Level 1 규모에서 통과 (참고 측정, run 4) | 30명 동시 요청 시 정확히 10명 성공, DB 10건 저장, Redis 잔여재고 0. 결정적 결과(1회로 충분) |
+| V3 Redis Lua + Kafka | Level 1 규모에서 통과 (참고 측정, run 4) | 30명 동시 요청 시 정확히 10명 성공, Kafka 메시지 10회 발행. |
 
 ### 5.1 후속 확인 사항
 
 - 초과 발급은 재고 2장 조건에서 재현됐으나 재고 10장에서는 관측되지 않았다(3.1.1). 초기 재고 대비 동시 요청 규모와 경합 시점이 함께 작용하므로, Level 2(재고 10,000 / 요청 20,000)에서 얼마로 나오는지 별도로 판정한다.
 - 요청당 쿼리 2개가 추가되어 Level 2의 TPS 비교 시 run 2 이전 수치와 직접 비교하지 않는다.
 - JUnit 동시성 테스트와 API 경로는 경합 강도가 다르다. 같은 조건(재고 10 / 30건)에서 JUnit은 교착 22~24건, API는 2건이었다. Level 1의 교착 건수를 Level 2 예측에 그대로 사용하지 않는다.
+
+### 5.2 V2·V3 참고 측정 (`CouponConcurrencyTest`, run 4)
+
+V0·V1과 같은 날 로컬 Redis(`localhost:6379`, Windows 네이티브 빌드)를 띄우고
+`CouponConcurrencyTest`(`SyncDbStrategyConcurrencyTest`=V2, `KafkaStrategyConcurrencyTest`=V3)를
+`./gradlew cleanTest test --tests "CouponConcurrencyTest"`로 실행해 얻은 값이다.
+NoLock, PessimisticLock 담당자가 V2·V3 커넥션 풀 500 버그 작업 중 확인차 돌린 것이라 V0·V1만큼의 반복 측정·심층
+분석은 하지 않았다. 전략별 상세 판정은 Redis, kafka 담당 몫으로 남긴다.
+
+| 항목 | V2 (Lua + MySQL 동기) | V3 (Lua + Kafka) |
+| --- | --- | --- |
+| 성공 | 10 | 10 |
+| DB 저장 | 10건 | 0건 (Kafka Consumer는 mock이라 이 테스트 범위 밖) |
+| Redis 잔여 재고 | 0 | 측정 안 함 |
+| Kafka 메시지 발행 | 해당 없음 | 10회 (`KafkaTemplate` mock 스텁 기준) |
+| 실행 시간 | 0.199s | 0.762s |
+
+두 전략 다 Lua Script가 재고 판정을 원자적으로 끝내므로 비관적 락처럼 결정적이다.
+V3는 `@MockBean`으로 `KafkaTemplate`과 `KafkaSettlementChecker`를 대체해 실제 Kafka
+브로커 없이 돈다 — 즉 이 값은 "발행 요청까지"만 검증하며, Consumer의 실제 DB 반영이나
+Kafka 인프라 자체의 동작은 검증 범위 밖이다. 이 테스트는 로컬에 커밋 전 상태로 존재하는
+`@ActiveProfiles("test")` 보완(이슈 ③, `coupon_db_test` 사용·Kafka 컨슈머 비활성화 적용)이
+있어야 정상 동작한다.
