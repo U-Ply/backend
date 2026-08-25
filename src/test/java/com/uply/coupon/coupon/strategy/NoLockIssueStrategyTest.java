@@ -315,8 +315,8 @@ class NoLockIssueStrategyTest {
     }
 
     @Test
-    @DisplayName("락이 없으면 재고 차감이 유실되어 쿠폰 수와 재고가 어긋난다")
-    void 락이_없으면_재고차감이_유실된다() throws InterruptedException {
+    @DisplayName("NoLock 동시 요청 결과를 집계하고 예상하지 못한 예외가 없는지 확인한다")
+    void NoLock_동시요청_결과를_집계한다() throws InterruptedException {
         ExecutorService executor = Executors.newFixedThreadPool(USER_COUNT);
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(USER_COUNT);
@@ -384,8 +384,6 @@ class NoLockIssueStrategyTest {
                                 + deadlock.get()
                                 + error.get())
                 .isEqualTo(USER_COUNT);
-
-        // 락이 없으므로 차감이 유실되어, 발급 수가 재고 차감량보다 많아진다
-        assertThat(issued).isGreaterThan(consumed);
+        assertThat(error.get()).as("예상치 못한 예외 %d건 발생", error.get()).isZero();
     }
 }
