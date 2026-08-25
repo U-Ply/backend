@@ -145,7 +145,7 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                     couponId,
                     e);
             // rollbackInRedis(stockIdKey, issuedCampaignKey, userId);
-            throw new CouponIssueException(IssueFailReason.SYSTEM_ERROR, e);
+            throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
         }
 
         // #6. 성공 결과 반환 (IssueResult)

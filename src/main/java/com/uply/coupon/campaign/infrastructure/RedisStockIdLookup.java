@@ -1,7 +1,10 @@
 package com.uply.coupon.campaign.infrastructure;
 
+import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.campaign.service.StockIdLookup;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -18,6 +21,8 @@ public class RedisStockIdLookup implements StockIdLookup {
     /** Redis에 적재된 Stock ID 매핑 Key 포맷 (stockId:{campaignId}:{routeId}:{fareClass}) */
     private static final String KEY_STOCK_ID = "stockId:%d:%s:%s";
 
+    private final CampaignStockRepository campaignStockRepository;
+
     private final StringRedisTemplate redisTemplate;
 
     @Override
@@ -26,6 +31,12 @@ public class RedisStockIdLookup implements StockIdLookup {
         String stockIdStr = redisTemplate.opsForValue().get(key);
 
         if (stockIdStr == null) {
+            // DB에는 있는데 Redis 조회 실패 -> 503 CAMPAIGN_NOT_CACHED 을 줘야한다.
+            if (campaignStockRepository.existsByCampaignIdAndRouteIdAndFareClass(
+                    campaignId, routeId, fareClass)) {
+                throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED);
+            }
+            // DB에도 없으면 CampaignNotFoundException(404)
             throw new CampaignNotFoundException(campaignId, routeId, fareClass);
         }
 
