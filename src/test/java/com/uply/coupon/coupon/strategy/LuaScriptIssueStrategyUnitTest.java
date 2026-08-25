@@ -9,14 +9,13 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
@@ -27,7 +26,6 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -160,24 +158,47 @@ class LuaScriptIssueStrategyUnitTest {
     }
 
     @Test
-    @DisplayName("Lua Script 결과가 -3(미웜업)인 경우 DB 조회, 재웜업, Lua Script 1회 재시도를 실행한다")
-    void issue_NotWarmedUp_ExecutesDbLookupWarmupAndRetry() {
+    @DisplayName("Lua Script 결과가 -3(미웜업)이고 DB에 캠페인이 존재하지 않으면 CampaignNotFoundException이 발생한다")
+    void issue_NotWarmedUp_AndNotInDb_ThrowsCampaignNotFoundException() {
         // given
         Long campaignId = 1L;
         Long userId = 100L;
         Long stockId = 10L;
-        Long couponId = 1000L;
         String idempotencyKey = "idempotency-key-123";
 
-        Campaign campaign = mock(Campaign.class);
+        given(campaignRepository.existsById(campaignId)).willReturn(false);
 
-        given(couponIdGenerator.generate()).willReturn(couponId);
-        given(campaignRepository.findById(campaignId)).willReturn(Optional.of(campaign));
-
-        // 1차 실행: -3 반환, 2차 재시도 실행: -2 반환 (재고 소진 등의 실패 상황 가정)
+        // Lua Script 결과 -3 반환 (캐시 미스)
         given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-3L, issuedAtEpochMillis, expireAtEpochMillis))
-                .willReturn(List.of(-2L, issuedAtEpochMillis, expireAtEpochMillis));
+                .willReturn(List.of(-3L, issuedAtEpochMillis, expireAtEpochMillis));
+
+        // when & then
+        assertThatThrownBy(
+                        () ->
+                                luaScriptIssueStrategy.issue(
+                                        campaignId, userId, stockId, idempotencyKey))
+                .isInstanceOf(CampaignNotFoundException.class);
+
+        // DB 존재 여부 확인 호출 검증 및 Redis Script 1회 실행 검증
+        verify(campaignRepository, times(1)).existsById(campaignId);
+        verify(redisTemplate, times(1))
+                .execute(any(DefaultRedisScript.class), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName("Lua Script 결과가 -3(미웜업)이나 DB에는 존재하면 CAMPAIGN_NOT_CACHED 실패 결과가 반환된다")
+    void issue_NotWarmedUp_ButExistsInDb_ReturnsCampaignNotCachedFail() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(campaignRepository.existsById(campaignId)).willReturn(true);
+
+        // Lua Script 결과 -3 반환 (캐시 미스)
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(-3L, issuedAtEpochMillis, expireAtEpochMillis));
 
         // when
         IssueResult result =
@@ -185,52 +206,12 @@ class LuaScriptIssueStrategyUnitTest {
 
         // then
         assertThat(result.success()).isFalse();
-        assertThat(result.reason()).isEqualTo(IssueFailReason.OUT_OF_STOCK);
+        assertThat(result.reason()).isEqualTo(IssueFailReason.CAMPAIGN_NOT_CACHED);
 
-        // DB 조회, 웜업 서비스 호출, Redis Script 2회 실행 검증
-        verify(campaignRepository, times(1)).findById(campaignId);
-        verify(campaignCacheWarmupService, times(1)).warmupCampaign(campaignId);
-        verify(redisTemplate, times(2))
+        // DB 존재 여부 확인 호출 검증 및 Redis Script 1회 실행 검증
+        verify(campaignRepository, times(1)).existsById(campaignId);
+        verify(redisTemplate, times(1))
                 .execute(any(DefaultRedisScript.class), anyList(), anyString());
-    }
-
-    @Test
-    @DisplayName("캐시 미스(-3) 시 DB 존재 확인 후 재웜업 및 1회 재시도가 성공(1)하면 정상 발급 로직으로 복구된다")
-    void issue_NotWarmedUp_RecoversOnSuccessfulRetry() {
-        // given
-        Long campaignId = 1L;
-        Long userId = 100L;
-        Long stockId = 10L;
-        Long couponId = 1000L;
-        String idempotencyKey = "idempotency-key-123";
-
-        Campaign campaign = mock(Campaign.class);
-
-        given(couponIdGenerator.generate()).willReturn(couponId);
-        given(campaignRepository.findById(campaignId)).willReturn(Optional.of(campaign));
-
-        // 1차 실행: -3 반환, 2차 재시도 실행: 1L 반환 (재웜업 후 성공)
-        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
-                .willReturn(List.of(-3L, issuedAtEpochMillis, expireAtEpochMillis))
-                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
-
-        // when
-        IssueResult result =
-                luaScriptIssueStrategy.issue(campaignId, userId, stockId, idempotencyKey);
-
-        // then
-        assertThat(result.success()).isTrue();
-        assertThat(result.couponId()).isEqualTo(couponId);
-
-        // DB 조회 및 재웜업 호출 검증
-        verify(campaignRepository, times(1)).findById(campaignId);
-        verify(campaignCacheWarmupService, times(1)).warmupCampaign(campaignId);
-        verify(redisTemplate, times(2))
-                .execute(any(DefaultRedisScript.class), anyList(), anyString());
-
-        // 정상 복구 후 저장 전략 save() 호출 검증
-        verify(couponSaveStrategy, times(1))
-                .save(couponId, userId, campaignId, stockId, idempotencyKey, issuedAt, expireAt);
     }
 
     @Test

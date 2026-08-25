@@ -24,7 +24,7 @@ local nowMillis = (tonumber(redisTime[1]) * 1000) + math.floor(tonumber(redisTim
 -- 경계는 정책 C-2를 따른다: open_at 정각은 발급 허용이므로 미만일 때만 거부한다.
 local openAt = redis.call('GET', KEYS[3])
 if not openAt then
-    return {-3, nowMillis, 0} -- SYSTEM_ERROR: 웜업 데이터 누락
+    return {-3, nowMillis, 0} -- CAMPAIGN_NOT_CACHED: 웜업 데이터 누락
 end
 
 if nowMillis < tonumber(openAt) then
@@ -36,7 +36,7 @@ end
 -- (INV-11이 issued_at >= expire_at 을 위반으로 잡는 것과 같은 기준이다)
 local expireAt = redis.call('GET', KEYS[4])
 if not expireAt then
-    return {-3, nowMillis, 0} -- SYSTEM_ERROR: 웜업 데이터 누락
+    return {-3, nowMillis, 0} -- CAMPAIGN_NOT_CACHED: 웜업 데이터 누락
 end
 local expireAtMillis = tonumber(expireAt)
 
@@ -52,7 +52,11 @@ end
 -- 4. [재고 조회] stockId 기반 재고 수량 조회
 local currentStock = redis.call('GET', KEYS[1])
 
-if not currentStock or tonumber(currentStock) <= 0 then
+if not currentStock then
+    return {-3, nowMillis, expireAtMillis} -- CAMPAIGN_NOT_CACHED: (stockId:남은재고) 웜업 데이터 누락
+end
+
+if tonumber(currentStock) <= 0 then
     return {-2, nowMillis, expireAtMillis} -- OUT_OF_STOCK
 end
 
