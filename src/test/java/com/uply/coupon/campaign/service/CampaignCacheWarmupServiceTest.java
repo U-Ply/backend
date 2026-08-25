@@ -1,6 +1,7 @@
 package com.uply.coupon.campaign.service;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
@@ -11,7 +12,9 @@ import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
+import com.uply.coupon.operation.reconciliation.domain.StockReconcileRun;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
+import com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
@@ -50,6 +53,8 @@ class CampaignCacheWarmupServiceTest {
     @Mock private ObjectProvider<KafkaSettlementChecker> kafkaSettlementCheckerProvider;
 
     @Mock private KafkaSettlementChecker kafkaSettlementChecker;
+
+    @Mock private RedisStockReconcileRunner redisStockReconcileRunner;
 
     @Mock private CampaignStock stock1;
 
@@ -200,6 +205,122 @@ class CampaignCacheWarmupServiceTest {
                 .hasMessageContaining(String.valueOf(campaignId));
 
         verifyNoInteractions(redisTemplate);
+    }
+
+    // recoverMissingCache: 운영 중 부분 유실 복구 — warmupCampaign과 달리 살아있는 키를
+    // 절대 덮어쓰면 안 된다. 이 그룹의 테스트는 그 비파괴성을 직접 검증한다.
+
+    @Test
+    @DisplayName("recoverMissingCache는 SETNX로만 채우고, 덮어쓰기용 set()은 절대 호출하지 않는다")
+    void recoverMissingCache_NeverOverwritesExistingKeys() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(redisStockReconcileRunner.run())
+                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(valueOperations).setIfAbsent(eq("campaign:1:openAt"), anyString());
+        verify(valueOperations).setIfAbsent(eq("campaign:1:expireAt"), anyString());
+        verify(valueOperations).setIfAbsent(eq("stock:100"), anyString());
+        verify(valueOperations).setIfAbsent(eq("stockId:1:GMP-CJU:Y"), anyString());
+
+        // warmupCampaign이 쓰는 무조건 덮어쓰기 경로는 이 메서드에서 절대 호출되면 안 된다.
+        verify(valueOperations, never()).set(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("issued Set이 이미 있으면(0명인 정상 상태 포함) 손대지 않는다")
+    void recoverMissingCache_IssuedSetAlreadyExists_LeavesItUntouched() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(redisStockReconcileRunner.run())
+                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verifyNoInteractions(couponRepository);
+        verify(redisTemplate, never()).opsForSet();
+    }
+
+    @Test
+    @DisplayName("issued Set이 없고 DB에 발급 이력이 있으면 SADD만으로 채운다 (DELETE·RENAME 없음)")
+    void recoverMissingCache_IssuedSetMissing_RebuildsAdditively() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(false);
+        given(redisTemplate.opsForSet()).willReturn(setOperations);
+        given(couponRepository.findUserIdsByCampaignId(campaignId)).willReturn(List.of(100L, 101L));
+        given(redisStockReconcileRunner.run())
+                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(setOperations).add("issued:1", "100", "101");
+        verify(redisTemplate, never()).delete(anyString());
+        verify(redisTemplate, never()).rename(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("issued Set도 DB 발급 이력도 없으면 아무 키도 새로 만들지 않는다")
+    void recoverMissingCache_NoIssuedSetAndNoDbHistory_CreatesNothing() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(false);
+        given(couponRepository.findUserIdsByCampaignId(campaignId))
+                .willReturn(Collections.emptyList());
+        given(redisStockReconcileRunner.run())
+                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(redisTemplate, never()).opsForSet();
+    }
+
+    @Test
+    @DisplayName("Kafka가 정착하지 않았으면 부분 복구도 거부한다")
+    void recoverMissingCache_KafkaNotSettled_Rejected() {
+        // given
+        given(kafkaSettlementCheckerProvider.getIfAvailable()).willReturn(kafkaSettlementChecker);
+        given(kafkaSettlementChecker.check()).willReturn(new KafkaSettlement(3L, 0L));
+
+        // when & then
+        assertThatThrownBy(() -> campaignCacheWarmupService.recoverMissingCache(1L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Kafka 미정착");
+
+        verifyNoInteractions(campaignStockRepository, redisStockReconcileRunner);
+    }
+
+    @Test
+    @DisplayName("복구 완료 후 REC-01(Redis-DB 재고 대사)을 1회 실행한다")
+    void recoverMissingCache_TriggersReconciliationAfterSuccess() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(redisStockReconcileRunner.run())
+                .willReturn(StockReconcileRun.notApplicable("stub", LocalDateTime.now()));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(redisStockReconcileRunner).run();
     }
 
     /** 재고 풀 하나짜리 정상 캠페인 스텁 (오픈·만료 시각 포함) */

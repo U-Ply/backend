@@ -7,7 +7,9 @@ import com.uply.coupon.common.exception.CacheRecoveryNotSettledException;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
+import com.uply.coupon.operation.reconciliation.domain.StockReconcileRun;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
+import com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner;
 import java.time.ZoneOffset;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +48,8 @@ public class CampaignCacheWarmupService {
     // V3(coupon.save.strategy=kafka)에서만 빈이 존재한다. V0~V2에서는 비어 있으므로
     // 직접 주입하면 컨텍스트 기동이 깨진다.
     private final ObjectProvider<KafkaSettlementChecker> kafkaSettlementCheckerProvider;
+
+    private final RedisStockReconcileRunner redisStockReconcileRunner;
 
     /**
      * 특정 캠페인의 잔여 재고 및 발급 이력을 RDB에서 조회하여 Redis 캐시에 적재/복구
@@ -123,6 +127,66 @@ public class CampaignCacheWarmupService {
     }
 
     /**
+     * 운영 중 Redis 키 일부가 유실됐을 때, 살아있는 키는 절대 건드리지 않고 없는 키만 채운다.
+     *
+     * <p>{@link #warmupCampaign}과 달리 트래픽 차단을 전제하지 않는다. openAt/expireAt/stock/stockId 매핑은
+     * SETNX({@link org.springframework.data.redis.core.ValueOperations#setIfAbsent})로만 채우므로, 실시간으로
+     * 감소 중인 {@code stock:{stockId}}가 DB 스냅샷 값으로 되돌아가 초과 발급을 유발하는 일이 없다. {@code
+     * issued:{campaignId}}도 키 자체가 없을 때만 DB 기준으로 채우며, 이미 있으면(빈 캠페인이라 회원이 0명인 정상 상태 포함) 손대지 않는다.
+     *
+     * <p>복구가 실제로 무언가를 채웠는지와 무관하게, 완료 후 REC-01(Redis-DB 재고 대사)을 1회 실행해 결과를 로그로 남긴다.
+     *
+     * @param campaignId 복구 대상 캠페인 ID
+     */
+    @Transactional(readOnly = true)
+    public void recoverMissingCache(Long campaignId) {
+        log.info("Starting selective cache recovery for campaignId: {}", campaignId);
+
+        requireKafkaSettled();
+
+        List<CampaignStock> stocks = campaignStockRepository.findAllByCampaignId(campaignId);
+        if (stocks.isEmpty()) {
+            if (!campaignRepository.existsById(campaignId)) {
+                throw new CampaignNotFoundException(campaignId);
+            }
+            log.warn("No stocks found for campaignId: {}", campaignId);
+            return;
+        }
+
+        long openAtEpochMillis =
+                stocks.get(0).getCampaign().getOpenAt().toInstant(ZoneOffset.UTC).toEpochMilli();
+        long expireAtEpochMillis =
+                stocks.get(0).getCampaign().getExpireAt().toInstant(ZoneOffset.UTC).toEpochMilli();
+
+        setIfAbsent(
+                String.format(KEY_CAMPAIGN_OPEN_AT, campaignId), String.valueOf(openAtEpochMillis));
+        setIfAbsent(
+                String.format(KEY_CAMPAIGN_EXPIRE_AT, campaignId),
+                String.valueOf(expireAtEpochMillis));
+
+        for (CampaignStock stock : stocks) {
+            setIfAbsent(
+                    String.format(KEY_STOCK, stock.getId()),
+                    String.valueOf(stock.getRemainingStock()));
+            setIfAbsent(
+                    String.format(
+                            KEY_STOCK_ID, campaignId, stock.getRouteId(), stock.getFareClass()),
+                    String.valueOf(stock.getId()));
+        }
+
+        rebuildIssuedSetIfMissing(campaignId);
+
+        StockReconcileRun reconcileRun = redisStockReconcileRunner.run();
+        log.info(
+                "Post-recovery REC-01 check for campaignId {}: status={}, detail={}",
+                campaignId,
+                reconcileRun.status(),
+                reconcileRun.detail());
+
+        log.info("Selective cache recovery completed for campaignId: {}", campaignId);
+    }
+
+    /**
      * Kafka가 정착(lag 0, DLT 0)하지 않았으면 복구를 거부한다.
      *
      * <p>lag이 남은 상태에서 DB를 정답으로 삼아 Redis를 덮어쓰면, 아직 DB에 반영되지 않은 발급분이 issued Set에서 사라져 같은 유저가 다시 발급받을
@@ -176,5 +240,36 @@ public class CampaignCacheWarmupService {
                     campaignId,
                     userIdStrs.length);
         }
+    }
+
+    /** SETNX. 키가 이미 있으면 손대지 않고 false를 반환한다 — {@link #recoverMissingCache} 전용. */
+    private boolean setIfAbsent(String key, String value) {
+        Boolean applied = redisTemplate.opsForValue().setIfAbsent(key, value);
+        return Boolean.TRUE.equals(applied);
+    }
+
+    /**
+     * {@code issued:{campaignId}} 키가 이미 존재하면(회원 0명인 정상 상태 포함) 아무것도 하지 않는다. 키가 아예 없을 때만 DB 기준으로 채운다
+     * — {@link #rebuildIssuedSet}과 달리 기존 멤버를 절대 지우지 않는다(고스트 유저 청소는 {@link #warmupCampaign}의 책임으로
+     * 남겨둔다).
+     */
+    private void rebuildIssuedSetIfMissing(Long campaignId) {
+        String issuedKey = String.format(KEY_ISSUED, campaignId);
+        if (Boolean.TRUE.equals(redisTemplate.hasKey(issuedKey))) {
+            return;
+        }
+
+        List<Long> issuedUserIds = couponRepository.findUserIdsByCampaignId(campaignId);
+        if (issuedUserIds == null || issuedUserIds.isEmpty()) {
+            // DB에도 발급자가 없다 — 키를 새로 만들 필요가 없다(빈 Set은 Redis에 존재할 수 없다).
+            return;
+        }
+
+        String[] userIdStrs = issuedUserIds.stream().map(String::valueOf).toArray(String[]::new);
+        redisTemplate.opsForSet().add(issuedKey, userIdStrs);
+        log.info(
+                "Rebuilt missing issued Set for campaignId: {} with {} users",
+                campaignId,
+                userIdStrs.length);
     }
 }

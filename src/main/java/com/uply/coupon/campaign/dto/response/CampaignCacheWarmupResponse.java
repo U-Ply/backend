@@ -6,4 +6,8 @@ public record CampaignCacheWarmupResponse(Long campaignId, String status) {
     public static CampaignCacheWarmupResponse completed(Long campaignId) {
         return new CampaignCacheWarmupResponse(campaignId, "WARMED_UP");
     }
+
+    public static CampaignCacheWarmupResponse recovered(Long campaignId) {
+        return new CampaignCacheWarmupResponse(campaignId, "RECOVERED");
+    }
 }

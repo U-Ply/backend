@@ -73,4 +73,43 @@ class CampaignCacheAdminControllerTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.errorCode").value("CACHE_RECOVERY_NOT_SETTLED"));
     }
+
+    // /cache/recover는 warmup과 다른 서비스 메서드(recoverMissingCache)를 호출해야 한다 —
+    // 잘못 연결되면 실시간 재고가 DB 스냅샷으로 덮어써지는 사고로 이어진다.
+    @Test
+    @DisplayName("부분 복구 성공 시 200과 함께 RECOVERED 상태를 반환한다")
+    void recoverSuccessReturns200() throws Exception {
+        mockMvc.perform(post("/api/admin/campaigns/{campaignId}/cache/recover", CAMPAIGN_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.campaignId").value(CAMPAIGN_ID))
+                .andExpect(jsonPath("$.status").value("RECOVERED"));
+
+        verify(campaignCacheWarmupService).recoverMissingCache(CAMPAIGN_ID);
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 캠페인의 부분 복구는 404 CAMPAIGN_NOT_FOUND를 반환한다")
+    void recoverCampaignNotFoundReturns404() throws Exception {
+        willThrow(new CampaignNotFoundException(CAMPAIGN_ID))
+                .given(campaignCacheWarmupService)
+                .recoverMissingCache(CAMPAIGN_ID);
+
+        mockMvc.perform(post("/api/admin/campaigns/{campaignId}/cache/recover", CAMPAIGN_ID))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("CAMPAIGN_NOT_FOUND"));
+    }
+
+    @Test
+    @DisplayName("Kafka가 정착하지 않았으면 부분 복구도 503 CACHE_RECOVERY_NOT_SETTLED를 반환한다")
+    void recoverKafkaNotSettledReturns503() throws Exception {
+        willThrow(
+                        new CacheRecoveryNotSettledException(
+                                "Kafka 미정착 상태에서는 캐시 복구를 실행할 수 없습니다. lag=3, dlt=0"))
+                .given(campaignCacheWarmupService)
+                .recoverMissingCache(CAMPAIGN_ID);
+
+        mockMvc.perform(post("/api/admin/campaigns/{campaignId}/cache/recover", CAMPAIGN_ID))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("CACHE_RECOVERY_NOT_SETTLED"));
+    }
 }
