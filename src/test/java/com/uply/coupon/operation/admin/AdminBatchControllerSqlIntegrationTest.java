@@ -186,15 +186,16 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
         insertReport("it-admin-priority", "V1", "REC-02", "Skipped rule", "SKIPPED", 0);
 
         /*
-         * SQL CASE 우선순위가
+         * SQL CASE 우선순위는
          *
-         * V0
-         * -> SKIPPED
+         * INVALID(시계)
+         * -> INCOMPLETE(미실행)
+         * -> BASELINE(V0)
          * -> FAILED
          * -> PASSED
          *
-         * 라면 violation과 skipped가 동시에 존재할 때
-         * INCOMPLETE이 되어야 한다.
+         * 이고 VerificationReportRenderer 의 판정 사슬과 같다.
+         * violation과 skipped가 동시에 존재하면 INCOMPLETE이 된다.
          */
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -203,6 +204,73 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].failed_rules").value(1))
                 .andExpect(jsonPath("$[0].skipped_rules").value(1))
                 .andExpect(jsonPath("$[0].verdict").value("INCOMPLETE"));
+    }
+
+    /**
+     * 미실행이 BASELINE 보다 앞선다.
+     *
+     * <p>V0 는 위반 수로 판정하지 않지만(test-plan 5.4), 그것은 "기록이 온전할 때" 의 이야기다. 규칙이 빠진 V0 를 BASELINE 으로 부르면
+     * 기록되지 않은 회차가 기준선으로 쓰인다. 마크다운 리포트도 같은 순서로 판정한다.
+     */
+    @Test
+    void verificationRuns_V0라도_SKIPPED가_있으면_INCOMPLETE이다() throws Exception {
+
+        insertReport("it-admin-v0-skipped", "V0", "REC-01", "Checked rule", "CHECKED", 0);
+
+        insertReport("it-admin-v0-skipped", "V0", "REC-02", "Skipped rule", "SKIPPED", 0);
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].run_id").value("it-admin-v0-skipped"))
+                .andExpect(jsonPath("$[0].round").value("V0"))
+                .andExpect(jsonPath("$[0].skipped_rules").value(1))
+                .andExpect(jsonPath("$[0].verdict").value("INCOMPLETE"));
+    }
+
+    /**
+     * 시계가 깨진 회차는 어느 시점을 본 것인지 알 수 없다.
+     *
+     * <p>이 상태에서 BASELINE 이나 PASSED 를 내면, 믿을 수 없는 스냅샷이 판정을 통과한 것으로 기록된다.
+     */
+    @Test
+    void verificationRuns_시계_규칙이_깨지면_INVALID다() throws Exception {
+
+        insertReport("it-admin-clock", "V2", "CLOCK-01", "App vs DB clock", "CHECKED", 1);
+
+        insertReport("it-admin-clock", "V2", "REC-01", "Checked rule", "CHECKED", 0);
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].run_id").value("it-admin-clock"))
+                .andExpect(jsonPath("$[0].verdict").value("INVALID"));
+    }
+
+    @Test
+    void verificationRuns_시계가_깨지면_V0라도_INVALID다() throws Exception {
+
+        insertReport("it-admin-clock-v0", "V0", "CLOCK-02", "Redis vs DB clock", "CHECKED", 1);
+
+        insertReport("it-admin-clock-v0", "V0", "REC-01", "Checked rule", "CHECKED", 0);
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].run_id").value("it-admin-clock-v0"))
+                .andExpect(jsonPath("$[0].round").value("V0"))
+                .andExpect(jsonPath("$[0].verdict").value("INVALID"));
+    }
+
+    /** N/A 인 CLOCK 규칙은 위반이 아니다. 무효로 뒤집히면 안 된다. */
+    @Test
+    void verificationRuns_CLOCK_규칙이_NA면_INVALID가_아니다() throws Exception {
+
+        insertReport("it-admin-clock-na", "V1", "CLOCK-02", "Redis clock", "NOT_APPLICABLE", 0);
+
+        insertReport("it-admin-clock-na", "V1", "REC-01", "Checked rule", "CHECKED", 0);
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].run_id").value("it-admin-clock-na"))
+                .andExpect(jsonPath("$[0].verdict").value("PASSED"));
     }
 
     @Test
@@ -235,12 +303,12 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].rule_code").value("REC-01"))
                 .andExpect(jsonPath("$[0].round").value("V1"))
                 .andExpect(jsonPath("$[0].status").value("CHECKED"))
-                .andExpect(jsonPath("$[0].passed").value(1))
+                .andExpect(jsonPath("$[0].passed").value(true))
                 .andExpect(jsonPath("$[0].violation_count").value(0))
                 .andExpect(jsonPath("$[1].rule_code").value("REC-02"))
                 .andExpect(jsonPath("$[1].round").value("V1"))
                 .andExpect(jsonPath("$[1].status").value("CHECKED"))
-                .andExpect(jsonPath("$[1].passed").value(0))
+                .andExpect(jsonPath("$[1].passed").value(false))
                 .andExpect(jsonPath("$[1].violation_count").value(2));
     }
 
@@ -258,7 +326,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V1"))
                 .andExpect(jsonPath("$[0].status").value("SKIPPED"))
                 .andExpect(jsonPath("$[0].violation_count").value(0))
-                .andExpect(jsonPath("$[0].passed").value(0));
+                .andExpect(jsonPath("$[0].passed").value(false));
     }
 
     @Test
@@ -273,7 +341,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V1"))
                 .andExpect(jsonPath("$[0].status").value("NOT_APPLICABLE"))
                 .andExpect(jsonPath("$[0].violation_count").value(0))
-                .andExpect(jsonPath("$[0].passed").value(0));
+                .andExpect(jsonPath("$[0].passed").value(false));
     }
 
     @Test

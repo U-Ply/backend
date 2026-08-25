@@ -108,6 +108,61 @@ class VerificationReportRendererTest {
         assertThat(md).doesNotContain("| 판정 | **실패**");
     }
 
+    /**
+     * 무효·불완전은 BASELINE 보다 앞이다.
+     *
+     * <p>이 둘은 "V0 가 정합했는가" 가 아니라 "이 회차를 읽을 수 있는가" 를 말한다. 규칙이 빠진 V0 를 BASELINE 이라고 부르면, 5.4 가 요구하는
+     * "실제 측정값을 기록" 이 이뤄지지 않았는데도 기준선으로 쓰이게 된다. AdminBatchController.runs() 의 SQL CASE 도 같은 순서다.
+     */
+    @Test
+    @DisplayName("V0 라도 미실행 규칙이 있으면 BASELINE 이 아니라 불완전이다")
+    void v0WithSkippedRuleIsIncompleteNotBaseline() {
+        List<Map<String, Object>> rules = allClean("V0");
+        replace(rules, "REC-01", rule("REC-01", "SKIPPED", 0, "V0"));
+
+        stub(rules, List.of());
+
+        String md = renderer.render(RUN_ID);
+
+        assertThat(md).contains("불완전");
+        assertThat(md).doesNotContain("| 판정 | **BASELINE**");
+    }
+
+    @Test
+    @DisplayName("시계 규칙이 깨지면 V0 라도 BASELINE 이 아니라 무효다")
+    void clockViolationIsInvalidEvenForV0() {
+        List<Map<String, Object>> rules = allClean("V0");
+        replace(rules, "CLOCK-01", rule("CLOCK-01", "CHECKED", 1, "V0"));
+
+        stub(rules, List.of(violation("CLOCK-01", "coupons", 1L, "drift=3.2s")));
+
+        String md = renderer.render(RUN_ID);
+
+        assertThat(md).contains("무효");
+        assertThat(md).doesNotContain("| 판정 | **BASELINE**");
+    }
+
+    /**
+     * 생성 컬럼에 기대지 않는다는 것을 고정한다.
+     *
+     * <p>DB 의 {@code passed} 는 {@code violation_count = 0} 이므로 SKIPPED 규칙도 통과로 잡힌다. 그 값을 세면 미실행
+     * 불변식이 "통과한 불변식" 이 된다. 여기서는 SKIPPED 인 INV 규칙에 일부러 위반 수를 넣어, 판정이 status 를 보고 있는지 확인한다.
+     */
+    @Test
+    @DisplayName("미실행 규칙은 통과로도 위반으로도 세지 않는다")
+    void skippedRuleIsNeitherPassedNorViolated() {
+        List<Map<String, Object>> rules = allClean("V2");
+        replace(rules, "INV-03", rule("INV-03", "SKIPPED", 0, "V2"));
+
+        stub(rules, List.of());
+
+        String md = renderer.render(RUN_ID);
+
+        assertThat(md).contains("**미실행**");
+        assertThat(md).doesNotContain("| 판정 | **통과** |");
+        assertThat(md).contains("| 규칙 수 | 15 (검사 14 / N/A 0 / 미실행 1) |");
+    }
+
     // ─────────────────────────────────────────────
 
     /** 해당 회차의 전 규칙이 CHECKED 이고 위반 0 건인 상태. 각 테스트는 여기서 한 줄만 갈아 끼운다. */
@@ -158,6 +213,7 @@ class VerificationReportRendererTest {
         row.put("elapsed_ms", 10);
         // 생성 컬럼 passed 를 그대로 흉내 낸다: violation_count = 0 이면 1.
         // status 와 무관하다는 점이 중요하다 — SKIPPED 도 여기서는 1 이 된다.
+        // 렌더러는 이 값을 읽지 않는다. 읽지 않는다는 것 자체가 검증 대상이므로 남겨 둔다.
         row.put("passed", violationCount == 0 ? 1 : 0);
         return row;
     }
