@@ -27,6 +27,7 @@ public class GlobalExceptionHandler {
 
     private final Counter concurrencyConflictCounter;
     private final Counter connectionUnavailableCounter;
+    private final Counter campaignNotCachedCounter;
 
     public GlobalExceptionHandler(MeterRegistry meterRegistry) {
         this.concurrencyConflictCounter =
@@ -38,6 +39,15 @@ public class GlobalExceptionHandler {
                 Counter.builder("coupon.issue.failure")
                         .tag("reason", "connection_unavailable")
                         .description("발급 요청이 DB 커넥션 획득 실패로 종료된 횟수")
+                        .register(meterRegistry);
+        // CAMPAIGN_NOT_CACHED는 Redis가 정상 응답했는데 openAt/expireAt/stock 키 중
+        // 하나가 없을 때만 발생한다(issue_coupon.lua 참고). Redis 연결 자체가 끊기면
+        // 이 경로를 타지 않고 Exception.class 핸들러로 떨어지므로, 이 카운터는
+        // 캐시 웜업 누락·유실을 가리키는 잡음 적은 신호로 쓸 수 있다.
+        this.campaignNotCachedCounter =
+                Counter.builder("coupon.issue.failure")
+                        .tag("reason", "campaign_not_cached")
+                        .description("발급 요청이 Redis 캠페인 캐시 미스(웜업 누락/유실)로 실패한 횟수")
                         .register(meterRegistry);
     }
 
@@ -67,11 +77,13 @@ public class GlobalExceptionHandler {
                             HttpStatus.INTERNAL_SERVER_ERROR,
                             "KAFKA_PUBLISH_FAILED",
                             "이벤트 메시지 발행에 실패했습니다.");
-            case CAMPAIGN_NOT_CACHED ->
-                    response(
-                            HttpStatus.SERVICE_UNAVAILABLE,
-                            "CAMPAIGN_NOT_CACHED",
-                            "캠페인 발급 준비가 완료되지 않았습니다. 잠시 후 다시 시도해 주세요.");
+            case CAMPAIGN_NOT_CACHED -> {
+                campaignNotCachedCounter.increment();
+                yield response(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "CAMPAIGN_NOT_CACHED",
+                        "캠페인 발급 준비가 완료되지 않았습니다. 잠시 후 다시 시도해 주세요.");
+            }
             case SAVE_RESULT_UNKNOWN ->
                     response(
                             HttpStatus.SERVICE_UNAVAILABLE, // 불확실한 실패 -> 503
