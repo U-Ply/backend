@@ -391,3 +391,11 @@ DB 작업이 시간축으로 퍼져 동시 커넥션이 10 을 넘지 않는다.
 - 캐시 웜업 관리자 API (발견 사항 5). 회차 4단계가 셸로 Redis 키를 직접 쓰고 있어,
   지금은 회차가 운영 코드가 아니라 스크립트를 검증한다
 - `uk_campaign_user` 충돌 경로 시나리오 (검증하지 못한 것 첫 항목)
+
+---
+
+## 2026-08-25 — 회차 실행 방식 변경
+
+회차 실행이 `acceptance.sh` 에서 JUnit + Testcontainers 로 바뀌었다.
+실행 조건과 격리 방식은 `docs/testcontainers-migration.md` 를 본다.
+회차별 산출물은 `docs/round-results/V0.md` ~ `V3.md` 에 자동 생성된다.

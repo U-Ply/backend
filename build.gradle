@@ -69,26 +69,42 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
+    // Testcontainers 기반 격리 Integration Test
+    testImplementation 'org.testcontainers:junit-jupiter:1.20.6'
+    testImplementation 'org.testcontainers:mysql:1.20.6'
+    testImplementation 'org.testcontainers:kafka:1.20.6'
+    testImplementation 'org.testcontainers:testcontainers:1.20.6'
+
+    testImplementation 'org.awaitility:awaitility:4.2.2'
 
     // ID 생성 (TSID)
     implementation 'io.hypersistence:hypersistence-tsid:2.1.4'
 }
 
+// 단위 테스트와 com.uply.coupon.it 통합 테스트를 한 태스크에서 함께 돌린다.
+//
+// 별도의 integrationTest 소스셋을 두지 않는 이유:
+// 통합 테스트는 Testcontainers 로 MySQL·Redis·Kafka 를 직접 띄우므로 전체가 1분이면 끝난다.
+// 지금 나누면 명령만 둘로 늘고 얻는 게 없다. 단위 테스트만 빨리 돌려야 할 일이 실제로
+// 생기면, 소스셋을 옮기지 말고 @Tag("it") 로 갈라 필터만 다르게 주는 편이 싸다.
+//
+// 전제: 통합 테스트가 있으므로 이 태스크는 Docker 가 떠 있어야 돈다.
 tasks.named('test') {
     useJUnitPlatform()
-    // 테스트는 coupon_db_test 를 쓴다.
+
+    // 단위 테스트는 coupon_db_test 를 쓴다.
     // 개발용 coupon_db 의 검증 더미데이터를 ./gradlew build 한 번에 날리지 않기 위해서다.
+    // 통합 테스트는 이 값을 쓰지 않는다 — 컨테이너 주소를 @DynamicPropertySource 로 덮어쓴다.
     environment 'DB_NAME', 'coupon_db_test'
+
     // 시각 판정을 DB NOW(3)와 맞추기 위해 테스트 JVM도 UTC로 고정한다.
     systemProperty 'user.timezone', 'UTC'
 
-      testLogging {                                  // ← 추가
+    testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat = 'full'
     }
 }
-
-
 
 tasks.named('bootRun') {
     systemProperty 'user.timezone', 'UTC'

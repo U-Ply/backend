@@ -26,7 +26,7 @@ public class VerificationReportRenderer {
                 jdbcTemplate.queryForList(
                         """
                                SELECT round, status, rule_code, rule_name, snapshot_at, violation_count,
-                               sampled_count, checked_rows, elapsed_ms, passed
+                               sampled_count, checked_rows, elapsed_ms
                         FROM verification_report
                         WHERE run_id = ?
                         ORDER BY rule_code
@@ -65,14 +65,14 @@ public class VerificationReportRenderer {
         long failedInvariants =
                 rules.stream()
                         .filter(r -> code(r).startsWith("INV-"))
-                        .filter(r -> !passed(r))
+                        .filter(VerificationReportRenderer::violated)
                         .count();
         // REC-01 은 DB 자체가 깨진 것이 아니라 Redis 와 어긋난 것이다. 등급은 나누되
         // 통과로 뭉개지 않는다 — 판정 한 줄만 읽는 사람에게 거짓말을 하지 않기 위해서다.
         long failedReconciliation =
                 rules.stream()
                         .filter(r -> code(r).startsWith("REC-"))
-                        .filter(r -> !passed(r))
+                        .filter(VerificationReportRenderer::violated)
                         .count();
         // 새 규칙 코드가 늘었을 때 어느 분류에도 안 걸려 조용히 통과되는 것을 막는다.
         long failedOther =
@@ -80,15 +80,29 @@ public class VerificationReportRenderer {
                         .filter(r -> !code(r).startsWith("INV-"))
                         .filter(r -> !code(r).startsWith("REC-"))
                         .filter(r -> !code(r).startsWith("CLOCK-"))
-                        .filter(r -> !passed(r))
+                        .filter(VerificationReportRenderer::violated)
                         .count();
         boolean clockValid =
                 rules.stream()
                         .filter(r -> code(r).startsWith("CLOCK-"))
-                        .allMatch(VerificationReportRenderer::passed);
+                        .noneMatch(VerificationReportRenderer::violated);
         long skipped = rules.stream().filter(r -> "SKIPPED".equals(status(r))).count();
         long checkedCount = rules.stream().filter(r -> "CHECKED".equals(status(r))).count();
         long naCount = rules.stream().filter(r -> "NOT_APPLICABLE".equals(status(r))).count();
+        /*
+         * 판정 사슬의 순서에는 뜻이 있다.
+         *
+         * 무효·불완전이 BASELINE 보다 앞이다. 이 둘은 "이 회차가 정합했는가" 가 아니라
+         * "이 회차를 읽을 수 있는가" 를 말한다. 시계가 어긋났거나 규칙이 빠진 V0 는
+         * 기준선으로 쓸 수 없다. 5.4 가 V0 에 요구하는 것도 "위반이 없을 것" 이 아니라
+         * "실제 측정값을 기록할 것" 이므로, 기록이 온전하지 않으면 BASELINE 이라고
+         * 부를 수 없다.
+         *
+         * BASELINE 은 그다음이다. V0 는 위반 수로 통과·실패를 가르지 않는다 (5.4).
+         *
+         * AdminBatchController.runs() 의 SQL CASE 도 같은 순서를 쓴다.
+         * 같은 회차가 API 와 마크다운에서 다른 이름으로 불리면 안 된다.
+         */
         String verdict;
         if (!clockValid) {
             verdict = "**무효** — 시계가 어긋나 어느 시점을 본 것인지 알 수 없다";
@@ -194,7 +208,7 @@ public class VerificationReportRenderer {
         return switch (status(rule)) {
             case "NOT_APPLICABLE" -> "N/A";
             case "SKIPPED" -> "**미실행**";
-            default -> passed(rule) ? "통과" : "**위반**";
+            default -> violated(rule) ? "**위반**" : "통과";
         };
     }
 
@@ -218,9 +232,21 @@ public class VerificationReportRenderer {
         return String.valueOf(rule.get("rule_code"));
     }
 
-    private static boolean passed(Map<String, Object> rule) {
-        Object p = rule.get("passed");
-        return p instanceof Boolean b ? b : ((Number) p).intValue() == 1;
+    /**
+     * 이 규칙이 실제로 위반됐는가.
+     *
+     * <p>DB 의 생성 컬럼 {@code passed} 를 쓰지 않는다. 그 컬럼은 {@code violation_count = 0} 으로만 계산되므로 SKIPPED 와
+     * NOT_APPLICABLE 까지 통과로 잡힌다. 그 값을 그대로 세면 "검사하지 않은 것을 통과로 기록" 하게 되고, 지금까지 그것을 막고 있던 것은 판정 사슬에서
+     * 미실행 분기가 앞에 있다는 사실뿐이었다. 순서가 안전장치를 대신하면 안 되므로 여기서 직접 판정한다. s
+     *
+     * <p>검사한(CHECKED) 규칙에서 위반이 나온 경우에만 위반이다.
+     */
+    private static boolean violated(Map<String, Object> rule) {
+        if (!"CHECKED".equals(status(rule))) {
+            return false;
+        }
+        Object count = rule.get("violation_count");
+        return count != null && ((Number) count).longValue() > 0L;
     }
 
     private static String nullSafe(Object value) {

@@ -3,6 +3,7 @@ package com.uply.coupon.operation.verification.rule;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.uply.coupon.it.IntegrationTestContainers;
 import com.uply.coupon.operation.verification.InvariantFixture;
 import com.uply.coupon.operation.verification.batch.VerificationRunner;
 import com.uply.coupon.operation.verification.domain.RoundVersion;
@@ -15,19 +16,27 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 
-@SpringBootTest
-@ActiveProfiles("test")
+/*
+ * IntegrationTestContainers 를 상속한다.
+ *
+ * 전에는 @ActiveProfiles("test") 로 로컬 MySQL(coupon_db_test)을 봤다.
+ * 그 DB 는 손으로 스키마를 적용하는 곳이라, docs/schema.sql 이 바뀌면
+ * 적용한 사람 기계에서만 통과하고 다른 사람 기계에서는
+ * Unknown column 'round' / 'status' 로 깨졌다.
+ * 통과 여부가 코드가 아니라 각자 로컬 DB 상태에 달려 있었다.
+ *
+ * 이제 docs/schema.sql 로 초기화된 컨테이너를 쓴다.
+ * 스키마와 테스트가 같은 커밋에서 함께 움직인다.
+ */
 @Import(InvariantFixture.class)
 // @Transactional 절대 금지 — runAll() 이 REQUIRES_NEW 라 미커밋 주입을 못 본다
 @DisplayName("규칙 검출력")
-class InvariantDetectionTest {
+class InvariantDetectionTest extends IntegrationTestContainers {
 
     @Autowired VerificationRunner runner;
     @Autowired JdbcTemplate jdbc;

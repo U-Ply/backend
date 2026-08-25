@@ -1,6 +1,7 @@
 package com.uply.coupon.operation.admin;
 
 import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -94,6 +95,7 @@ public class AdminBatchController {
         body.put("startTime", String.valueOf(execution.getStartTime()));
         body.put("endTime", String.valueOf(execution.getEndTime()));
         body.put("steps", steps);
+
         // 실패 원인을 여기서 바로 보여준다. 서버 로그를 뒤지지 않아도 되게.
         body.put(
                 "failures",
@@ -113,18 +115,41 @@ public class AdminBatchController {
 
     // ─────────────────────── 조회 ───────────────────────
 
-    /** 최근 검증 회차 목록. 회차 하나가 한 줄로 요약된다. */
+    /**
+     * 최근 검증 회차 목록. 회차 하나가 한 줄로 요약된다.
+     *
+     * <p><b>CASE 순서는 VerificationReportRenderer 의 판정 사슬과 같아야 한다.</b> 같은 회차가 이 API 에서는 BASELINE,
+     * 마크다운에서는 불완전으로 불리면 어느 쪽을 믿어야 할지 알 수 없다.
+     *
+     * <ul>
+     *   <li>{@code INVALID} — 시계 규칙(CLOCK-*)이 깨졌다. 어느 시점을 본 것인지 알 수 없으므로 나머지 판정에 의미가 없다.
+     *   <li>{@code INCOMPLETE} — 실행되지 않은 규칙이 있다. 검사하지 않은 것을 통과로 세지 않는다.
+     *   <li>{@code BASELINE} — V0. 위반 수로 통과·실패를 가르지 않는다 (test-plan 5.4).
+     *   <li>{@code FAILED} / {@code PASSED} — 검사한 규칙의 위반 유무.
+     * </ul>
+     */
     @GetMapping("/verification/runs")
     public List<Map<String, Object>> runs(@RequestParam(defaultValue = "20") int limit) {
         return jdbcTemplate.queryForList(
                 """
                 SELECT run_id,
-                       MAX(round)                                  AS round,
-                       MIN(snapshot_at)                            AS snapshot_at,
-                       SUM(violation_count)                        AS total_violations,
-                       SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) AS failed_rules,
-                       COUNT(*)                                    AS rule_count,
-                       SUM(elapsed_ms)                             AS total_elapsed_ms
+                       MAX(round)                                      AS round,
+                       MIN(snapshot_at)                                AS snapshot_at,
+                       SUM(violation_count)                            AS total_violations,
+                       SUM(status = 'CHECKED' AND violation_count > 0) AS failed_rules,
+                       SUM(status = 'CHECKED')                         AS checked_rules,
+                       SUM(status = 'NOT_APPLICABLE')                  AS not_applicable_rules,
+                       SUM(status = 'SKIPPED')                         AS skipped_rules,
+                       COUNT(*)                                        AS rule_count,
+                       SUM(elapsed_ms)                                 AS total_elapsed_ms,
+                       CASE
+                         WHEN SUM(rule_code LIKE 'CLOCK-%' AND violation_count > 0) > 0
+                              THEN 'INVALID'
+                         WHEN SUM(status = 'SKIPPED') > 0 THEN 'INCOMPLETE'
+                         WHEN MAX(round) = 'V0' THEN 'BASELINE'
+                         WHEN SUM(status = 'CHECKED' AND violation_count > 0) > 0 THEN 'FAILED'
+                         ELSE 'PASSED'
+                       END AS verdict
                 FROM verification_report
                 GROUP BY run_id
                 ORDER BY MIN(created_at) DESC
@@ -133,18 +158,56 @@ public class AdminBatchController {
                 limit);
     }
 
-    /** 회차 하나의 규칙별 결과. */
+    /**
+     * 회차 하나의 규칙별 결과.
+     *
+     * <p>{@code status} 와 {@code passed} 를 함께 낸다. 기존 화면이 {@code passed} 에 의존하므로 계약을 깨지 않는다.
+     *
+     * <p><b>{@code passed} 를 SQL 이 아니라 여기서 계산하는 이유.</b> MySQL 의 {@code TRUE}/{@code FALSE} 는 정수 1/0
+     * 리터럴이다. {@code CASE ... THEN true END AS passed} 로 쓰면 컬럼 타입이 boolean 이 되지 않아 JDBC 가 Integer 로
+     * 받고 JSON 에 숫자 {@code 1}/{@code 0} 으로 나간다. 계약이 {@code true}/{@code false} 이므로 Java 에서 실제
+     * Boolean 으로 바꾼다.
+     *
+     * <p>DB 의 생성 컬럼 {@code passed} 는 쓰지 않는다. 그 컬럼은 {@code violation_count = 0} 으로만 계산되므로 아무것도 검사하지
+     * 않은 NOT_APPLICABLE·SKIPPED 규칙까지 통과로 잡힌다.
+     */
     @GetMapping("/verification/runs/{runId}")
     public List<Map<String, Object>> report(@PathVariable String runId) {
-        return jdbcTemplate.queryForList(
-                """
-                SELECT rule_code, rule_name, status, violation_count, sampled_count,
-                       checked_rows, elapsed_ms, passed, snapshot_at
-                FROM verification_report
-                WHERE run_id = ?
-                ORDER BY rule_code
-                """,
-                runId);
+        List<Map<String, Object>> rows =
+                jdbcTemplate.queryForList(
+                        """
+                        SELECT rule_code,
+                               rule_name,
+                               round,
+                               status,
+                               violation_count,
+                               sampled_count,
+                               checked_rows,
+                               elapsed_ms,
+                               snapshot_at
+                        FROM verification_report
+                        WHERE run_id = ?
+                        ORDER BY rule_code
+                        """,
+                        runId);
+
+        List<Map<String, Object>> result = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            // 조회 결과를 그대로 고치지 않고 새 맵에 담는다. 불변 맵이 올라와도 깨지지 않는다.
+            Map<String, Object> rule = new LinkedHashMap<>(row);
+            rule.put("passed", isPassed(row));
+            result.add(rule);
+        }
+        return result;
+    }
+
+    /** 검사했고(CHECKED) 위반이 없을 때만 통과다. N/A·미실행은 통과가 아니다. */
+    private static boolean isPassed(Map<String, Object> rule) {
+        if (!"CHECKED".equals(rule.get("status"))) {
+            return false;
+        }
+        Object violations = rule.get("violation_count");
+        return violations != null && ((Number) violations).longValue() == 0L;
     }
 
     /** 회차 하나의 검증 결과를 마크다운으로 낸다. acceptance 스크립트가 파일로 떨군다. */
