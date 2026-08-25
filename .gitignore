@@ -31,3 +31,4 @@ bin/
 build/
 load-tests/results/
 .acceptance/
+.DS_Store

@@ -119,6 +119,7 @@ public class AdminBatchController {
         return jdbcTemplate.queryForList(
                 """
                 SELECT run_id,
+                       MAX(round)                                  AS round,
                        MIN(snapshot_at)                            AS snapshot_at,
                        SUM(violation_count)                        AS total_violations,
                        SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) AS failed_rules,
@@ -137,7 +138,7 @@ public class AdminBatchController {
     public List<Map<String, Object>> report(@PathVariable String runId) {
         return jdbcTemplate.queryForList(
                 """
-                SELECT rule_code, rule_name, violation_count, sampled_count,
+                SELECT rule_code, rule_name, status, violation_count, sampled_count,
                        checked_rows, elapsed_ms, passed, snapshot_at
                 FROM verification_report
                 WHERE run_id = ?

@@ -33,7 +33,8 @@ if [[ "${mysql_ready}" != "true" ]]; then
     exit 1
 fi
 
-docker exec -i coupon-mysql mysql -uroot -proot1234 < load-tests/sql/seed-level2.sql
+docker exec -i coupon-mysql mysql --default-character-set=utf8mb4 -uroot -proot1234 \
+    < load-tests/sql/seed-level2.sql
 
 bash scripts/load-test/initialize-level2-redis.sh
 echo "Level 2 seed completed."

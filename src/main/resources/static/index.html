@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1280" />
+    <meta
+      name="description"
+      content="U-Ply 항공권 얼리버드 특가 쿠폰 발급 및 예약 데모"
+    />
+    <title>U-Ply Air | 얼리버드 특가</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <button class="brand" type="button" data-route="home" aria-label="U-Ply 홈">
+          <span class="brand-mark" aria-hidden="true">
+            <span class="brand-wing"></span>
+          </span>
+          <span class="brand-copy">
+            <strong>U-Ply Air</strong>
+            <small>EARLYBIRD COUPON</small>
+          </span>
+        </button>
+
+        <nav class="main-nav" aria-label="주요 메뉴">
+          <button type="button" data-route="campaigns">특가 이벤트</button>
+          <button type="button" data-route="bookings">내 예약</button>
+          <button type="button" data-route="coupons">내 쿠폰</button>
+        </nav>
+
+        <div class="header-actions">
+          <label class="sr-only" for="demo-user">시연 사용자</label>
+          <select id="demo-user" class="user-select" aria-label="시연 사용자 선택">
+            <option value="10001">사용자 10001</option>
+            <option value="10002">사용자 10002</option>
+            <option value="10003">사용자 10003</option>
+            <option value="10004">사용자 10004</option>
+            <option value="10005">사용자 10005</option>
+          </select>
+          <button class="admin-link" type="button" data-route="admin">관리자</button>
+        </div>
+      </div>
+    </header>
+
+    <main id="app" tabindex="-1">
+      <div class="page-loading" role="status">
+        <span class="spinner"></span>
+        <p>U-Ply 서비스를 준비하고 있습니다.</p>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <strong>U-Ply Air</strong>
+        <span>대규모 트래픽 선착순 쿠폰 발급 시스템</span>
+      </div>
+      <p>교육용 시연 서비스 · 모든 항공편과 가격은 가상 데이터입니다.</p>
+    </footer>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <div id="modal-root"></div>
+
+    <script src="/js/mock-flights.js"></script>
+    <script src="/js/app.js"></script>
+  </body>
+</html>
