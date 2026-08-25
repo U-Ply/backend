@@ -143,9 +143,9 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
     @Test
     void verificationRuns_위반이_있으면_FAILED로_판정한다() throws Exception {
 
-        insertReport("it-admin-failed", "V1", "REC-01", "Failed rule", "CHECKED", 1);
+        insertReport("it-admin-failed", "V1", "INV-01", "Failed rule", "CHECKED", 1);
 
-        insertReport("it-admin-failed", "V1", "REC-02", "Passed rule", "CHECKED", 0);
+        insertReport("it-admin-failed", "V1", "INV-02", "Passed rule", "CHECKED", 0);
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -443,5 +443,43 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
         mockMvc.perform(get("/api/admin/batch/verification/runs").param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2));
+    }
+
+    /**
+     * REC-01 은 DB 가 깨진 것이 아니라 Redis 와 어긋난 것이다. 마크다운은 이 경우를 "불일치" 로 부른다. API 가 FAILED 로 부르면 같은 회차가 두
+     * 이름을 갖는다.
+     */
+    @Test
+    void verificationRuns_REC만_위반이면_MISMATCH로_판정한다() throws Exception {
+
+        insertReport("it-admin-mismatch", "V2", "INV-01", "Passed invariant", "CHECKED", 0);
+
+        insertReport("it-admin-mismatch", "V2", "REC-01", "Redis-DB 재고 일치", "CHECKED", 1);
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].run_id").value("it-admin-mismatch"))
+                .andExpect(jsonPath("$[0].round").value("V2"))
+                .andExpect(jsonPath("$[0].total_violations").value(1))
+                .andExpect(jsonPath("$[0].failed_rules").value(1))
+                .andExpect(jsonPath("$[0].checked_rules").value(2))
+                .andExpect(jsonPath("$[0].skipped_rules").value(0))
+                .andExpect(jsonPath("$[0].verdict").value("MISMATCH"));
+    }
+
+    /** 둘 다 깨졌으면 더 심한 쪽을 말해야 한다. DB 가 깨진 것을 재고 불일치로 부르면 안 된다. */
+    @Test
+    void verificationRuns_INV와_REC이_함께_위반이면_FAILED가_우선한다() throws Exception {
+
+        insertReport("it-admin-both", "V2", "INV-04", "Broken invariant", "CHECKED", 2);
+
+        insertReport("it-admin-both", "V2", "REC-01", "Redis-DB 재고 일치", "CHECKED", 1);
+
+        mockMvc.perform(get("/api/admin/batch/verification/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].run_id").value("it-admin-both"))
+                .andExpect(jsonPath("$[0].total_violations").value(3))
+                .andExpect(jsonPath("$[0].failed_rules").value(2))
+                .andExpect(jsonPath("$[0].verdict").value("FAILED"));
     }
 }

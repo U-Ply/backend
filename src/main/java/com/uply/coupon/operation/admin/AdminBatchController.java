@@ -125,7 +125,9 @@ public class AdminBatchController {
      *   <li>{@code INVALID} — 시계 규칙(CLOCK-*)이 깨졌다. 어느 시점을 본 것인지 알 수 없으므로 나머지 판정에 의미가 없다.
      *   <li>{@code INCOMPLETE} — 실행되지 않은 규칙이 있다. 검사하지 않은 것을 통과로 세지 않는다.
      *   <li>{@code BASELINE} — V0. 위반 수로 통과·실패를 가르지 않는다 (test-plan 5.4).
-     *   <li>{@code FAILED} / {@code PASSED} — 검사한 규칙의 위반 유무.
+     *   <li>{@code FAILED} — DB 자체의 불변식(INV-*)이나 분류되지 않은 규칙이 깨졌다.
+     *   <li>{@code MISMATCH} — DB 는 정합한데 REC-*(Redis·DB 재고 대사)만 어긋났다. 마크다운의 "불일치" 와 같다.
+     *   <li>{@code PASSED} — 검사한 규칙에 위반이 없다.
      * </ul>
      */
     @GetMapping("/verification/runs")
@@ -147,7 +149,9 @@ public class AdminBatchController {
                               THEN 'INVALID'
                          WHEN SUM(status = 'SKIPPED') > 0 THEN 'INCOMPLETE'
                          WHEN MAX(round) = 'V0' THEN 'BASELINE'
-                         WHEN SUM(status = 'CHECKED' AND violation_count > 0) > 0 THEN 'FAILED'
+                         WHEN SUM(status = 'CHECKED' AND violation_count > 0
+                                  AND rule_code NOT LIKE 'REC-%') > 0 THEN 'FAILED'
+                         WHEN SUM(status = 'CHECKED' AND violation_count > 0) > 0 THEN 'MISMATCH'
                          ELSE 'PASSED'
                        END AS verdict
                 FROM verification_report
