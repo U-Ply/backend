@@ -98,6 +98,7 @@ Prometheus AWS 설정은 Git 추적 파일을 직접 수정하지 않고 `/tmp` 
 # /tmp/uply-prometheus.yml
 global:
   scrape_interval: 5s
+  evaluation_interval: 5s
 
 scrape_configs:
   - job_name: coupon-app
@@ -107,6 +108,22 @@ scrape_configs:
           - <앱1-사설-IP>:8081
           # Level 3에서만 앱2 추가
           # - <앱2-사설-IP>:8081
+
+  - job_name: mysql
+    static_configs:
+      - targets: [coupon-mysqld-exporter:9104]
+
+  - job_name: redis
+    static_configs:
+      - targets: [coupon-redis-exporter:9121]
+
+  - job_name: kafka
+    static_configs:
+      - targets: [coupon-kafka-exporter:9308]
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: [coupon-cadvisor:8080]
 ```
 
 ```bash
@@ -125,7 +142,27 @@ docker exec coupon-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 --list
 ```
 
-`cAdvisor`, `mysqld_exporter`, `redis_exporter`, `kafka_exporter` 및 해당 Prometheus scrape 설정은 `docker-compose.yml`/`prometheus/prometheus.yml`에 추가되어 있다(`feat/monitoring-visualization`). `docker compose up -d`로 함께 기동되며, 공식 성능 회차 전에 `docker compose ps`로 4개 exporter 컨테이너가 모두 healthy인지 확인한다. exporter 컨테이너가 하나라도 없는 상태로 진행한 회차는 API 결과 확인용 리허설로만 사용한다.
+`cAdvisor`, `mysqld_exporter`, `redis_exporter`, `kafka_exporter`는 `docker compose up -d`로 함께 기동된다. 이 서비스에는 Docker healthcheck를 두지 않았으므로 `docker compose ps`의 실행 상태와 각 `/metrics` 응답을 모두 확인한다.
+
+```bash
+docker compose ps mysqld-exporter redis-exporter kafka-exporter cadvisor prometheus grafana
+curl --fail http://localhost:9104/metrics >/dev/null
+curl --fail http://localhost:9121/metrics >/dev/null
+curl --fail http://localhost:9308/metrics >/dev/null
+curl --fail http://localhost:8085/metrics >/dev/null
+curl --fail http://localhost:9090/-/ready
+```
+
+마지막으로 Prometheus의 `Status > Targets` 또는 API에서 `coupon-app`, `mysql`, `redis`, `kafka`, `cadvisor`가 모두 `UP`인지 확인한다. 하나라도 누락된 회차는 API 결과 확인용 리허설로만 사용한다.
+
+관리자 모니터링 화면은 입력된 Prometheus 주소의 HTTP API로 전체 앱 인스턴스 지표를 집계한다. Prometheus를 공개망에 열지 말고, 시연 PC에서 데이터·관측 EC2로 터널을 연 뒤 화면의 `Prometheus 주소`에 `http://localhost:9090`을 입력한다.
+
+```bash
+ssh -L 9090:localhost:9090 -L 3000:localhost:3000 \
+  -i <키파일.pem> ec2-user@<데이터-관측-EC2-공인-IP>
+```
+
+Prometheus가 일시적으로 응답하지 않으면 화면은 같은 오리진의 Actuator 지표로 자동 전환하며, 이 경우에는 `현재 앱 인스턴스`라고 표시한다. 멀티 인스턴스 공식 결과는 반드시 `Prometheus · 전체 앱 인스턴스` 표시 또는 Grafana 대시보드를 기준으로 기록한다.
 
 ## 6. 애플리케이션 배포
 

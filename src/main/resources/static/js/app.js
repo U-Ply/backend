@@ -1135,9 +1135,9 @@
   // 시스템 모니터링 화면
   //
   // 데이터는 두 갈래에서 온다.
-  //   1) /actuator/prometheus — 2초마다 본문을 받아 카운터를 직전 표본과 차분해
-  //      초당 처리량을 만든다. 카운터는 누적값이라 그대로 그리면 계속 우상향하는
-  //      선이 되어 "지금 잘 나가고 있는지"를 전혀 보여주지 못한다.
+  //   1) Prometheus HTTP API — 모든 앱 인스턴스의 지표를 합산한다. 연결할 수 없을 때만
+  //      /actuator/prometheus로 내려가 현재 앱 한 대의 지표임을 화면에 명시한다. 누적
+  //      카운터는 직전 표본과 차분해 초당 처리량으로 바꾼다.
   //   2) SSE(/api/campaigns/{id}/status/stream) — 선택한 재고풀의 잔여 재고.
   //      SSE는 재고풀 하나당 연결 하나다. 브라우저의 오리진당 동시 연결 한도(HTTP/1.1에서 6)
   //      에 걸리면 화면의 다른 요청까지 굶으므로, 한 번에 한 재고풀만 구독한다.
@@ -1155,6 +1155,7 @@
     muted: "#716b7b",
     grid: "#e8e5ec",
   };
+  const PROMETHEUS_URL_KEY = "uply.prometheus.url";
 
   const REASON_LABELS = {
     out_of_stock: "재고 소진",
@@ -1191,7 +1192,10 @@
     pools: [],
     pool: null,
     stock: { total: 0, remaining: null, series: [], live: false },
-    error: null,
+    metricsError: null,
+    stockError: null,
+    source: null,
+    prometheusUrl: null,
   };
 
   const chartState = Object.create(null);
@@ -1203,7 +1207,9 @@
     monitor.reasons = new Map();
     monitor.gauges = {};
     monitor.stock = { total: 0, remaining: null, series: [], live: false };
-    monitor.error = null;
+    monitor.metricsError = null;
+    monitor.stockError = null;
+    monitor.source = null;
   }
 
   // --- Prometheus 텍스트 파싱 ------------------------------------------------
@@ -1538,8 +1544,9 @@
 
     const notice = document.querySelector("#monitor-notice");
     if (notice) {
-      notice.hidden = !monitor.error;
-      if (monitor.error) notice.textContent = monitor.error;
+      const messages = [monitor.metricsError, monitor.stockError].filter(Boolean);
+      notice.hidden = messages.length === 0;
+      notice.textContent = messages.join(" ");
     }
 
     const tiles = document.querySelector("#monitor-tiles");
@@ -1548,7 +1555,11 @@
       const pending = monitor.gauges.hikariPending;
       const mismatch = monitor.gauges.reconcileMismatch;
       tiles.innerHTML = [
-        statTile("발급 성공 누계", compactNumber(monitor.totals.success), "실제로 쿠폰이 만들어진 건수"),
+        statTile(
+          "발급 성공 누계",
+          compactNumber(monitor.totals.success),
+          monitor.source || "지표 수집 준비 중",
+        ),
         statTile("초당 발급", rateText(tps ? tps.value : null), "최근 2초 구간"),
         statTile(
           "커넥션 대기",
@@ -1610,70 +1621,132 @@
 
   // --- 지표 수집 -------------------------------------------------------------
 
-  async function sampleMetrics() {
-    if (currentRoute() !== "admin/monitoring") return;
+  function prometheusBaseUrl() {
+    const configured = String(
+      monitor.prometheusUrl ||
+        window.UPLY_PROMETHEUS_URL ||
+        window.localStorage.getItem(PROMETHEUS_URL_KEY) ||
+        "",
+    )
+      .trim()
+      .replace(/\/$/, "");
+    if (configured) return configured;
+    return `${window.location.protocol}//${window.location.hostname || "localhost"}:9090`;
+  }
 
-    let text;
-    try {
-      const response = await fetch("/actuator/prometheus", { headers: { Accept: "text/plain" } });
-      if (!response.ok) throw new Error(String(response.status));
-      text = await response.text();
-    } catch (_error) {
-      monitor.error =
-        "지표를 읽지 못했습니다. application.yml의 management.endpoints.web.exposure.include에 prometheus가 있는지 확인해 주세요.";
-      updateMonitoringView();
-      return;
-    }
+  async function prometheusQuery(query) {
+    const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`Prometheus ${response.status}`);
+    const payload = await response.json();
+    if (payload.status !== "success") throw new Error(payload.error || "Prometheus query failed");
+    return payload.data?.result || [];
+  }
 
-    const parsed = parsePrometheusText(text);
-    const at = Date.now();
-    const isIssue = (labels) => labels.uri === MONITOR.issueUri;
+  function prometheusScalar(rows) {
+    const value = Number.parseFloat(rows?.[0]?.value?.[1]);
+    return Number.isFinite(value) ? value : 0;
+  }
 
-    const counters = {
-      success: sumMetric(parsed, "coupon_issue_success_total"),
-      failure: sumMetric(parsed, "coupon_issue_failure_total"),
+  async function samplePrometheusMetrics() {
+    const issueFilter = 'uri="/api/coupons/issue"';
+    const [success, failures, compensation, pending, mismatch, p95, p99] = await Promise.all([
+      prometheusQuery("sum(coupon_issue_success_total)"),
+      prometheusQuery("sum by (reason) (coupon_issue_failure_total)"),
+      prometheusQuery("sum(coupon_redis_compensation_total)"),
+      prometheusQuery("sum(hikaricp_connections_pending)"),
+      prometheusQuery("max(coupon_reconciliation_mismatch_count)"),
+      prometheusQuery(
+        `histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{${issueFilter}}[1m])))`,
+      ),
+      prometheusQuery(
+        `histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{${issueFilter}}[1m])))`,
+      ),
+    ]);
+
+    return {
+      success: prometheusScalar(success),
+      failure: failures.reduce((sum, row) => sum + prometheusScalar([row]), 0),
+      reasons: new Map(
+        failures.map((row) => [row.metric?.reason || "unknown", prometheusScalar([row])]),
+      ),
+      compensation: prometheusScalar(compensation),
+      pending: prometheusScalar(pending),
+      mismatch: mismatch.length ? prometheusScalar(mismatch) : null,
+      p95: p95.length ? prometheusScalar(p95) : null,
+      p99: p99.length ? prometheusScalar(p99) : null,
+      source: "Prometheus · 전체 앱 인스턴스",
     };
+  }
 
+  async function sampleLocalMetrics() {
+    const response = await fetch("/actuator/prometheus", { headers: { Accept: "text/plain" } });
+    if (!response.ok) throw new Error(String(response.status));
+    const parsed = parsePrometheusText(await response.text());
     if (!parsed.has("coupon_issue_success_total")) {
-      monitor.error =
-        "coupon_issue_success_total 지표가 없습니다. 발급 지표 카운터가 포함된 버전으로 앱을 다시 띄워야 합니다.";
-    } else {
-      monitor.error = null;
+      throw new Error("coupon_issue_success_total missing");
     }
-
-    monitor.totals.success = counters.success;
-    monitor.totals.compensation = sumMetric(parsed, "coupon_redis_compensation_total");
-    monitor.reasons = groupMetric(parsed, "coupon_issue_failure_total", "reason");
-
-    monitor.gauges.hikariPending = sumMetric(parsed, "hikaricp_connections_pending");
-    monitor.gauges.hikariActive = sumMetric(parsed, "hikaricp_connections_active");
-    monitor.gauges.tomcatBusy = sumMetric(parsed, "tomcat_threads_busy_threads");
-    monitor.gauges.reconcileMismatch = parsed.has("coupon_reconciliation_mismatch_count")
-      ? sumMetric(parsed, "coupon_reconciliation_mismatch_count")
-      : null;
-
-    // percentiles 설정이 내보내는 quantile 시리즈를 그대로 읽는다. 브라우저에서
-    // 히스토그램 버킷을 적분하는 것보다 정확하고 싸다.
-    // 상태 코드·메서드별로 시리즈가 나뉘어 있다. 분위수는 더할 수 있는 값이 아니므로
-    // 그중 가장 나쁜 값을 취한다.
+    const isIssue = (labels) => labels.uri === MONITOR.issueUri;
     const quantile = (value) =>
       maxMetric(
         parsed,
         "http_server_requests_seconds",
         (labels) => isIssue(labels) && labels.quantile === value,
       );
+    return {
+      success: sumMetric(parsed, "coupon_issue_success_total"),
+      failure: sumMetric(parsed, "coupon_issue_failure_total"),
+      reasons: groupMetric(parsed, "coupon_issue_failure_total", "reason"),
+      compensation: sumMetric(parsed, "coupon_redis_compensation_total"),
+      pending: sumMetric(parsed, "hikaricp_connections_pending"),
+      mismatch: parsed.has("coupon_reconciliation_mismatch_count")
+        ? sumMetric(parsed, "coupon_reconciliation_mismatch_count")
+        : null,
+      p95: quantile("0.95"),
+      p99: quantile("0.99"),
+      source: "현재 앱 인스턴스",
+    };
+  }
+
+  async function sampleMetrics() {
+    if (currentRoute() !== "admin/monitoring") return;
+
+    let sample;
+    try {
+      sample = await samplePrometheusMetrics();
+      monitor.metricsError = null;
+    } catch (_prometheusError) {
+      try {
+        sample = await sampleLocalMetrics();
+        monitor.metricsError =
+          "Prometheus에 연결하지 못해 현재 앱 인스턴스의 지표만 표시합니다. 전체 비교 결과는 Grafana에서 확인해 주세요.";
+      } catch (_localError) {
+        monitor.metricsError =
+          "실시간 지표를 읽지 못했습니다. Prometheus와 애플리케이션 Actuator 상태를 확인해 주세요.";
+        updateMonitoringView();
+        return;
+      }
+    }
+
+    const at = Date.now();
+    monitor.source = sample.source;
+    monitor.totals.success = sample.success;
+    monitor.totals.compensation = sample.compensation;
+    monitor.reasons = sample.reasons;
+    monitor.gauges.hikariPending = sample.pending;
+    monitor.gauges.reconcileMismatch = sample.mismatch;
 
     if (monitor.prev) {
       const seconds = (at - monitor.prev.at) / 1000;
-      const successTps = perSecond(counters.success, monitor.prev.success, seconds);
-      const failTps = perSecond(counters.failure, monitor.prev.failure, seconds);
+      const successTps = perSecond(sample.success, monitor.prev.success, seconds);
+      const failTps = perSecond(sample.failure, monitor.prev.failure, seconds);
       pushPoint(monitor.history.successTps, at, successTps);
       pushPoint(monitor.history.failTps, at, failTps);
-      pushPoint(monitor.history.p95, at, quantile("0.95"));
-      pushPoint(monitor.history.p99, at, quantile("0.99"));
+      pushPoint(monitor.history.p95, at, sample.p95);
+      pushPoint(monitor.history.p99, at, sample.p99);
     }
 
-    monitor.prev = { at, success: counters.success, failure: counters.failure };
+    monitor.prev = { at, success: sample.success, failure: sample.failure };
     updateMonitoringView();
   }
 
@@ -1705,6 +1778,8 @@
 
     stream.addEventListener("open", () => {
       monitor.stock.live = true;
+      monitor.stockError = null;
+      updateMonitoringView();
     });
 
     stream.addEventListener("stock-update", (event) => {
@@ -1716,13 +1791,25 @@
       }
     });
 
-    // SSE는 재고가 "변할 때"만 이벤트를 보낸다. 발급이 멈춰 있으면 선이 그려지지 않으므로,
-    // 값이 그대로여도 2초마다 같은 값을 한 점씩 찍어 시간 축을 계속 흐르게 한다.
-    state.monitorStockTimer = window.setInterval(() => {
+    let polling = false;
+    // SSE가 정상일 때는 시간 축을 흐르게 하고, 연결이 끊긴 뒤에는 실제 상태 API를
+    // 호출한다. 마지막 값을 복사하는 것만으로는 끊긴 연결을 정상처럼 보이게 만들 수 있다.
+    state.monitorStockTimer = window.setInterval(async () => {
       if (currentRoute() !== "admin/monitoring") return stopMonitorStock();
-      if (monitor.stock.remaining != null) {
+      if (monitor.stock.live && monitor.stock.remaining != null) {
         pushPoint(monitor.stock.series, Date.now(), monitor.stock.remaining);
         updateMonitoringView();
+      } else if (!polling) {
+        polling = true;
+        try {
+          applyStockSample(await getCampaignStatus(pool.campaignId, pool));
+          monitor.stockError = null;
+        } catch (_error) {
+          monitor.stockError = "실시간 재고를 갱신하지 못했습니다. 잠시 후 다시 시도합니다.";
+          updateMonitoringView();
+        } finally {
+          polling = false;
+        }
       }
     }, MONITOR.pollMs);
 
@@ -1732,6 +1819,7 @@
       stream.close();
       state.monitorStream = null;
       monitor.stock.live = false;
+      monitor.stockError = "실시간 연결이 끊겨 재고 조회 방식으로 자동 전환했습니다.";
       updateMonitoringView();
     });
 
@@ -1782,12 +1870,20 @@
 
   async function renderMonitoring(token) {
     resetMonitorState();
+    monitor.prometheusUrl = prometheusBaseUrl();
     await loadMonitorPools();
     // 같은 페이지를 다시 열었을 때(예: 새로고침 클릭) 이전 호출이 이 시점에 막 await를 끝내고
     // 돌아와 방금 시작한 새 렌더를 덮어쓰는 경합을 막는다. 다른 admin 하위 페이지들과 같은 패턴이다.
     if (token !== state.renderToken) return;
 
-    const host = window.location.hostname || "localhost";
+    const prometheusUrl = prometheusBaseUrl();
+    let grafanaUrl = `http://${window.location.hostname || "localhost"}:3000`;
+    try {
+      const parsedPrometheusUrl = new URL(prometheusUrl);
+      grafanaUrl = `${parsedPrometheusUrl.protocol}//${parsedPrometheusUrl.hostname}:3000`;
+    } catch (_error) {
+      // 입력값 검증은 변경 이벤트에서 수행한다. 여기서는 기본 링크를 유지한다.
+    }
     const legendLatency = chartLegend([
       { name: "p95", color: MONITOR.primary },
       { name: "p99", color: MONITOR.accent },
@@ -1804,6 +1900,8 @@
         <div class="monitor-control">
           <label for="monitor-pool">실시간 재고풀</label>
           <select id="monitor-pool">${poolOptions() || '<option value="">재고풀 없음</option>'}</select>
+          <label for="monitor-prometheus-url">Prometheus 주소</label>
+          <input id="monitor-prometheus-url" type="url" value="${escapeHtml(prometheusUrl)}" placeholder="http://localhost:9090" />
         </div>
       </header>
 
@@ -1831,12 +1929,12 @@
         <article class="monitor-card">
           <h3>통합 모니터링 대시보드</h3>
           <p>회차 기록용 상세 지표와 인프라 exporter 결과를 확인합니다.</p>
-          <a class="primary-button" href="http://${escapeHtml(host)}:3000/d/uply-coupon" target="_blank" rel="noopener">Grafana 열기 ↗</a>
+          <a id="monitor-grafana-link" class="primary-button" href="${escapeHtml(grafanaUrl)}/d/uply-coupon" target="_blank" rel="noopener">Grafana 열기 ↗</a>
         </article>
         <article class="monitor-card">
           <h3>수집 지표 조회</h3>
           <p>Prometheus가 실제로 무엇을 수집하고 있는지 직접 질의합니다.</p>
-          <a class="secondary-button" href="http://${escapeHtml(host)}:9090/targets" target="_blank" rel="noopener">Prometheus 열기 ↗</a>
+          <a id="monitor-prometheus-link" class="secondary-button" href="${escapeHtml(prometheusUrl)}/targets" target="_blank" rel="noopener">Prometheus 열기 ↗</a>
         </article>
         <article class="monitor-card">
           <h3>서비스 상태 확인</h3>
@@ -1860,11 +1958,35 @@
       });
     }
 
+    const prometheusInput = document.querySelector("#monitor-prometheus-url");
+    if (prometheusInput) {
+      prometheusInput.addEventListener("change", () => {
+        const value = prometheusInput.value.trim().replace(/\/$/, "");
+        try {
+          const parsed = new URL(value);
+          if (!/^https?:$/.test(parsed.protocol)) throw new Error("unsupported protocol");
+          monitor.prometheusUrl = value;
+          window.localStorage.setItem(PROMETHEUS_URL_KEY, value);
+          monitor.prev = null;
+          monitor.history = { successTps: [], failTps: [], p95: [], p99: [] };
+          monitor.metricsError = null;
+          const prometheusLink = document.querySelector("#monitor-prometheus-link");
+          const grafanaLink = document.querySelector("#monitor-grafana-link");
+          if (prometheusLink) prometheusLink.href = `${value}/targets`;
+          if (grafanaLink) grafanaLink.href = `${parsed.protocol}//${parsed.hostname}:3000/d/uply-coupon`;
+          sampleMetrics();
+        } catch (_error) {
+          monitor.metricsError = "Prometheus 주소는 http:// 또는 https://로 시작해야 합니다.";
+          updateMonitoringView();
+        }
+      });
+    }
+
     bindChartHover();
     updateMonitoringView();
 
     if (previewMode) {
-      monitor.error = "미리보기 모드에서는 실시간 지표를 수집하지 않습니다.";
+      monitor.metricsError = "미리보기 모드에서는 실시간 지표를 수집하지 않습니다.";
       updateMonitoringView();
       return;
     }

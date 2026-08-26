@@ -1301,7 +1301,8 @@ select:focus-visible {
   font-weight: 600;
 }
 
-.monitor-control select {
+.monitor-control select,
+.monitor-control input {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
