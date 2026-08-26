@@ -83,6 +83,7 @@
     execution: null,
     verificationRun: null,
     pollTimer: null,
+    stockStream: null,
     batchPollTimer: null,
     idempotencyKeys: Object.create(null),
     renderToken: 0,
@@ -195,6 +196,37 @@
     }[status] || status;
   }
 
+  function batchStatusLabel(status) {
+    return {
+      STARTING: "시작 중",
+      STARTED: "진행 중",
+      COMPLETED: "완료",
+      FAILED: "실패",
+      STOPPED: "중단",
+      ABANDONED: "종료",
+    }[status] || status || "-";
+  }
+
+  function ruleStatusLabel(status) {
+    return {
+      CHECKED: "검사 완료",
+      NOT_APPLICABLE: "검사 대상 아님",
+      SKIPPED: "검사 보류",
+      FAILED: "위반 발견",
+    }[status] || status || "-";
+  }
+
+  function verdictLabel(verdict) {
+    return {
+      PASSED: "정상",
+      FAILED: "위반 발견",
+      MISMATCH: "재고 불일치",
+      INVALID: "판정 불가",
+      INCOMPLETE: "검사 미완료",
+      BASELINE: "기준 측정",
+    }[verdict] || verdict || "-";
+  }
+
   function routeLabel(routeId) {
     const flight = flights.find((item) => item.destination === routeId);
     return flight ? `${flight.originName} → ${flight.destinationName}` : routeId;
@@ -232,6 +264,8 @@
   function clearPoller() {
     if (state.pollTimer) window.clearInterval(state.pollTimer);
     state.pollTimer = null;
+    if (state.stockStream) state.stockStream.close();
+    state.stockStream = null;
     if (state.batchPollTimer) window.clearInterval(state.batchPollTimer);
     state.batchPollTimer = null;
   }
@@ -255,7 +289,26 @@
   }
 
   function errorMessage(error) {
-    if (error instanceof ApiError) return `[${error.errorCode}] ${error.message}`;
+    if (error instanceof ApiError) {
+      const friendly = {
+        NETWORK_ERROR: "서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        USER_NOT_FOUND: "선택한 회원 정보를 찾을 수 없습니다.",
+        CAMPAIGN_NOT_FOUND: "선택한 특가 이벤트를 찾을 수 없습니다.",
+        CAMPAIGN_NOT_OPEN: "아직 쿠폰 발급이 시작되지 않았습니다.",
+        CAMPAIGN_EXPIRED: "종료된 특가 이벤트입니다.",
+        CAMPAIGN_NOT_CACHED: "특가 정보를 준비하고 있습니다. 잠시 후 다시 시도해 주세요.",
+        OUT_OF_STOCK: "준비된 쿠폰이 모두 소진되었습니다.",
+        ALREADY_ISSUED: "이미 이 이벤트의 쿠폰을 발급받았습니다.",
+        COUPON_NOT_FOUND: "쿠폰 정보를 찾을 수 없습니다.",
+        COUPON_NOT_READY: "쿠폰 정보를 저장하고 있습니다. 잠시 후 다시 확인해 주세요.",
+        INVALID_STATE_TRANSITION: "현재 상태에서는 요청한 작업을 진행할 수 없습니다.",
+        IDEMPOTENCY_KEY_REUSED: "이전 요청 정보를 확인할 수 없습니다. 다시 시도해 주세요.",
+        IDEMPOTENCY_REQUEST_IN_PROGRESS: "같은 요청을 처리하고 있습니다. 잠시만 기다려 주세요.",
+        CONNECTION_UNAVAILABLE: "요청이 많아 처리가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+        SAVE_RESULT_UNKNOWN: "처리 결과를 확인하고 있습니다. 잠시 후 다시 확인해 주세요.",
+      }[error.errorCode];
+      return friendly || error.message || "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+    }
     return error?.message || "알 수 없는 오류가 발생했습니다.";
   }
 
@@ -346,7 +399,7 @@
     try {
       campaigns = await getCampaigns();
     } catch (error) {
-      apiNotice = `<div class="notice">캠페인 API에 연결하지 못했습니다. 서버와 시드 데이터를 확인해 주세요. ${escapeHtml(errorMessage(error))}</div>`;
+      apiNotice = `<div class="notice">${escapeHtml(errorMessage(error))}</div>`;
     }
     if (token !== state.renderToken) return;
 
@@ -393,7 +446,6 @@
         </form>
       </section>
       <section class="home-events">
-        ${previewMode ? '<div class="notice info">현재 화면은 <strong>preview=1</strong> 미리보기 데이터로 표시 중입니다. 실제 발급은 실행되지 않습니다.</div>' : ""}
         ${apiNotice}
         <div class="section-heading">
           <h2>진행 중인 얼리버드 특가</h2>
@@ -416,8 +468,7 @@
           <header class="page-header">
             <div><p class="page-kicker">Earlybird coupon</p><h1 class="page-title">특가 캠페인</h1><p class="page-description">얼리버드 쿠폰을 발급받아 특가 항공권을 예약하세요.</p></div>
           </header>
-          ${previewMode ? '<div class="notice info">프론트엔드 미리보기용 캠페인 데이터입니다.</div>' : ""}
-          ${campaigns.length ? `<div class="campaign-list">${campaigns.map((campaign) => campaignCard(campaign)).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">✈</div><h2>등록된 캠페인이 없습니다</h2><p>캠페인 시드 데이터를 확인해 주세요.</p></div>'}
+          ${campaigns.length ? `<div class="campaign-list">${campaigns.map((campaign) => campaignCard(campaign)).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">✈</div><h2>현재 진행 중인 특가가 없습니다</h2><p>새로운 여행 혜택으로 다시 찾아뵙겠습니다.</p></div>'}
         </section>`;
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = errorView("캠페인을 불러오지 못했습니다", error, "campaigns");
@@ -431,9 +482,7 @@
       state.campaign = campaign;
       state.selectedStock = campaign.stocks?.[0] || null;
       drawCampaignDetail(campaign);
-      if (campaign.status === "OPEN" && state.selectedStock) {
-        state.pollTimer = window.setInterval(() => refreshStock(campaign.campaignId), 1000);
-      }
+      if (campaign.status === "OPEN" && state.selectedStock) startStockUpdates(campaign.campaignId);
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = errorView("캠페인 정보를 불러오지 못했습니다", error, "campaigns");
     }
@@ -470,7 +519,7 @@
             ${
               active
                 ? `<div class="stock-board">
-                    <div class="stock-board-head"><span>발급 현황</span><span class="live-dot">1초 폴링 중</span></div>
+                    <div class="stock-board-head"><span>발급 현황</span><span class="live-dot" id="stock-live-label">실시간 갱신 중</span></div>
                     <div class="stock-numbers">
                       <div><span>총 쿠폰</span><strong>${active.totalStock.toLocaleString()}<small> 장</small></strong></div>
                       <div><span>남은 쿠폰</span><strong class="remaining" id="remaining-stock">${active.remainingStock.toLocaleString()}<small> 장</small></strong></div>
@@ -488,26 +537,73 @@
       </section>`;
   }
 
+  function updateStockView(status) {
+    state.selectedStock = { ...state.selectedStock, ...status };
+    const remaining = document.querySelector("#remaining-stock");
+    const progress = document.querySelector("#stock-progress");
+    const caption = document.querySelector("#stock-caption");
+    const issueButton = document.querySelector('[data-action="issue-coupon"]');
+    if (!remaining || !progress || !caption) return;
+
+    const rate = status.totalStock
+      ? Math.round(((status.totalStock - status.remainingStock) / status.totalStock) * 100)
+      : 0;
+    remaining.innerHTML = `${Number(status.remainingStock).toLocaleString()}<small> 장</small>`;
+    progress.style.width = `${rate}%`;
+    caption.textContent = `${rate}% 발급 완료`;
+    if (issueButton) {
+      const soldOut = Number(status.remainingStock) <= 0;
+      issueButton.disabled = soldOut || state.campaign?.status !== "OPEN";
+      issueButton.textContent = soldOut ? "쿠폰 소진" : "얼리버드 쿠폰 받기";
+    }
+  }
+
+  function startStockUpdates(campaignId) {
+    if (state.pollTimer) window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
+    if (state.stockStream) state.stockStream.close();
+    state.stockStream = null;
+    if (!state.selectedStock || previewMode) return;
+
+    const params = new URLSearchParams({
+      routeId: state.selectedStock.routeId,
+      fareClass: state.selectedStock.fareClass,
+    });
+    const stream = new EventSource(`/api/campaigns/${campaignId}/status/stream?${params}`);
+    state.stockStream = stream;
+
+    stream.addEventListener("stock-update", (event) => {
+      try {
+        const status = JSON.parse(event.data);
+        if (currentRoute() === `campaign/${campaignId}`) updateStockView(status);
+      } catch (_error) {
+        // 다음 이벤트에서 다시 갱신한다.
+      }
+    });
+
+    stream.addEventListener("open", () => {
+      const label = document.querySelector("#stock-live-label");
+      if (label) label.textContent = "실시간 갱신 중";
+    });
+
+    stream.addEventListener("error", () => {
+      if (state.stockStream !== stream) return;
+      stream.close();
+      state.stockStream = null;
+      const label = document.querySelector("#stock-live-label");
+      if (label) label.textContent = "자동 갱신 중";
+      if (!state.pollTimer) {
+        state.pollTimer = window.setInterval(() => refreshStock(campaignId), 1000);
+      }
+    });
+  }
+
   async function refreshStock(campaignId) {
     const route = currentRoute();
     if (route !== `campaign/${campaignId}` || !state.selectedStock) return clearPoller();
     try {
       const status = await getCampaignStatus(campaignId, state.selectedStock);
-      state.selectedStock = { ...state.selectedStock, ...status };
-      const remaining = document.querySelector("#remaining-stock");
-      const progress = document.querySelector("#stock-progress");
-      const caption = document.querySelector("#stock-caption");
-      const issueButton = document.querySelector('[data-action="issue-coupon"]');
-      if (!remaining || !progress || !caption) return;
-      const rate = Math.round(((status.totalStock - status.remainingStock) / status.totalStock) * 100);
-      remaining.innerHTML = `${status.remainingStock.toLocaleString()}<small> 장</small>`;
-      progress.style.width = `${rate}%`;
-      caption.textContent = `${rate}% 발급 완료`;
-      if (issueButton) {
-        const soldOut = status.remainingStock <= 0;
-        issueButton.disabled = soldOut || state.campaign?.status !== "OPEN";
-        issueButton.textContent = soldOut ? "쿠폰 소진" : "얼리버드 쿠폰 받기";
-      }
+      updateStockView(status);
     } catch (error) {
       clearPoller();
       toast("재고 갱신 중단", errorMessage(error), "error");
@@ -517,12 +613,12 @@
   async function issueCoupon() {
     if (!state.campaign || !state.selectedStock) return;
     if (previewMode) {
-      toast("미리보기 모드", "실제 발급은 서버 실행 후 이용해 주세요.", "error");
+      toast("현재 이용할 수 없습니다", "잠시 후 다시 시도해 주세요.", "error");
       return;
     }
     const confirmed = await openConfirm({
       title: "얼리버드 쿠폰을 발급할까요?",
-      message: `${routeLabel(state.selectedStock.routeId)} · ${fareLabel(state.selectedStock.fareClass)} 쿠폰을 사용자 ${state.userId}에게 발급합니다.`,
+      message: `${routeLabel(state.selectedStock.routeId)} · ${fareLabel(state.selectedStock.fareClass)} 쿠폰을 발급합니다.`,
       confirmText: "쿠폰 발급",
     });
     if (!confirmed) return;
@@ -622,7 +718,7 @@
         <div class="summary-layout">
           <div>
             <article class="card"><h2 class="card-title">선택 항공편</h2>${flightSummary(flight)}</article>
-            <article class="card"><h2 class="card-title">탑승객 정보</h2><div class="detail-grid"><div class="detail-item"><span>시연 사용자</span><strong>USER ${state.userId}</strong></div><div class="detail-item"><span>탑승객 유형</span><strong>성인 1명</strong></div></div></article>
+            <article class="card"><h2 class="card-title">탑승객 정보</h2><div class="detail-grid"><div class="detail-item"><span>회원 번호</span><strong>${state.userId}</strong></div><div class="detail-item"><span>탑승객 유형</span><strong>성인 1명</strong></div></div></article>
           </div>
           <aside class="card sticky-card"><h2 class="card-title">예약 요약</h2><dl class="summary-list"><div><dt>항공 운임</dt><dd>${currency(flight.prices[state.search.fareClass])}</dd></div><div><dt>세금 및 유류할증료</dt><dd>포함</dd></div><div class="total"><dt>예상 결제 금액</dt><dd>${currency(flight.prices[state.search.fareClass])}</dd></div></dl><button class="primary-button" style="width:100%;margin-top:22px" type="button" data-route="payment">결제 단계로 이동 →</button></aside>
         </div>
@@ -666,16 +762,16 @@
     app.innerHTML = `
       <section class="page-shell">
         <button class="back-button" type="button" data-route="booking-info">← 예약 정보</button>
-        <header class="page-header"><div><p class="page-kicker">Payment</p><h1 class="page-title">결제 및 쿠폰 선택</h1><p class="page-description">예약을 확정할 때 선택한 쿠폰이 USED 상태로 변경됩니다.</p></div></header>
+        <header class="page-header"><div><p class="page-kicker">Payment</p><h1 class="page-title">결제 및 쿠폰 선택</h1><p class="page-description">예약이 확정되면 선택한 쿠폰의 사용이 완료됩니다.</p></div></header>
         <div class="summary-layout">
           <div>
             <article class="card"><h2 class="card-title">할인 쿠폰</h2>
               ${couponError ? `<div class="notice">쿠폰을 불러오지 못했습니다. ${escapeHtml(couponError)}</div>` : ""}
               <label class="coupon-option"><input type="radio" name="coupon" value="" checked /><span><strong>쿠폰을 사용하지 않음</strong><span>일반 운임으로 예약합니다.</span></span></label>
               ${coupons.map((coupon) => `<label class="coupon-option"><input type="radio" name="coupon" value="${escapeHtml(coupon.couponId)}" /><span><strong>얼리버드 쿠폰 · ${routeLabel(coupon.routeId)}</strong><span>${fareLabel(coupon.fareClass)} · ${formatDate(coupon.expireAt)}까지</span></span></label>`).join("")}
-              ${!coupons.length ? '<div class="notice info" style="margin-top:14px">현재 항공편에 사용할 수 있는 ISSUED 쿠폰이 없습니다. 쿠폰 없이도 Mock 예약은 진행할 수 있습니다.</div>' : ""}
+              ${!coupons.length ? '<div class="notice info" style="margin-top:14px">현재 항공편에 사용할 수 있는 쿠폰이 없습니다. 쿠폰 없이 예약을 진행할 수 있습니다.</div>' : ""}
             </article>
-            <article class="card"><h2 class="card-title">결제 수단</h2><div class="notice info">결제와 외부 PG 연동은 Mock 처리됩니다. 실제 결제는 발생하지 않습니다.</div><label class="coupon-option"><input type="radio" checked /><span><strong>U-Ply 테스트 카드</strong><span>•••• •••• •••• 0829</span></span></label></article>
+            <article class="card"><h2 class="card-title">결제 수단</h2><label class="coupon-option"><input type="radio" checked /><span><strong>U-Ply 간편결제</strong><span>•••• •••• •••• 0829</span></span></label></article>
           </div>
           <aside class="card sticky-card"><h2 class="card-title">최종 결제 금액</h2><dl class="summary-list"><div><dt>항공 운임</dt><dd>${currency(basePrice)}</dd></div><div class="discount"><dt>얼리버드 할인</dt><dd id="discount-price">0원</dd></div><div class="total"><dt>총 결제 금액</dt><dd id="final-price">${currency(basePrice)}</dd></div></dl><button class="primary-button" style="width:100%;margin-top:22px" type="button" data-action="confirm-booking">예약 확정</button></aside>
         </div>
@@ -695,7 +791,7 @@
       title: "예약을 확정할까요?",
       message: state.selectedCouponId
         ? "예약 확정과 동시에 선택한 쿠폰이 사용 완료 처리됩니다."
-        : "쿠폰 없이 Mock 항공권 예약을 확정합니다.",
+        : "쿠폰 없이 항공권 예약을 확정합니다.",
       confirmText: "예약 확정",
     });
     if (!confirmed) return;
@@ -772,7 +868,7 @@
   function renderBookingDetail(bookingId) {
     const booking = getBookings().find((item) => item.bookingId === bookingId);
     if (!booking) {
-      app.innerHTML = errorView("예약을 찾을 수 없습니다", new Error("브라우저에 저장된 Mock 예약 정보가 없습니다."), "bookings");
+      app.innerHTML = errorView("예약을 찾을 수 없습니다", new Error("예약 정보를 확인할 수 없습니다."), "bookings");
       return;
     }
     app.innerHTML = `
@@ -786,8 +882,8 @@
     const confirmed = await openConfirm({
       title: "항공편 예약을 취소할까요?",
       message: booking.couponId
-        ? "예약에 사용한 쿠폰은 CANCELLED 상태가 되며 재고와 쿠폰은 복구되지 않습니다."
-        : "Mock 예약을 취소합니다. 실제 결제 취소는 발생하지 않습니다.",
+        ? "예약에 사용한 쿠폰은 다시 사용할 수 없으며 발급 수량도 복구되지 않습니다."
+        : "선택한 항공편 예약을 취소합니다.",
       confirmText: "예약 취소",
       danger: true,
     });
@@ -804,7 +900,7 @@
       booking.cancelledAt = new Date().toISOString();
       saveBookings(bookings);
       if (action) finishIdempotentAction(action);
-      toast("예약 취소 완료", "쿠폰과 예약이 취소됐습니다. 재고는 복구되지 않습니다.");
+      toast("예약 취소 완료", "예약과 사용한 쿠폰의 취소가 완료됐습니다.");
       renderBookingDetail(bookingId);
     } catch (error) {
       if (action) releaseIdempotencyKeyAfterFailure(action, error);
@@ -814,16 +910,22 @@
 
   async function renderCoupons(token) {
     if (previewMode) {
-      app.innerHTML = `<section class="page-shell"><header class="page-header"><div><p class="page-kicker">My coupons</p><h1 class="page-title">내 쿠폰</h1></div></header><div class="empty-state"><div class="empty-icon">%</div><h2>미리보기 모드입니다</h2><p>실제 쿠폰 목록은 Spring Boot API 실행 후 확인할 수 있습니다.</p></div></section>`;
+      app.innerHTML = `<section class="page-shell"><header class="page-header"><div><p class="page-kicker">My coupons</p><h1 class="page-title">내 쿠폰</h1></div></header><div class="empty-state"><div class="empty-icon">%</div><h2>보유한 쿠폰이 없습니다</h2><p>진행 중인 얼리버드 이벤트를 확인해 보세요.</p><button class="primary-button" type="button" data-route="campaigns">특가 이벤트 보기</button></div></section>`;
       return;
     }
     try {
-      const response = await request(`/api/users/${state.userId}/coupons`);
+      const [response, campaigns] = await Promise.all([
+        request(`/api/users/${state.userId}/coupons`),
+        getCampaigns().catch(() => []),
+      ]);
       if (token !== state.renderToken) return;
       const coupons = response.coupons || [];
+      const campaignNames = new Map(
+        campaigns.map((campaign) => [Number(campaign.campaignId), campaign.name]),
+      );
       app.innerHTML = `
         <section class="page-shell"><header class="page-header"><div><p class="page-kicker">My coupons</p><h1 class="page-title">내 쿠폰</h1><p class="page-description">쿠폰 사용은 항공권 결제 단계에서만 가능합니다.</p></div></header>
-          ${coupons.length ? `<div class="coupon-list">${coupons.map((coupon) => `<article class="coupon-row"><div><h3 class="row-title">얼리버드 쿠폰</h3><span class="row-muted">쿠폰 ${escapeHtml(coupon.couponId)} · 캠페인 ${escapeHtml(coupon.campaignId)} · ${formatDate(coupon.issuedAt)} 발급</span></div><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span></div><button class="ghost-button" type="button" data-route="coupon/${escapeHtml(coupon.couponId)}">상세 보기</button></article>`).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">%</div><h2>보유한 쿠폰이 없습니다</h2><p>진행 중인 얼리버드 이벤트를 확인해 보세요.</p><button class="primary-button" type="button" data-route="campaigns">특가 이벤트 보기</button></div>'}
+          ${coupons.length ? `<div class="coupon-list">${coupons.map((coupon) => `<article class="coupon-row"><div><h3 class="row-title">${escapeHtml(campaignNames.get(Number(coupon.campaignId)) || "얼리버드 할인 쿠폰")}</h3><span class="row-muted">쿠폰 ${escapeHtml(coupon.couponId)} · ${formatDate(coupon.issuedAt)} 발급</span></div><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span></div><button class="ghost-button" type="button" data-route="coupon/${escapeHtml(coupon.couponId)}">상세 보기</button></article>`).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">%</div><h2>보유한 쿠폰이 없습니다</h2><p>진행 중인 얼리버드 이벤트를 확인해 보세요.</p><button class="primary-button" type="button" data-route="campaigns">특가 이벤트 보기</button></div>'}
         </section>`;
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = errorView("쿠폰 목록을 불러오지 못했습니다", error, "coupons");
@@ -836,7 +938,7 @@
       if (token !== state.renderToken) return;
       state.currentCoupon = coupon;
       app.innerHTML = `
-        <section class="page-shell narrow"><button class="back-button" type="button" data-route="coupons">← 내 쿠폰</button><article class="card"><div class="page-header"><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span><h1 class="page-title" style="margin-top:12px">얼리버드 할인 쿠폰</h1><p class="page-description">${routeLabel(coupon.routeId)} · ${fareLabel(coupon.fareClass)}</p></div></div><div class="detail-grid"><div class="detail-item"><span>쿠폰 번호</span><strong>${escapeHtml(coupon.couponId)}</strong></div><div class="detail-item"><span>사용자</span><strong>USER ${escapeHtml(coupon.userId)}</strong></div><div class="detail-item"><span>발급 시각</span><strong>${formatDate(coupon.issuedAt)}</strong></div><div class="detail-item"><span>유효기간</span><strong>${formatDate(coupon.expireAt)}</strong></div><div class="detail-item"><span>사용 시각</span><strong>${formatDate(coupon.usedAt)}</strong></div><div class="detail-item"><span>취소 시각</span><strong>${formatDate(coupon.cancelledAt)}</strong></div></div><div class="button-row end" style="margin-top:28px">${coupon.status === "ISSUED" ? '<button class="primary-button" type="button" data-action="search-with-coupon">항공편 검색하기 →</button>' : ""}${coupon.status === "USED" ? '<button class="primary-button" type="button" data-route="bookings">내 예약 보기 →</button>' : ""}</div></article></section>`;
+        <section class="page-shell narrow"><button class="back-button" type="button" data-route="coupons">← 내 쿠폰</button><article class="card"><div class="page-header"><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span><h1 class="page-title" style="margin-top:12px">얼리버드 할인 쿠폰</h1><p class="page-description">${routeLabel(coupon.routeId)} · ${fareLabel(coupon.fareClass)}</p></div></div><div class="detail-grid"><div class="detail-item"><span>쿠폰 번호</span><strong>${escapeHtml(coupon.couponId)}</strong></div><div class="detail-item"><span>회원 번호</span><strong>${escapeHtml(coupon.userId)}</strong></div><div class="detail-item"><span>발급 시각</span><strong>${formatDate(coupon.issuedAt)}</strong></div><div class="detail-item"><span>유효기간</span><strong>${formatDate(coupon.expireAt)}</strong></div><div class="detail-item"><span>사용 시각</span><strong>${formatDate(coupon.usedAt)}</strong></div><div class="detail-item"><span>취소 시각</span><strong>${formatDate(coupon.cancelledAt)}</strong></div><div class="detail-item"><span>만료 처리 시각</span><strong>${formatDate(coupon.expiredAt)}</strong></div></div><div class="button-row end" style="margin-top:28px">${coupon.status === "ISSUED" ? '<button class="primary-button" type="button" data-action="search-with-coupon">항공편 검색하기 →</button>' : ""}${coupon.status === "USED" ? '<button class="primary-button" type="button" data-route="bookings">내 예약 보기 →</button>' : ""}</div></article></section>`;
     } catch (error) {
       if (error.errorCode === "COUPON_NOT_READY" && attempt < 3) {
         const delays = [500, 1000, 2000];
@@ -849,7 +951,7 @@
   }
 
   function adminLayout(active, content) {
-    return `<section class="admin-shell"><aside class="admin-sidebar"><h2>U-Ply Admin</h2><p>운영·정합성 관리</p><nav class="admin-menu"><button class="${active === "dashboard" ? "active" : ""}" data-route="admin">대시보드</button><button class="${active === "stocks" ? "active" : ""}" data-route="admin/stocks">캠페인·재고</button><button class="${active === "revoke" ? "active" : ""}" data-route="admin/revoke">미사용 쿠폰 회수</button><button class="${active === "batches" ? "active" : ""}" data-route="admin/batches">배치 실행·상태</button><button class="${active === "verification" ? "active" : ""}" data-route="admin/verification">검증 결과</button><button class="${active === "monitoring" ? "active" : ""}" data-route="admin/monitoring">시스템 모니터링</button></nav></aside><div class="admin-content">${content}</div></section>`;
+    return `<section class="admin-shell"><aside class="admin-sidebar"><h2>U-Ply Admin</h2><p>서비스 운영 관리</p><nav class="admin-menu"><button class="${active === "dashboard" ? "active" : ""}" data-route="admin">대시보드</button><button class="${active === "stocks" ? "active" : ""}" data-route="admin/stocks">캠페인·재고</button><button class="${active === "cache" ? "active" : ""}" data-route="admin/cache">캠페인 데이터 준비</button><button class="${active === "revoke" ? "active" : ""}" data-route="admin/revoke">미사용 쿠폰 회수</button><button class="${active === "batches" ? "active" : ""}" data-route="admin/batches">일괄 작업 실행</button><button class="${active === "verification" ? "active" : ""}" data-route="admin/verification">데이터 검증 결과</button><button class="${active === "monitoring" ? "active" : ""}" data-route="admin/monitoring">시스템 모니터링</button></nav></aside><div class="admin-content">${content}</div></section>`;
   }
 
   async function renderAdmin(route, token) {
@@ -857,6 +959,7 @@
     try {
       if (page === "dashboard") return await renderAdminDashboard(token);
       if (page === "stocks") return await renderAdminStocks(token);
+      if (page === "cache") return await renderAdminCache(token);
       if (page === "revoke") return await renderAdminRevoke(token);
       if (page === "batches") return await renderAdminBatches();
       if (page === "verification") return await renderAdminVerification(token);
@@ -879,8 +982,9 @@
     }
     if (token !== state.renderToken) return;
     const open = campaigns.filter((campaign) => campaign.status === "OPEN").length;
-    const failed = runs.filter((run) => Number(run.total_violations) > 0).length;
-    app.innerHTML = adminLayout("dashboard", `<header class="page-header"><div><p class="page-kicker">Operations</p><h1 class="page-title">관리자 대시보드</h1><p class="page-description">캠페인 운영과 데이터 정합성을 한곳에서 확인합니다.</p></div></header><div class="metric-grid"><article class="metric-card"><span>전체 캠페인</span><strong>${campaigns.length}</strong></article><article class="metric-card"><span>진행 중 캠페인</span><strong>${open}</strong></article><article class="metric-card"><span>최근 위반 회차</span><strong>${failed}</strong></article><article class="metric-card"><span>발급 전략</span><strong style="font-size:18px">환경 설정값</strong></article><article class="metric-card"><span>Kafka 상태</span><strong style="font-size:18px">모니터링</strong></article><article class="metric-card"><span>Redis–DB 대사</span><strong style="font-size:18px">수동 실행</strong></article></div><div class="admin-action-grid"><button class="admin-action-card" data-route="admin/stocks"><strong>캠페인·재고 현황</strong><span>노선·좌석 등급별 Redis 잔여 재고를 확인합니다.</span></button><button class="admin-action-card" data-route="admin/revoke"><strong>미사용 쿠폰 일괄 회수</strong><span>특정 캠페인의 ISSUED 쿠폰만 회수합니다.</span></button><button class="admin-action-card" data-route="admin/batches"><strong>배치 실행</strong><span>만료·검증·Redis–DB 대사 배치를 실행합니다.</span></button><button class="admin-action-card" data-route="admin/verification"><strong>검증 결과</strong><span>INV·REC 규칙의 위반 건수와 샘플을 확인합니다.</span></button></div>`);
+    const attention = runs.filter((run) => !["PASSED", "BASELINE"].includes(run.verdict)).length;
+    const latestVerdict = runs[0]?.verdict || "-";
+    app.innerHTML = adminLayout("dashboard", `<header class="page-header"><div><p class="page-kicker">Operations</p><h1 class="page-title">관리자 대시보드</h1><p class="page-description">캠페인 운영과 데이터 검증 현황을 한곳에서 확인합니다.</p></div></header><div class="metric-grid"><article class="metric-card"><span>전체 캠페인</span><strong>${campaigns.length}</strong></article><article class="metric-card"><span>진행 중 캠페인</span><strong>${open}</strong></article><article class="metric-card"><span>확인 필요 회차</span><strong>${attention}</strong></article><article class="metric-card"><span>최근 검증 결과</span><strong style="font-size:18px">${escapeHtml(verdictLabel(latestVerdict))}</strong></article></div><div class="admin-action-grid"><button class="admin-action-card" data-route="admin/stocks"><strong>캠페인·재고 현황</strong><span>노선과 좌석 등급별 남은 쿠폰 수량을 확인합니다.</span></button><button class="admin-action-card" data-route="admin/cache"><strong>캠페인 데이터 준비</strong><span>이벤트 오픈 전 데이터를 준비하거나 누락된 정보를 복구합니다.</span></button><button class="admin-action-card" data-route="admin/revoke"><strong>미사용 쿠폰 일괄 회수</strong><span>특정 캠페인에서 아직 사용하지 않은 쿠폰을 회수합니다.</span></button><button class="admin-action-card" data-route="admin/batches"><strong>일괄 작업 실행</strong><span>쿠폰 만료, 데이터 검증, 재고 일치 확인을 실행합니다.</span></button><button class="admin-action-card" data-route="admin/verification"><strong>데이터 검증 결과</strong><span>회차별 검사 결과와 문제가 발견된 데이터를 확인합니다.</span></button><button class="admin-action-card" data-route="admin/monitoring"><strong>시스템 모니터링</strong><span>응답 속도와 서버 상태를 대시보드에서 확인합니다.</span></button></div>`);
   }
 
   async function renderAdminStocks(token) {
@@ -888,34 +992,80 @@
     const details = await Promise.all(campaigns.map((campaign) => getCampaign(campaign.campaignId).catch(() => ({ ...campaign, stocks: [] }))));
     if (token !== state.renderToken) return;
     const rows = details.flatMap((campaign) => (campaign.stocks || []).map((stock) => ({ campaign, stock })));
-    app.innerHTML = adminLayout("stocks", `<header class="page-header"><div><p class="page-kicker">Campaign stock</p><h1 class="page-title">캠페인·재고 현황</h1><p class="page-description">관리자 전체 현황은 화면 진입 시 조회합니다. 실시간 관측은 Grafana를 사용합니다.</p></div><button class="ghost-button" data-route="admin/stocks">새로고침</button></header><div class="table-wrap"><table class="data-table"><thead><tr><th>캠페인</th><th>상태</th><th>노선</th><th>등급</th><th>총재고</th><th>잔여재고</th><th>발급률</th></tr></thead><tbody>${rows.map(({ campaign, stock }) => { const rate = stock.totalStock ? Math.round(((stock.totalStock - stock.remainingStock) / stock.totalStock) * 100) : 0; return `<tr><td>${escapeHtml(campaign.name)}</td><td><span class="badge ${escapeHtml(campaign.status)}">${campaignStatusLabel(campaign.status)}</span></td><td>${escapeHtml(routeLabel(stock.routeId))}</td><td>${fareLabel(stock.fareClass)}</td><td>${stock.totalStock.toLocaleString()}</td><td>${stock.remainingStock.toLocaleString()}</td><td>${rate}%</td></tr>`; }).join("") || '<tr><td colspan="7">표시할 재고가 없습니다.</td></tr>'}</tbody></table></div>`);
+    app.innerHTML = adminLayout("stocks", `<header class="page-header"><div><p class="page-kicker">Campaign stock</p><h1 class="page-title">캠페인·재고 현황</h1><p class="page-description">노선과 좌석 등급별 쿠폰 발급 현황입니다.</p></div><button class="ghost-button" data-route="admin/stocks">새로고침</button></header><div class="table-wrap"><table class="data-table"><thead><tr><th>캠페인</th><th>상태</th><th>노선</th><th>등급</th><th>전체 수량</th><th>남은 수량</th><th>발급률</th></tr></thead><tbody>${rows.map(({ campaign, stock }) => { const rate = stock.totalStock ? Math.round(((stock.totalStock - stock.remainingStock) / stock.totalStock) * 100) : 0; return `<tr><td>${escapeHtml(campaign.name)}</td><td><span class="badge ${escapeHtml(campaign.status)}">${campaignStatusLabel(campaign.status)}</span></td><td>${escapeHtml(routeLabel(stock.routeId))}</td><td>${fareLabel(stock.fareClass)}</td><td>${stock.totalStock.toLocaleString()}</td><td>${stock.remainingStock.toLocaleString()}</td><td>${rate}%</td></tr>`; }).join("") || '<tr><td colspan="7">표시할 재고가 없습니다.</td></tr>'}</tbody></table></div>`);
+  }
+
+  async function renderAdminCache(token) {
+    const campaigns = await getCampaigns(true);
+    if (token !== state.renderToken) return;
+    app.innerHTML = adminLayout(
+      "cache",
+      `<header class="page-header"><div><p class="page-kicker">Campaign readiness</p><h1 class="page-title">캠페인 데이터 준비</h1><p class="page-description">특가 오픈 전 데이터를 준비하거나 운영 중 누락된 정보만 복구합니다.</p></div></header>
+      <article class="card">
+        <div class="field"><label for="cache-campaign">대상 캠페인</label><select id="cache-campaign">${campaigns.map((campaign) => `<option value="${campaign.campaignId}">${escapeHtml(campaign.name)} · ${campaignStatusLabel(campaign.status)}</option>`).join("")}</select></div>
+        <div class="admin-action-grid compact-actions">
+          <button class="admin-action-card" data-action="recover-cache" ${previewMode || !campaigns.length ? "disabled" : ""}><strong>누락 정보 복구</strong><span>운영 중인 캠페인의 기존 수량은 유지하고, 사라진 정보만 다시 채웁니다.</span></button>
+          <button class="admin-action-card danger-outline" data-action="warmup-cache" ${previewMode || !campaigns.length ? "disabled" : ""}><strong>오픈 전 전체 준비</strong><span>현재 저장된 정보를 캠페인 원본 데이터로 다시 구성합니다. 발급이 시작된 뒤에는 실행하지 마세요.</span></button>
+        </div>
+        <div id="cache-operation-result"></div>
+      </article>`,
+    );
+  }
+
+  async function runCacheOperation(mode) {
+    const campaignId = Number(document.querySelector("#cache-campaign")?.value);
+    if (!campaignId) return;
+    const warmup = mode === "warmup";
+    const confirmed = await openConfirm({
+      title: warmup ? "캠페인 데이터를 전체 준비할까요?" : "누락된 캠페인 정보를 복구할까요?",
+      message: warmup
+        ? "쿠폰 발급이 시작되지 않았거나 발급 요청이 완전히 중단된 상태에서만 실행해 주세요."
+        : "현재 발급 수량은 변경하지 않고 누락된 정보만 복구합니다.",
+      confirmText: warmup ? "전체 준비" : "누락 정보 복구",
+      danger: warmup,
+    });
+    if (!confirmed) return;
+
+    try {
+      const result = await request(
+        `/api/admin/campaigns/${campaignId}/cache/${warmup ? "warmup" : "recover"}`,
+        { method: "POST" },
+      );
+      const hasMismatch = (result.mismatches || []).length > 0;
+      const target = document.querySelector("#cache-operation-result");
+      if (target) {
+        target.innerHTML = `<div class="notice ${hasMismatch ? "" : "info"}" style="margin-top:20px"><strong>${warmup ? "캠페인 데이터 준비 완료" : "누락 정보 복구 완료"}</strong>${hasMismatch ? `<br />추가 확인이 필요한 항목: ${escapeHtml(result.mismatches.join(", "))}` : "<br />확인 필요한 불일치가 없습니다."}</div>`;
+      }
+      toast("작업 완료", warmup ? "캠페인 데이터 준비를 마쳤습니다." : "누락된 정보 복구를 마쳤습니다.");
+    } catch (error) {
+      toast("작업 실패", errorMessage(error), "error");
+    }
   }
 
   async function renderAdminRevoke(token) {
     const campaigns = await getCampaigns(true);
     if (token !== state.renderToken) return;
-    app.innerHTML = adminLayout("revoke", `<header class="page-header"><div><p class="page-kicker">Airline revoke</p><h1 class="page-title">미사용 쿠폰 일괄 회수</h1><p class="page-description">ISSUED 쿠폰만 CANCELLED로 변경하며 재고는 복구하지 않습니다.</p></div></header><article class="card"><div class="notice">이 작업은 사용자 예약 취소와 다릅니다. 이미 사용한 USED 쿠폰은 변경하지 않습니다.</div><form id="revoke-form"><div class="field"><label for="revoke-campaign">대상 캠페인</label><select id="revoke-campaign" name="campaignId">${campaigns.map((campaign) => `<option value="${campaign.campaignId}">${escapeHtml(campaign.name)} · ${campaignStatusLabel(campaign.status)}</option>`).join("")}</select></div><div class="button-row end" style="margin-top:22px"><button class="danger-button" type="submit" ${previewMode ? "disabled" : ""}>미사용 쿠폰 회수</button></div></form><div id="revoke-result"></div></article>`);
+    app.innerHTML = adminLayout("revoke", `<header class="page-header"><div><p class="page-kicker">Airline revoke</p><h1 class="page-title">미사용 쿠폰 일괄 회수</h1><p class="page-description">선택한 캠페인에서 아직 사용하지 않은 쿠폰만 회수합니다.</p></div></header><article class="card"><div class="notice">이미 사용했거나 취소·만료된 쿠폰은 변경되지 않습니다. 회수 후 발급 가능 수량은 늘어나지 않습니다.</div><form id="revoke-form"><div class="field"><label for="revoke-campaign">대상 캠페인</label><select id="revoke-campaign" name="campaignId">${campaigns.map((campaign) => `<option value="${campaign.campaignId}">${escapeHtml(campaign.name)} · ${campaignStatusLabel(campaign.status)}</option>`).join("")}</select></div><div class="button-row end" style="margin-top:22px"><button class="danger-button" type="submit" ${previewMode ? "disabled" : ""}>미사용 쿠폰 회수</button></div></form><div id="revoke-result"></div></article>`);
   }
 
   function renderAdminBatches() {
     const execution = state.execution;
-    app.innerHTML = adminLayout("batches", `<header class="page-header"><div><p class="page-kicker">Batch operations</p><h1 class="page-title">배치 실행·상태</h1><p class="page-description">배치는 202 Accepted 후 executionId로 진행 상태를 조회합니다.</p></div></header><div class="admin-action-grid"><button class="admin-action-card" data-action="run-batch" data-job="expiration" ${previewMode ? "disabled" : ""}><strong>쿠폰 만료 배치</strong><span>기한이 지난 ISSUED 쿠폰을 EXPIRED로 변경합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="verification" ${previewMode ? "disabled" : ""}><strong>데이터 정합성 검증</strong><span>INV 규칙을 실행하고 회차별 검증 결과를 저장합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="reconcile" ${previewMode ? "disabled" : ""}><strong>Redis–DB 재고 대사</strong><span>불일치를 탐지·기록하며 자동 교정하지 않습니다.</span></button></div>${execution ? `<article class="card" style="margin-top:18px"><div class="job-status"><div><span class="badge ${escapeHtml(execution.status)}" id="execution-status">${escapeHtml(execution.status)}</span><h2 class="card-title" style="margin:12px 0 4px">${escapeHtml(execution.job || execution.jobName)}</h2><p class="row-muted">executionId ${escapeHtml(execution.jobExecutionId)} · runId ${escapeHtml(execution.runId)}</p></div><button class="ghost-button" data-action="refresh-execution">상태 새로고침</button></div><div id="execution-detail"></div></article>` : ""}`);
+    app.innerHTML = adminLayout("batches", `<header class="page-header"><div><p class="page-kicker">Batch operations</p><h1 class="page-title">일괄 작업 실행</h1><p class="page-description">작업을 접수하면 완료될 때까지 진행 상태를 자동으로 확인합니다.</p></div></header><article class="card batch-control"><div class="field"><label for="verification-round">검증 대상 발급 방식</label><select id="verification-round"><option value="V3">Redis + Kafka</option><option value="V2">Redis + MySQL</option><option value="V1">MySQL 비관적 락</option><option value="V0">락 없는 기준 측정</option></select></div></article><div class="admin-action-grid"><button class="admin-action-card" data-action="run-batch" data-job="expiration" ${previewMode ? "disabled" : ""}><strong>기간 만료 쿠폰 정리</strong><span>유효기간이 지난 미사용 쿠폰을 만료 처리합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="verification" ${previewMode ? "disabled" : ""}><strong>데이터 검증</strong><span>쿠폰, 상태 변경 이력, 재고 수량이 서로 맞는지 검사합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="reconcile" ${previewMode ? "disabled" : ""}><strong>재고 일치 확인</strong><span>실시간 발급 수량과 저장된 재고 수량의 차이를 확인합니다.</span></button></div>${execution ? `<article class="card" style="margin-top:18px"><div class="job-status"><div><span class="badge ${escapeHtml(execution.status)}" id="execution-status">${escapeHtml(batchStatusLabel(execution.status))}</span><h2 class="card-title" style="margin:12px 0 4px">${escapeHtml(execution.job || execution.jobName)}</h2><p class="row-muted">작업 번호 ${escapeHtml(execution.jobExecutionId)} · 실행 ID ${escapeHtml(execution.runId)}</p></div><button class="ghost-button" data-action="refresh-execution">상태 새로고침</button></div><div id="execution-detail"></div></article>` : ""}`);
   }
 
   async function runBatch(job) {
     let query = "";
     if (job === "verification") {
-      const round = window.prompt("검증 회차를 입력해 주세요. (V0, V1, V2, V3)", "V3");
-      if (!round) return;
+      const round = document.querySelector("#verification-round")?.value || "V3";
       query = `?round=${encodeURIComponent(round.toUpperCase())}&failOnViolation=false`;
     }
     try {
       state.execution = await request(`/api/admin/batch/${job}${query}`, { method: "POST" });
       renderAdminBatches();
-      toast("배치 접수 완료", `executionId ${state.execution.jobExecutionId}`);
+      toast("작업 접수 완료", `작업 번호 ${state.execution.jobExecutionId}`);
       watchExecution();
     } catch (error) {
-      toast("배치 실행 실패", errorMessage(error), "error");
+      toast("작업 실행 실패", errorMessage(error), "error");
     }
   }
 
@@ -928,9 +1078,9 @@
       const target = document.querySelector("#execution-detail");
       if (status) {
         status.className = `badge ${detail.status}`;
-        status.textContent = detail.status;
+        status.textContent = batchStatusLabel(detail.status);
       }
-      if (target) target.innerHTML = `<div class="detail-grid" style="margin-top:22px"><div class="detail-item"><span>시작</span><strong>${escapeHtml(detail.startTime)}</strong></div><div class="detail-item"><span>종료</span><strong>${escapeHtml(detail.endTime)}</strong></div><div class="detail-item"><span>Exit Code</span><strong>${escapeHtml(detail.exitCode)}</strong></div><div class="detail-item"><span>실패 원인</span><strong>${escapeHtml((detail.failures || []).join(", ") || "없음")}</strong></div></div>`;
+      if (target) target.innerHTML = `<div class="detail-grid" style="margin-top:22px"><div class="detail-item"><span>시작 시각</span><strong>${formatDate(detail.startTime)}</strong></div><div class="detail-item"><span>종료 시각</span><strong>${formatDate(detail.endTime)}</strong></div><div class="detail-item"><span>처리 결과</span><strong>${escapeHtml(batchStatusLabel(detail.status))}</strong></div><div class="detail-item"><span>실패 원인</span><strong>${escapeHtml((detail.failures || []).join(", ") || "없음")}</strong></div></div>${(detail.steps || []).length ? `<div class="table-wrap compact-table"><table class="data-table"><thead><tr><th>처리 단계</th><th>읽음</th><th>저장</th><th>반영</th></tr></thead><tbody>${detail.steps.map((step) => `<tr><td>${escapeHtml(step.name)}</td><td>${Number(step.readCount || 0).toLocaleString()}</td><td>${Number(step.writeCount || 0).toLocaleString()}</td><td>${Number(step.commitCount || 0).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
       return detail.status;
     } catch (error) {
       toast("상태 조회 실패", errorMessage(error), "error");
@@ -945,7 +1095,7 @@
       if (["COMPLETED", "FAILED", "STOPPED", "ABANDONED"].includes(status)) {
         window.clearInterval(timer);
         if (state.batchPollTimer === timer) state.batchPollTimer = null;
-        toast("배치 실행 종료", `최종 상태: ${status}`, status === "COMPLETED" ? "success" : "error");
+        toast("작업 종료", `최종 결과: ${batchStatusLabel(status)}`, status === "COMPLETED" ? "success" : "error");
       }
     }, 1200);
     state.batchPollTimer = timer;
@@ -957,23 +1107,23 @@
 
   async function renderAdminVerification(token) {
     if (previewMode) {
-      app.innerHTML = adminLayout("verification", '<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">검증 결과</h1></div></header><div class="empty-state"><h2>미리보기 모드</h2><p>실제 검증 결과는 백엔드 실행 후 표시됩니다.</p></div>');
+      app.innerHTML = adminLayout("verification", '<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">데이터 검증 결과</h1></div></header><div class="empty-state"><h2>아직 검증 결과가 없습니다</h2><p>일괄 작업 메뉴에서 데이터 검증을 실행해 주세요.</p></div>');
       return;
     }
     const runs = await request("/api/admin/batch/verification/runs?limit=20");
     if (token !== state.renderToken) return;
-    app.innerHTML = adminLayout("verification", `<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">검증 결과</h1><p class="page-description">회차를 선택하면 규칙별 결과와 위반 샘플을 확인할 수 있습니다.</p></div></header><div class="table-wrap"><table class="data-table"><thead><tr><th>runId</th><th>회차</th><th>기준 시각</th><th>전체 위반</th><th>실패 규칙</th><th>판정</th></tr></thead><tbody>${runs.map((run) => { const verdict = run.verdict || (Number(run.total_violations) > 0 ? "FAILED" : "PASSED"); return `<tr class="clickable" data-route="admin/verification-run/${encodeURIComponent(run.run_id)}"><td>${escapeHtml(run.run_id)}</td><td>${escapeHtml(run.round || "-")}</td><td>${formatDate(run.snapshot_at)}</td><td>${Number(run.total_violations || 0).toLocaleString()}</td><td>${Number(run.failed_rules || 0).toLocaleString()}</td><td><span class="badge ${escapeHtml(verdict)}">${escapeHtml(verdict)}</span></td></tr>`; }).join("") || '<tr><td colspan="6">검증 회차가 없습니다.</td></tr>'}</tbody></table></div>`);
+    app.innerHTML = adminLayout("verification", `<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">데이터 검증 결과</h1><p class="page-description">실행 ID를 선택하면 검사 항목별 결과와 문제가 발견된 데이터를 확인할 수 있습니다.</p></div><button class="ghost-button" data-route="admin/verification">새로고침</button></header><div class="table-wrap"><table class="data-table"><thead><tr><th>실행 ID</th><th>발급 방식</th><th>기준 시각</th><th>전체 위반</th><th>문제 항목</th><th>최종 결과</th></tr></thead><tbody>${runs.map((run) => { const verdict = run.verdict || (Number(run.total_violations) > 0 ? "FAILED" : "PASSED"); return `<tr class="clickable" data-route="admin/verification-run/${encodeURIComponent(run.run_id)}"><td>${escapeHtml(run.run_id)}</td><td>${escapeHtml(run.round || "-")}</td><td>${formatDate(run.snapshot_at)}</td><td>${Number(run.total_violations || 0).toLocaleString()}</td><td>${Number(run.failed_rules || 0).toLocaleString()}</td><td><span class="badge ${escapeHtml(verdict)}">${escapeHtml(verdictLabel(verdict))}</span></td></tr>`; }).join("") || '<tr><td colspan="6">아직 검증 결과가 없습니다.</td></tr>'}</tbody></table></div>`);
   }
 
   async function renderVerificationRun(runId, token) {
     const decoded = decodeURIComponent(runId);
     const [rules, violations] = await Promise.all([request(`/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}`), request(`/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}/violations?limit=100`)]);
     if (token !== state.renderToken) return;
-    app.innerHTML = adminLayout("verification", `<button class="back-button" data-route="admin/verification">← 검증 회차 목록</button><header class="page-header"><div><p class="page-kicker">Verification detail</p><h1 class="page-title">${escapeHtml(decoded)}</h1><p class="page-description">규칙별 판정과 위반 샘플입니다.</p></div></header><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>이름</th><th>상태</th><th>검사 행</th><th>위반</th><th>소요</th></tr></thead><tbody>${rules.map((rule) => { const status = rule.status || (Boolean(rule.passed) ? "CHECKED" : "FAILED"); return `<tr><td>${escapeHtml(rule.rule_code)}</td><td>${escapeHtml(rule.rule_name)}</td><td><span class="badge ${escapeHtml(status)}">${escapeHtml(status)}</span></td><td>${rule.checked_rows == null ? "-" : Number(rule.checked_rows).toLocaleString()}</td><td>${Number(rule.violation_count || 0).toLocaleString()}</td><td>${Number(rule.elapsed_ms || 0).toLocaleString()} ms</td></tr>`; }).join("")}</tbody></table></div><h2 class="card-title" style="margin-top:30px">위반 샘플</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>테이블</th><th>대상 ID</th><th>상세</th></tr></thead><tbody>${violations.map((item) => `<tr><td>${escapeHtml(item.rule_code)}</td><td>${escapeHtml(item.target_table)}</td><td>${escapeHtml(item.target_id)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join("") || '<tr><td colspan="4">위반 없음</td></tr>'}</tbody></table></div>`);
+    app.innerHTML = adminLayout("verification", `<button class="back-button" data-route="admin/verification">← 검증 결과 목록</button><header class="page-header"><div><p class="page-kicker">Verification detail</p><h1 class="page-title">${escapeHtml(decoded)}</h1><p class="page-description">검사 항목별 처리 범위와 발견된 문제입니다.</p></div><a class="secondary-button" href="/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}/report" target="_blank" rel="noopener">결과 보고서 열기 ↗</a></header><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>검사 항목</th><th>상태</th><th>검사 행</th><th>위반</th><th>소요 시간</th></tr></thead><tbody>${rules.map((rule) => { const status = rule.status || (Boolean(rule.passed) ? "CHECKED" : "FAILED"); return `<tr><td>${escapeHtml(rule.rule_code)}</td><td>${escapeHtml(rule.rule_name)}</td><td><span class="badge ${escapeHtml(status)}">${escapeHtml(ruleStatusLabel(status))}</span></td><td>${rule.checked_rows == null ? "-" : Number(rule.checked_rows).toLocaleString()}</td><td>${Number(rule.violation_count || 0).toLocaleString()}</td><td>${Number(rule.elapsed_ms || 0).toLocaleString()} ms</td></tr>`; }).join("")}</tbody></table></div><h2 class="card-title" style="margin-top:30px">발견된 문제</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>데이터 구분</th><th>대상 ID</th><th>상세 내용</th></tr></thead><tbody>${violations.map((item) => `<tr><td>${escapeHtml(item.rule_code)}</td><td>${escapeHtml(item.target_table)}</td><td>${escapeHtml(item.target_id)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join("") || '<tr><td colspan="4">발견된 문제가 없습니다.</td></tr>'}</tbody></table></div>`);
   }
 
   function renderMonitoring() {
-    app.innerHTML = adminLayout("monitoring", `<header class="page-header"><div><p class="page-kicker">Observability</p><h1 class="page-title">시스템 모니터링</h1><p class="page-description">운영 지표는 전용 관측 도구에서 확인합니다.</p></div></header><div class="monitor-grid"><article class="monitor-card"><h3>Grafana Dashboard</h3><p>API 지연, JVM, HikariCP, Redis, Kafka, MySQL 및 컨테이너 자원을 한눈에 확인합니다.</p><a class="primary-button" href="http://localhost:3000" target="_blank" rel="noopener">Grafana 열기 ↗</a></article><article class="monitor-card"><h3>Prometheus</h3><p>Micrometer와 인프라 Exporter가 수집한 원시 시계열을 조회합니다.</p><a class="secondary-button" href="http://localhost:9090" target="_blank" rel="noopener">Prometheus 열기 ↗</a></article><article class="monitor-card"><h3>Spring Actuator</h3><p>애플리케이션 헬스와 Prometheus 노출 지표를 확인합니다.</p><a class="ghost-button" href="/actuator/health" target="_blank" rel="noopener">Health 확인 ↗</a></article><article class="monitor-card"><h3>Kafka Consumer Lag</h3><p>V3 부하 테스트 종료 판정은 lag 0과 DLT 0을 함께 확인합니다.</p><button class="ghost-button" data-route="admin/batches">대사 배치로 이동</button></article></div>`);
+    app.innerHTML = adminLayout("monitoring", `<header class="page-header"><div><p class="page-kicker">Observability</p><h1 class="page-title">시스템 모니터링</h1><p class="page-description">서비스 응답 속도와 서버 상태를 실시간으로 확인합니다.</p></div></header><div class="monitor-grid"><article class="monitor-card"><h3>통합 모니터링 대시보드</h3><p>요청 처리량, 응답 시간, 서버 자원, 데이터 저장 상태를 한눈에 확인합니다.</p><a class="primary-button" href="http://localhost:3000" target="_blank" rel="noopener">Grafana 열기 ↗</a></article><article class="monitor-card"><h3>수집 지표 조회</h3><p>서비스와 각 구성 요소에서 수집한 상세 지표를 직접 조회합니다.</p><a class="secondary-button" href="http://localhost:9090" target="_blank" rel="noopener">Prometheus 열기 ↗</a></article><article class="monitor-card"><h3>서비스 상태 확인</h3><p>애플리케이션이 정상적으로 요청을 받을 수 있는지 확인합니다.</p><a class="ghost-button" href="/actuator/health" target="_blank" rel="noopener">상태 확인 ↗</a></article><article class="monitor-card"><h3>데이터 반영 확인</h3><p>메시지 처리 완료 후 재고와 저장 데이터가 일치하는지 확인합니다.</p><button class="ghost-button" data-route="admin/batches">일괄 작업으로 이동</button></article></div>`);
   }
 
   async function renderRoute() {
@@ -1019,6 +1169,7 @@
       if (stock) {
         state.selectedStock = stock;
         drawCampaignDetail(state.campaign);
+        if (state.campaign?.status === "OPEN") startStockUpdates(state.campaign.campaignId);
       }
     }
     if (action === "issue-coupon") await issueCoupon();
@@ -1034,6 +1185,8 @@
     }
     if (action === "run-batch") await runBatch(actionTarget.dataset.job);
     if (action === "refresh-execution") await refreshExecution();
+    if (action === "recover-cache") await runCacheOperation("recover");
+    if (action === "warmup-cache") await runCacheOperation("warmup");
   });
 
   document.addEventListener("submit", async (event) => {
@@ -1053,7 +1206,7 @@
       event.preventDefault();
       const campaignId = Number(new FormData(event.target).get("campaignId"));
       const campaign = state.campaigns?.find((item) => item.campaignId === campaignId);
-      const confirmed = await openConfirm({ title: "미사용 쿠폰을 일괄 회수할까요?", message: `${campaign?.name || `캠페인 ${campaignId}`}의 ISSUED 쿠폰을 모두 CANCELLED로 변경합니다. 재고는 복구되지 않습니다.`, confirmText: "일괄 회수", danger: true });
+      const confirmed = await openConfirm({ title: "미사용 쿠폰을 일괄 회수할까요?", message: `${campaign?.name || `캠페인 ${campaignId}`}에서 아직 사용하지 않은 쿠폰을 회수합니다. 발급 가능 수량은 늘어나지 않습니다.`, confirmText: "일괄 회수", danger: true });
       if (!confirmed) return;
       const action = `revoke:${campaignId}`;
       try {
@@ -1074,12 +1227,13 @@
       state.userId = Number(event.target.value);
       localStorage.setItem("uply.userId", String(state.userId));
       state.selectedCouponId = null;
-      toast("시연 사용자 변경", `사용자 ${state.userId}의 데이터로 전환했습니다.`);
+      toast("회원 변경", `회원 ${state.userId}의 정보로 전환했습니다.`);
       renderRoute();
     }
     if (event.target.id === "campaign-route") {
       state.selectedStock = state.campaign?.stocks.find((stock) => stock.routeId === event.target.value) || null;
       drawCampaignDetail(state.campaign);
+      if (state.campaign?.status === "OPEN") startStockUpdates(state.campaign.campaignId);
     }
     if (event.target.name === "coupon") {
       state.selectedCouponId = event.target.value || null;

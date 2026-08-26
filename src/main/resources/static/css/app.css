@@ -1133,7 +1133,7 @@ select:focus-visible {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 15px;
 }
 
@@ -1160,6 +1160,31 @@ select:focus-visible {
   grid-template-columns: repeat(2, 1fr);
   gap: 14px;
   margin-top: 18px;
+}
+
+.admin-action-grid.compact-actions {
+  margin-top: 22px;
+}
+
+.admin-action-card.danger-outline {
+  border-color: #efb7c0;
+  background: #fffafb;
+}
+
+.admin-action-card.danger-outline:hover {
+  border-color: var(--danger);
+}
+
+.batch-control {
+  margin-bottom: 18px;
+}
+
+.batch-control .field {
+  max-width: 360px;
+}
+
+.compact-table {
+  margin-top: 20px;
 }
 
 .admin-action-card {
