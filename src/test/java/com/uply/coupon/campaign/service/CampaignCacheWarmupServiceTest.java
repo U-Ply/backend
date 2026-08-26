@@ -1,12 +1,16 @@
 package com.uply.coupon.campaign.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
 import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.domain.CampaignStock;
+import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
+import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
@@ -30,6 +34,8 @@ import org.springframework.data.redis.core.ValueOperations;
 class CampaignCacheWarmupServiceTest {
 
     @InjectMocks private CampaignCacheWarmupService campaignCacheWarmupService;
+
+    @Mock private CampaignRepository campaignRepository;
 
     @Mock private CampaignStockRepository campaignStockRepository;
 
@@ -163,18 +169,223 @@ class CampaignCacheWarmupServiceTest {
     }
 
     @Test
-    @DisplayName("캠페인 재고 목록이 비어있으면 Redis 상호작용 없이 조기 리턴된다.")
-    void warmupCampaign_EmptyStocks_EarlyReturn() {
+    @DisplayName("존재하는 캠페인에 재고 풀만 없으면 Redis 상호작용 없이 조기 리턴된다.")
+    void warmupCampaign_ExistingCampaignWithNoStocks_EarlyReturn() {
         // given
         Long campaignId = 1L;
         given(campaignStockRepository.findAllByCampaignId(campaignId))
                 .willReturn(Collections.emptyList());
+        given(campaignRepository.existsById(campaignId)).willReturn(true);
 
         // when
         campaignCacheWarmupService.warmupCampaign(campaignId);
 
         // then
         verifyNoInteractions(redisTemplate);
+    }
+
+    // 이전에는 존재하지 않는 campaignId로 호출해도 재고 풀이 비어있는 것과 구분하지
+    // 못해 조용히 성공 처리됐다(docs/round-results.md 2026-08-21 미해소 항목).
+    // 관리자 API 호출자가 "복구 성공"으로 오인하지 않도록 404로 구분한다.
+    @Test
+    @DisplayName("존재하지 않는 캠페인이면 CampaignNotFoundException을 던진다.")
+    void warmupCampaign_CampaignDoesNotExist_ThrowsException() {
+        // given
+        Long campaignId = 999L;
+        given(campaignStockRepository.findAllByCampaignId(campaignId))
+                .willReturn(Collections.emptyList());
+        given(campaignRepository.existsById(campaignId)).willReturn(false);
+
+        // when & then
+        assertThatThrownBy(() -> campaignCacheWarmupService.warmupCampaign(campaignId))
+                .isInstanceOf(CampaignNotFoundException.class)
+                .hasMessageContaining(String.valueOf(campaignId));
+
+        verifyNoInteractions(redisTemplate);
+    }
+
+    // recoverMissingCache: 운영 중 부분 유실 복구 — warmupCampaign과 달리 살아있는 키를
+    // 절대 덮어쓰면 안 된다. 이 그룹의 테스트는 그 비파괴성을 직접 검증한다.
+
+    @Test
+    @DisplayName("recoverMissingCache는 SETNX로만 채우고, 덮어쓰기용 set()은 절대 호출하지 않는다")
+    void recoverMissingCache_NeverOverwritesExistingKeys() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(valueOperations).setIfAbsent(eq("campaign:1:openAt"), anyString());
+        verify(valueOperations).setIfAbsent(eq("campaign:1:expireAt"), anyString());
+        verify(valueOperations).setIfAbsent(eq("stock:100"), anyString());
+        verify(valueOperations).setIfAbsent(eq("stockId:1:GMP-CJU:Y"), anyString());
+
+        // warmupCampaign이 쓰는 무조건 덮어쓰기 경로는 이 메서드에서 절대 호출되면 안 된다.
+        verify(valueOperations, never()).set(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("issued Set이 이미 있으면(0명인 정상 상태 포함) 손대지 않는다")
+    void recoverMissingCache_IssuedSetAlreadyExists_LeavesItUntouched() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verifyNoInteractions(couponRepository);
+        verify(redisTemplate, never()).opsForSet();
+    }
+
+    @Test
+    @DisplayName("issued Set이 없고 DB에 발급 이력이 있으면 SADD만으로 채운다 (DELETE·RENAME 없음)")
+    void recoverMissingCache_IssuedSetMissing_RebuildsAdditively() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(false);
+        given(redisTemplate.opsForSet()).willReturn(setOperations);
+        given(couponRepository.findUserIdsByCampaignId(campaignId)).willReturn(List.of(100L, 101L));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(setOperations).add("issued:1", "100", "101");
+        verify(redisTemplate, never()).delete(anyString());
+        verify(redisTemplate, never()).rename(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("issued Set도 DB 발급 이력도 없으면 아무 키도 새로 만들지 않는다")
+    void recoverMissingCache_NoIssuedSetAndNoDbHistory_CreatesNothing() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(false);
+        given(couponRepository.findUserIdsByCampaignId(campaignId))
+                .willReturn(Collections.emptyList());
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        verify(redisTemplate, never()).opsForSet();
+    }
+
+    @Test
+    @DisplayName("Kafka가 정착하지 않았으면 부분 복구도 거부한다")
+    void recoverMissingCache_KafkaNotSettled_Rejected() {
+        // given
+        given(kafkaSettlementCheckerProvider.getIfAvailable()).willReturn(kafkaSettlementChecker);
+        given(kafkaSettlementChecker.check()).willReturn(new KafkaSettlement(3L, 0L));
+
+        // when & then
+        assertThatThrownBy(() -> campaignCacheWarmupService.recoverMissingCache(1L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Kafka 미정착");
+
+        verifyNoInteractions(campaignStockRepository);
+    }
+
+    // 복구 직후 자체 점검: REC-01(시스템 전체 배치)을 트리거하지 않고, 지금 복구한
+    // 캠페인의 재고풀만 Redis-DB로 비교한다. 코드 리뷰에서 REC-01을 그대로 호출하면
+    // (1) campaign_id 조건 없이 전체 스캔이라 무관한 캠페인 불일치까지 섞이고
+    // (2) VerificationResultWriter 기록·MISMATCH 실패 처리를 우회한다는 지적을 받아
+    // 이 스코프 한정 자체 점검으로 대체했다.
+
+    @Test
+    @DisplayName("자체 점검: 복구한 재고풀의 Redis 값이 DB와 정확히 일치하면 빈 리스트를 반환한다")
+    void recoverMissingCache_ScopedCheck_PassesWhenValuesMatch() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("70")); // DB와 동일
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        assertThat(mismatches).isEmpty();
+    }
+
+    // 리뷰에서 지적된 핵심 결함: recoverMissingCache는 트래픽 차단을 전제하지 않으므로,
+    // 메서드 시작 시점 DB 스냅샷과 끝난 시점 Redis 현재값 사이에는 트래픽이 있는 한
+    // 정상적인 시간차가 항상 생긴다(Redis가 Lua로 계속 더 감소함). 이 테스트가 원래는
+    // "redis=65, db=70"을 불일치로 잘못 보고했었다 — 실시간 트래픽을 오탐한 것이다.
+    @Test
+    @DisplayName("자체 점검: Redis가 DB보다 더 감소해 있는 정상적인 시간차는 보고하지 않는다")
+    void recoverMissingCache_ScopedCheck_DoesNotReportNormalLag() {
+        // given — Redis(65)가 DB 스냅샷(70)보다 더 진행됨: 트래픽이 계속돼 DB가 못 따라온 정상 상태
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("65"));
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        assertThat(mismatches).isEmpty();
+    }
+
+    @Test
+    @DisplayName("자체 점검: Redis 재고가 DB보다 많으면(재고가 되살아난 방향) 초과 발급 위험으로 보고한다")
+    void recoverMissingCache_ScopedCheck_ReportsMismatch_WhenRedisExceedsDb() {
+        // given — Redis(999)가 DB(70)보다 많음: SETNX가 손대지 않은 기존 값이 부풀려져 있는 위험한 방향
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("999"));
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then
+        assertThat(mismatches).hasSize(1);
+        assertThat(mismatches.get(0)).contains("stockId=100", "redis=999", "db=70");
+    }
+
+    @Test
+    @DisplayName("자체 점검: multiGet 결과 수가 재고풀 수와 다르면(Redis 이상) 점검만 건너뛰고 복구는 실패시키지 않는다")
+    void recoverMissingCache_ScopedCheck_SkipsWhenMultiGetSizeMismatches() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of());
+
+        // when
+        List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then — 예외 없이 정상 반환되고, 점검할 데이터가 없었으므로 위험 신호도 없다.
+        assertThat(mismatches).isEmpty();
+    }
+
+    @Test
+    @DisplayName("자체 점검은 지금 복구한 캠페인의 재고풀만 보고, 시스템 전체 REC-01 배치를 트리거하지 않는다")
+    void recoverMissingCache_DoesNotTriggerSystemWideReconciliation() {
+        // given
+        Long campaignId = 1L;
+        givenSingleStockCampaign(campaignId);
+        given(redisTemplate.hasKey("issued:1")).willReturn(true);
+        given(valueOperations.multiGet(List.of("stock:100"))).willReturn(List.of("70"));
+
+        // when
+        campaignCacheWarmupService.recoverMissingCache(campaignId);
+
+        // then — campaign_stocks 전체를 훑는 배치용 JdbcTemplate 조회가 이 메서드 경로에는 없다.
+        // campaignStockRepository(JPA)만 쓰였는지로 간접 확인한다.
+        verify(campaignStockRepository).findAllByCampaignId(campaignId);
+        verifyNoMoreInteractions(campaignStockRepository);
     }
 
     /** 재고 풀 하나짜리 정상 캠페인 스텁 (오픈·만료 시각 포함) */

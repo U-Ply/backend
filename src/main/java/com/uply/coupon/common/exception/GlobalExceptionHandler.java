@@ -1,5 +1,6 @@
 package com.uply.coupon.common.exception;
 
+import com.uply.coupon.campaign.service.CacheAutoRecoveryTrigger;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.operation.admin.BatchConflictException;
 import com.uply.coupon.operation.admin.BatchExecutionNotFoundException;
@@ -11,6 +12,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -29,8 +31,17 @@ public class GlobalExceptionHandler {
 
     private final Counter concurrencyConflictCounter;
     private final Counter connectionUnavailableCounter;
+    private final Counter campaignNotCachedCounter;
 
-    public GlobalExceptionHandler(MeterRegistry meterRegistry) {
+    // 자동 트리거는 coupon.cache-recovery.auto-trigger-enabled=true일 때만 빈이 존재한다
+    // (기본 비활성화). ObjectProvider로 받아 없으면 조용히 건너뛴다 — V3 전용
+    // KafkaSettlementChecker와 같은 패턴.
+    private final ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider;
+
+    public GlobalExceptionHandler(
+            MeterRegistry meterRegistry,
+            ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider) {
+        this.cacheAutoRecoveryTriggerProvider = cacheAutoRecoveryTriggerProvider;
         this.concurrencyConflictCounter =
                 Counter.builder("coupon.issue.failure")
                         .tag("reason", "concurrency_conflict")
@@ -40,6 +51,15 @@ public class GlobalExceptionHandler {
                 Counter.builder("coupon.issue.failure")
                         .tag("reason", "connection_unavailable")
                         .description("발급 요청이 DB 커넥션 획득 실패로 종료된 횟수")
+                        .register(meterRegistry);
+        // CAMPAIGN_NOT_CACHED는 Redis가 정상 응답했는데 openAt/expireAt/stock 키 중
+        // 하나가 없을 때만 발생한다(issue_coupon.lua 참고). Redis 연결 자체가 끊기면
+        // 이 경로를 타지 않고 Exception.class 핸들러로 떨어지므로, 이 카운터는
+        // 캐시 웜업 누락·유실을 가리키는 잡음 적은 신호로 쓸 수 있다.
+        this.campaignNotCachedCounter =
+                Counter.builder("coupon.issue.failure")
+                        .tag("reason", "campaign_not_cached")
+                        .description("발급 요청이 Redis 캠페인 캐시 미스(웜업 누락/유실)로 실패한 횟수")
                         .register(meterRegistry);
     }
 
@@ -69,11 +89,14 @@ public class GlobalExceptionHandler {
                             HttpStatus.INTERNAL_SERVER_ERROR,
                             "KAFKA_PUBLISH_FAILED",
                             "이벤트 메시지 발행에 실패했습니다.");
-            case CAMPAIGN_NOT_CACHED ->
-                    response(
-                            HttpStatus.SERVICE_UNAVAILABLE,
-                            "CAMPAIGN_NOT_CACHED",
-                            "캠페인 발급 준비가 완료되지 않았습니다. 잠시 후 다시 시도해 주세요.");
+            case CAMPAIGN_NOT_CACHED -> {
+                campaignNotCachedCounter.increment();
+                notifyCacheMiss(exception.getCampaignId());
+                yield response(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "CAMPAIGN_NOT_CACHED",
+                        "캠페인 발급 준비가 완료되지 않았습니다. 잠시 후 다시 시도해 주세요.");
+            }
             case SAVE_RESULT_UNKNOWN ->
                     response(
                             HttpStatus.SERVICE_UNAVAILABLE, // 불확실한 실패 -> 503
@@ -99,6 +122,16 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleCampaignNotFound(
             CampaignNotFoundException exception) {
         return response(HttpStatus.NOT_FOUND, "CAMPAIGN_NOT_FOUND", exception.getMessage());
+    }
+
+    @ExceptionHandler(CacheRecoveryNotSettledException.class)
+    public ResponseEntity<ApiErrorResponse> handleCacheRecoveryNotSettled(
+            CacheRecoveryNotSettledException exception) {
+        log.warn("Cache recovery rejected: {}", exception.getMessage());
+        return response(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "CACHE_RECOVERY_NOT_SETTLED",
+                exception.getMessage());
     }
 
     @ExceptionHandler(CampaignNotOpenException.class)
@@ -225,6 +258,13 @@ public class GlobalExceptionHandler {
         log.debug("Concurrency conflict detail", exception);
         return response(
                 HttpStatus.SERVICE_UNAVAILABLE, "CONCURRENCY_CONFLICT", "동시 요청 경합으로 처리하지 못했습니다.");
+    }
+
+    private void notifyCacheMiss(Long campaignId) {
+        CacheAutoRecoveryTrigger trigger = cacheAutoRecoveryTriggerProvider.getIfAvailable();
+        if (trigger != null) {
+            trigger.onCacheMiss(campaignId);
+        }
     }
 
     @ExceptionHandler(AsyncRequestNotUsableException.class)

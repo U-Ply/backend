@@ -70,10 +70,11 @@ class RedisStockIdLookupTest {
                 .willReturn(true);
 
         // when & then
+        // campaignId를 예외에 담아야 3단계 자동 복구 트리거가 캠페인 단위로 카운트할 수 있다.
         assertThatThrownBy(() -> redisStockIdLookup.lookupStockId(campaignId, routeId, fareClass))
                 .isInstanceOf(CouponIssueException.class)
-                .extracting("reason")
-                .isEqualTo(IssueFailReason.CAMPAIGN_NOT_CACHED);
+                .extracting("reason", "campaignId")
+                .containsExactly(IssueFailReason.CAMPAIGN_NOT_CACHED, campaignId);
 
         verify(valueOperations).get(expectedKey);
         verify(campaignStockRepository)
