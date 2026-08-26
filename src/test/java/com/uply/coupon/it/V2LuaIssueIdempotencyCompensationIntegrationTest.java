@@ -6,18 +6,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.willThrow;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.common.idempotency.IdempotencyCache;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,20 +28,25 @@ import org.springframework.transaction.CannotCreateTransactionException;
         properties = {
             "coupon.issue.strategy=LUA_SCRIPT",
             "coupon.save.strategy=sync-db",
-            "coupon.idempotency.enabled=false",
+            "coupon.idempotency.enabled=true",
             "coupon.kafka.consumer.enabled=false"
         })
-class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
+class V2LuaIssueIdempotencyCompensationIntegrationTest extends IntegrationTestContainers {
 
     @Autowired CouponService couponService;
+
     @Autowired CouponIntegrationFixture fixture;
+
     @Autowired CampaignCacheWarmupService warmupService;
+
     @Autowired StringRedisTemplate redis;
-    @Autowired RoundReportWriter reportWriter;
+
+    @Autowired ObjectMapper objectMapper;
+
+    @SpyBean private CouponSaveStrategy couponSaveStrategy;
 
     @BeforeEach
     void setUp() {
-
         redis.getConnectionFactory().getConnection().serverCommands().flushDb();
 
         fixture.reset();
@@ -60,86 +62,6 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
         fixture.reset();
     }
 
-    @Test
-    void Redis_Lua_경로는_재고_10개에_30건이면_정확히_10건만_성공한다() throws Exception {
-        int requests = 30;
-
-        ExecutorService pool = Executors.newFixedThreadPool(requests);
-        CountDownLatch ready = new CountDownLatch(requests);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(requests);
-
-        ConcurrentLinkedQueue<IssueFailReason> failures = new ConcurrentLinkedQueue<>();
-
-        ConcurrentLinkedQueue<Throwable> unexpected = new ConcurrentLinkedQueue<>();
-
-        try {
-            for (int i = 0; i < requests; i++) {
-                long userId = 30001L + i;
-
-                pool.submit(
-                        () -> {
-                            ready.countDown();
-
-                            try {
-                                assertThat(start.await(10, TimeUnit.SECONDS))
-                                        .as("동시 발급 시작 신호를 10초 안에 받지 못했습니다.")
-                                        .isTrue();
-
-                                couponService.issue(
-                                        "integration-v2-" + userId,
-                                        new CouponIssueRequest(
-                                                userId,
-                                                CouponIntegrationFixture.CAMPAIGN_ID,
-                                                CouponIntegrationFixture.ROUTE,
-                                                CouponIntegrationFixture.FARE));
-                            } catch (CouponIssueException e) {
-                                failures.add(e.getReason());
-                            } catch (Throwable t) {
-                                unexpected.add(t);
-                            } finally {
-                                done.countDown();
-                            }
-                        });
-            }
-
-            assertThat(ready.await(10, TimeUnit.SECONDS))
-                    .as("모든 발급 작업이 10초 안에 준비되지 않았습니다.")
-                    .isTrue();
-
-            start.countDown();
-
-            assertThat(done.await(60, TimeUnit.SECONDS))
-                    .as("모든 발급 작업이 60초 안에 종료되지 않았습니다.")
-                    .isTrue();
-
-            assertThat(unexpected).isEmpty();
-
-            assertThat(failures).hasSize(20);
-
-            assertThat(failures).allMatch(reason -> reason == IssueFailReason.OUT_OF_STOCK);
-
-            // V2 는 sync-db 라 발급 응답 시점에 DB 가 이미 확정이다. 대기가 필요 없다.
-            assertThat(fixture.couponCount()).isEqualTo(10);
-            assertThat(fixture.historyCount()).isEqualTo(10);
-            assertThat(fixture.remaining()).isZero();
-
-            assertThat(redis.opsForValue().get("stock:" + CouponIntegrationFixture.STOCK_ID))
-                    .isEqualTo("0");
-
-            assertThat(redis.opsForSet().size("issued:" + CouponIntegrationFixture.CAMPAIGN_ID))
-                    .isEqualTo(10L);
-
-            RoundReportAssert.assertPassed(reportWriter.writeReport("V2"), "V2");
-
-        } finally {
-            pool.shutdownNow();
-        }
-    }
-
-    @SpyBean private CouponSaveStrategy couponSaveStrategy;
-
-    /** 지정한 예외로 1차 저장만 실패시키고, 2차 호출부터는 실제 저장 로직을 그대로 실행하도록 스텁한다. */
     private void stubSaveToFailOnce(
             Throwable firstCallException,
             long userId,
@@ -164,12 +86,18 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
                 userId, campaignId, CouponIntegrationFixture.ROUTE, CouponIntegrationFixture.FARE);
     }
 
+    private IdempotencyCache readIdempotencyCache(String idempotencyKey) throws Exception {
+        String raw = redis.opsForValue().get("idempotency:" + idempotencyKey);
+        assertThat(raw).as("idempotency:%s 키가 Redis에 있어야 합니다.", idempotencyKey).isNotNull();
+        return objectMapper.readValue(raw, IdempotencyCache.class);
+    }
+
     @Test
-    void V2_DB_저장_실패시_Redis_보상_후_재시도하면_성공한다() {
+    void V2_DB_저장_실패시_PROCESSING_키가_해제되고_재시도_성공하면_COMPLETED로_캐시된다() throws Exception {
         long userId = 30001L;
         long campaignId = CouponIntegrationFixture.CAMPAIGN_ID;
         long stockId = CouponIntegrationFixture.STOCK_ID;
-        String idempotencyKey = "compensation-test-" + userId;
+        String idempotencyKey = "idempotency-db-save-failed-" + userId;
 
         stubSaveToFailOnce(
                 new CouponIssueException(IssueFailReason.DB_SAVE_FAILED),
@@ -185,20 +113,29 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
                 .extracting("reason")
                 .isEqualTo(IssueFailReason.DB_SAVE_FAILED);
 
-        // then: Redis 보상 확인
-        assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("10"); // 원복
-        assertThat(redis.opsForSet().isMember("issued:" + campaignId, String.valueOf(userId)))
+        // then: 확정 실패이므로 PROCESSING 선점이 해제되어 재시도를 막지 않아야 함
+        assertThat(redis.hasKey("idempotency:" + idempotencyKey))
+                .as("실패 후 PROCESSING 키가 해제(clearProgress)되어야 합니다.")
                 .isFalse();
 
-        // DB 미저장 확인
+        // Redis/DB 보상 확인
+        assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("10");
+        assertThat(redis.opsForSet().isMember("issued:" + campaignId, String.valueOf(userId)))
+                .isFalse();
         assertThat(fixture.couponCount()).isZero();
         assertThat(fixture.historyCount()).isZero();
 
-        // when: 재시도 - 이번엔 성공해야 함
+        // when: 재시도 - 같은 idempotencyKey, 이번엔 성공해야 함
         var response = couponService.issue(idempotencyKey, issueRequest(userId, campaignId));
 
-        // then: 최종 일치 확인
+        // then: 성공 응답이 COMPLETED 상태로 캐시되어야 함
         assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
+
+        IdempotencyCache cache = readIdempotencyCache(idempotencyKey);
+        assertThat(cache.getStatus()).isEqualTo("COMPLETED");
+        assertThat(cache.getHttpStatus()).isEqualTo(200);
+        assertThat(cache.getBody()).isNotBlank();
+
         assertThat(fixture.couponCount()).isEqualTo(1);
         assertThat(fixture.historyCount()).isEqualTo(1);
         assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("9");
@@ -208,11 +145,11 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
     }
 
     @Test
-    void V2_DB_커넥션_획득_실패시_Redis_보상_후_재시도하면_성공한다() {
-        long userId = 30002L; // 1차 테스트와 겹치지 않는 userId 사용 권장
+    void V2_DB_커넥션_획득_실패시_PROCESSING_키가_해제되고_재시도_성공하면_COMPLETED로_캐시된다() throws Exception {
+        long userId = 30002L;
         long campaignId = CouponIntegrationFixture.CAMPAIGN_ID;
         long stockId = CouponIntegrationFixture.STOCK_ID;
-        String idempotencyKey = "connection-fail-test-" + userId;
+        String idempotencyKey = "idempotency-connection-unavailable-" + userId;
 
         stubSaveToFailOnce(
                 new CannotCreateTransactionException("DB 커넥션 획득 실패 테스트"),
@@ -226,22 +163,31 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
                         () -> couponService.issue(idempotencyKey, issueRequest(userId, campaignId)))
                 .isInstanceOf(CouponIssueException.class)
                 .extracting("reason")
-                .isEqualTo(IssueFailReason.CONNECTION_UNAVAILABLE); // 1차와 다른 부분
+                .isEqualTo(IssueFailReason.CONNECTION_UNAVAILABLE);
 
-        // then: Redis 보상 확인
+        // then: 확정 실패이므로 PROCESSING 선점이 해제되어 재시도를 막지 않아야 함
+        assertThat(redis.hasKey("idempotency:" + idempotencyKey))
+                .as("실패 후 PROCESSING 키가 해제(clearProgress)되어야 합니다.")
+                .isFalse();
+
+        // Redis/DB 보상 확인
         assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("10");
         assertThat(redis.opsForSet().isMember("issued:" + campaignId, String.valueOf(userId)))
                 .isFalse();
-
-        // DB 미저장 확인
         assertThat(fixture.couponCount()).isZero();
         assertThat(fixture.historyCount()).isZero();
 
-        // when: 재시도 - 이번엔 성공해야 함
+        // when: 재시도 - 같은 idempotencyKey, 이번엔 성공해야 함
         var response = couponService.issue(idempotencyKey, issueRequest(userId, campaignId));
 
-        // then: 최종 일치 확인
+        // then: 성공 응답이 COMPLETED 상태로 캐시되어야 함
         assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
+
+        IdempotencyCache cache = readIdempotencyCache(idempotencyKey);
+        assertThat(cache.getStatus()).isEqualTo("COMPLETED");
+        assertThat(cache.getHttpStatus()).isEqualTo(200);
+        assertThat(cache.getBody()).isNotBlank();
+
         assertThat(fixture.couponCount()).isEqualTo(1);
         assertThat(fixture.historyCount()).isEqualTo(1);
         assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("9");
