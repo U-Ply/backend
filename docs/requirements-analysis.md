@@ -237,7 +237,7 @@ Redis에는 다음 정보를 저장한다.
 - Producer 재시도: 3회
 - Consumer 실패 시 1초 간격으로 3회 재시도
 - 최종 실패 이벤트는 DLT로 격리
-- DLT 자동 재처리는 범위 밖이며 운영 문서에 수동 대응 절차만 기록한다.
+- DLT 자동 재처리는 범위 밖이며 [Kafka DLT 수동 대응 절차](./kafka-dlt-manual-response.md)에 따라 처리한다.
 
 발급만 Kafka로 비동기 처리하고 사용과 취소는 MySQL 트랜잭션으로 동기 처리한다.
 
@@ -258,14 +258,24 @@ Redis에는 다음 정보를 저장한다.
 - 성공 시 `USED`와 `usedAt`을 저장하고 이력을 한 번 기록한다.
 - 재고는 변경하지 않는다.
 
-### FR-03 쿠폰 취소
+### FR-03 사용자 예약 취소
 
 - `POST /api/coupons/{couponId}/cancel`
-- 공급자 취소를 의미하며 `ISSUED`이고 `expireAt` 이전인 경우에만 성공한다.
-- 성공 시 `CANCELLED`와 `cancelledAt`을 저장하고 이력을 한 번 기록한다.
+- 사용자가 쿠폰을 적용한 예약을 취소하는 기능이며 현재 상태가 `USED`인 경우에만 성공한다.
+- 성공 시 `USED -> CANCELLED`로 변경하고 `cancelledAt`과 상태 변경 이력을 한 번 기록한다.
 - Redis 재고와 발급 Set을 변경하지 않는다.
 
-### FR-04 쿠폰 만료
+### FR-04 공급자 미사용 쿠폰 일괄 회수
+
+- `POST /api/admin/campaigns/{campaignId}/coupons/revoke`
+- `Idempotency-Key`가 필수다.
+- 해당 캠페인에서 현재 상태가 `ISSUED`인 미사용 쿠폰만 `CANCELLED`로 변경한다.
+- `USED`, `CANCELLED`, `EXPIRED` 쿠폰은 변경하지 않는다.
+- 성공한 `ISSUED -> CANCELLED` 전이만 이력에 기록한다.
+- 응답으로 `campaignId`와 실제 회수된 `revokedCount`를 반환한다.
+- Redis 재고와 발급 Set을 변경하지 않는다.
+
+### FR-05 쿠폰 만료
 
 - Spring Batch가 `ISSUED`이며 `expireAt <= NOW(3)`인 쿠폰을 `EXPIRED`로 변경한다.
 - 사용 및 취소와 동일한 조건부 갱신 원칙을 사용한다.
@@ -273,19 +283,19 @@ Redis에는 다음 정보를 저장한다.
 - 재고는 변경하지 않는다.
 - 관리자 시연 API로 수동 실행할 수 있다.
 
-### FR-05 쿠폰 조회
+### FR-06 쿠폰 조회
 
 - 쿠폰 단건 조회와 사용자별 쿠폰 목록 조회를 제공한다.
 - 응답에는 이메일과 이름을 포함하지 않는다.
 - 비동기 저장 중인 쿠폰은 발급 상태 확인 및 제한된 재시도 정책을 적용한다.
 
-### FR-06 캠페인 및 재고 조회
+### FR-07 캠페인 및 재고 조회
 
 - 캠페인 기본 정보와 노선·좌석 등급별 재고를 조회한다.
 - 발급 현황 API의 `remainingStock`은 DB 집계가 아닌 Redis 값을 사용한다.
 - SSE는 서버가 주기적으로 Redis를 조회하는 폴링 방식으로 구현한다.
 
-### FR-07 검증 배치
+### FR-08 검증 배치
 
 - 관리자 API로 검증 Job을 실행하고 `runId`를 반환한다.
 - 검증 결과를 규칙별로 조회할 수 있다.
