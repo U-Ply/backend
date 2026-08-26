@@ -191,6 +191,30 @@ class GlobalExceptionHandlerTest {
         verifyNoInteractions(cacheAutoRecoveryTrigger);
     }
 
+    // 15.3절이 요구하는 "재고 소진 / 중복 발급" 집계. 두 사유 모두 409로 나가므로 HTTP
+    // 상태 코드만으로는 구분되지 않는다 — reason 태그가 유일한 구분 수단이다.
+    @Test
+    @DisplayName("재고 소진과 중복 발급은 각각의 reason 태그로 따로 집계된다")
+    void businessConflictsAreCountedByReasonTag() throws Exception {
+        given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
+                .willThrow(new CouponIssueException(IssueFailReason.OUT_OF_STOCK));
+
+        mockMvc.perform(
+                        post("/api/coupons/issue")
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(validRequest()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_STOCK"));
+
+        assertThat(failureCount("out_of_stock")).isEqualTo(1.0);
+        assertThat(failureCount("already_issued")).isZero();
+    }
+
+    private double failureCount(String reasonTag) {
+        return meterRegistry.get("coupon.issue.failure").tag("reason", reasonTag).counter().count();
+    }
+
     private String validRequest() {
         return """
                 {

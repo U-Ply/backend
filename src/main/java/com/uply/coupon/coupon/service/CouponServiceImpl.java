@@ -6,6 +6,7 @@ import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
@@ -28,6 +29,7 @@ public class CouponServiceImpl implements CouponService {
     private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
     private final StockIdLookupSelector stockIdLookupSelector;
+    private final CouponIssueMetrics couponIssueMetrics;
 
     @Override
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
@@ -73,6 +75,11 @@ public class CouponServiceImpl implements CouponService {
 
             // 이 시점부터 쿠폰은 이미 발급된 것으로 본다. 이후 실패는 응답 생성 실패일 뿐이다.
             issuanceCompleted = true;
+
+            // 발급이 성립한 이 지점에서만 센다. 위쪽 멱등성 캐시 히트 경로는 쿠폰을 새로 만들지
+            // 않으므로 세지 않는다 — 세면 성공 건수가 실제 발급 수보다 부풀어 부하 테스트의
+            // "성공 + 재고소진 = 총 요청" 검산이 깨진다.
+            couponIssueMetrics.success();
 
             // 응답 DTO 생성
             CouponIssueResponse response =

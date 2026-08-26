@@ -85,6 +85,9 @@
     pollTimer: null,
     stockStream: null,
     batchPollTimer: null,
+    monitorTimer: null,
+    monitorStream: null,
+    monitorStockTimer: null,
     idempotencyKeys: Object.create(null),
     renderToken: 0,
   };
@@ -268,6 +271,12 @@
     state.stockStream = null;
     if (state.batchPollTimer) window.clearInterval(state.batchPollTimer);
     state.batchPollTimer = null;
+    if (state.monitorTimer) window.clearInterval(state.monitorTimer);
+    state.monitorTimer = null;
+    if (state.monitorStockTimer) window.clearInterval(state.monitorStockTimer);
+    state.monitorStockTimer = null;
+    if (state.monitorStream) state.monitorStream.close();
+    state.monitorStream = null;
   }
 
   function setActiveNav(route) {
@@ -964,7 +973,7 @@
       if (page === "batches") return await renderAdminBatches();
       if (page === "verification") return await renderAdminVerification(token);
       if (page === "verification-run") return await renderVerificationRun(route.split("/")[2], token);
-      if (page === "monitoring") return await renderMonitoring();
+      if (page === "monitoring") return await renderMonitoring(token);
       setRoute("admin");
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = adminLayout(page, errorView("관리자 데이터를 불러오지 못했습니다", error, route));
@@ -1122,8 +1131,747 @@
     app.innerHTML = adminLayout("verification", `<button class="back-button" data-route="admin/verification">← 검증 결과 목록</button><header class="page-header"><div><p class="page-kicker">Verification detail</p><h1 class="page-title">${escapeHtml(decoded)}</h1><p class="page-description">검사 항목별 처리 범위와 발견된 문제입니다.</p></div><a class="secondary-button" href="/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}/report" target="_blank" rel="noopener">결과 보고서 열기 ↗</a></header><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>검사 항목</th><th>상태</th><th>검사 행</th><th>위반</th><th>소요 시간</th></tr></thead><tbody>${rules.map((rule) => { const status = rule.status || (Boolean(rule.passed) ? "CHECKED" : "FAILED"); return `<tr><td>${escapeHtml(rule.rule_code)}</td><td>${escapeHtml(rule.rule_name)}</td><td><span class="badge ${escapeHtml(status)}">${escapeHtml(ruleStatusLabel(status))}</span></td><td>${rule.checked_rows == null ? "-" : Number(rule.checked_rows).toLocaleString()}</td><td>${Number(rule.violation_count || 0).toLocaleString()}</td><td>${Number(rule.elapsed_ms || 0).toLocaleString()} ms</td></tr>`; }).join("")}</tbody></table></div><h2 class="card-title" style="margin-top:30px">발견된 문제</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>데이터 구분</th><th>대상 ID</th><th>상세 내용</th></tr></thead><tbody>${violations.map((item) => `<tr><td>${escapeHtml(item.rule_code)}</td><td>${escapeHtml(item.target_table)}</td><td>${escapeHtml(item.target_id)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join("") || '<tr><td colspan="4">발견된 문제가 없습니다.</td></tr>'}</tbody></table></div>`);
   }
 
-  function renderMonitoring() {
-    app.innerHTML = adminLayout("monitoring", `<header class="page-header"><div><p class="page-kicker">Observability</p><h1 class="page-title">시스템 모니터링</h1><p class="page-description">서비스 응답 속도와 서버 상태를 실시간으로 확인합니다.</p></div></header><div class="monitor-grid"><article class="monitor-card"><h3>통합 모니터링 대시보드</h3><p>요청 처리량, 응답 시간, 서버 자원, 데이터 저장 상태를 한눈에 확인합니다.</p><a class="primary-button" href="http://localhost:3000" target="_blank" rel="noopener">Grafana 열기 ↗</a></article><article class="monitor-card"><h3>수집 지표 조회</h3><p>서비스와 각 구성 요소에서 수집한 상세 지표를 직접 조회합니다.</p><a class="secondary-button" href="http://localhost:9090" target="_blank" rel="noopener">Prometheus 열기 ↗</a></article><article class="monitor-card"><h3>서비스 상태 확인</h3><p>애플리케이션이 정상적으로 요청을 받을 수 있는지 확인합니다.</p><a class="ghost-button" href="/actuator/health" target="_blank" rel="noopener">상태 확인 ↗</a></article><article class="monitor-card"><h3>데이터 반영 확인</h3><p>메시지 처리 완료 후 재고와 저장 데이터가 일치하는지 확인합니다.</p><button class="ghost-button" data-route="admin/batches">일괄 작업으로 이동</button></article></div>`);
+  // ---------------------------------------------------------------------------
+  // 시스템 모니터링 화면
+  //
+  // 데이터는 두 갈래에서 온다.
+  //   1) /actuator/prometheus — 2초마다 본문을 받아 카운터를 직전 표본과 차분해
+  //      초당 처리량을 만든다. 카운터는 누적값이라 그대로 그리면 계속 우상향하는
+  //      선이 되어 "지금 잘 나가고 있는지"를 전혀 보여주지 못한다.
+  //   2) SSE(/api/campaigns/{id}/status/stream) — 선택한 재고풀의 잔여 재고.
+  //      SSE는 재고풀 하나당 연결 하나다. 브라우저의 오리진당 동시 연결 한도(HTTP/1.1에서 6)
+  //      에 걸리면 화면의 다른 요청까지 굶으므로, 한 번에 한 재고풀만 구독한다.
+  // ---------------------------------------------------------------------------
+
+  const MONITOR = {
+    pollMs: 2000,
+    windowSize: 90, // 2초 × 90 = 최근 3분
+    issueUri: "/api/coupons/issue",
+    // 색각 이상(적/녹/청) 시뮬레이션 검증을 통과한 두 색이다. 시리즈를 늘려야 하면
+    // 색을 추가하지 말고 차트를 나누거나, 막대 + 직접 라벨 형태로 바꾼다.
+    primary: "#356ad8",
+    accent: "#e6007e",
+    ink: "#171321",
+    muted: "#716b7b",
+    grid: "#e8e5ec",
+  };
+
+  const REASON_LABELS = {
+    out_of_stock: "재고 소진",
+    already_issued: "중복 발급",
+    campaign_not_open: "오픈 전 요청",
+    campaign_expired: "종료된 캠페인",
+    duplicate_request: "동일 요청 재진입",
+    lock_timeout: "락 대기 초과",
+    concurrency_conflict: "DB 경합",
+    connection_unavailable: "DB 커넥션 부족",
+    db_save_failed: "DB 저장 실패",
+    kafka_publish_failed: "Kafka 발행 실패",
+    save_result_unknown: "저장 결과 불명확",
+    campaign_not_cached: "캐시 미준비",
+    system_error: "시스템 오류",
+  };
+
+  // 정상적인 비즈니스 거절과 시스템 실패를 가른다. 색이 아니라 글자로 구분해야
+  // 색각 이상이 있어도, 흑백으로 인쇄해도 읽힌다.
+  const BUSINESS_REASONS = new Set([
+    "out_of_stock",
+    "already_issued",
+    "campaign_not_open",
+    "campaign_expired",
+    "duplicate_request",
+  ]);
+
+  const monitor = {
+    prev: null,
+    history: { successTps: [], failTps: [], p95: [], p99: [] },
+    totals: { success: 0, compensation: 0 },
+    reasons: new Map(),
+    gauges: {},
+    pools: [],
+    pool: null,
+    stock: { total: 0, remaining: null, series: [], live: false },
+    error: null,
+  };
+
+  const chartState = Object.create(null);
+
+  function resetMonitorState() {
+    monitor.prev = null;
+    monitor.history = { successTps: [], failTps: [], p95: [], p99: [] };
+    monitor.totals = { success: 0, compensation: 0 };
+    monitor.reasons = new Map();
+    monitor.gauges = {};
+    monitor.stock = { total: 0, remaining: null, series: [], live: false };
+    monitor.error = null;
+  }
+
+  // --- Prometheus 텍스트 파싱 ------------------------------------------------
+
+  function parseLabels(text) {
+    const labels = Object.create(null);
+    const pattern = /([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"/g;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      labels[match[1]] = match[2].replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\\\/g, "\\");
+    }
+    return labels;
+  }
+
+  function parsePrometheusText(text) {
+    const series = new Map();
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.charCodeAt(0) === 35) continue; // '#' 주석
+      const brace = line.indexOf("{");
+      let name;
+      let labelPart = "";
+      let rest;
+      if (brace === -1) {
+        const space = line.indexOf(" ");
+        if (space === -1) continue;
+        name = line.slice(0, space);
+        rest = line.slice(space + 1);
+      } else {
+        const close = line.lastIndexOf("}");
+        if (close < brace) continue;
+        name = line.slice(0, brace);
+        labelPart = line.slice(brace + 1, close);
+        rest = line.slice(close + 1);
+      }
+      const value = Number.parseFloat(rest.trim().split(" ")[0]);
+      if (!Number.isFinite(value)) continue;
+      if (!series.has(name)) series.set(name, []);
+      series.get(name).push({ labels: parseLabels(labelPart), value });
+    }
+    return series;
+  }
+
+  function sumMetric(parsed, name, filter) {
+    const rows = parsed.get(name);
+    if (!rows) return 0;
+    let total = 0;
+    for (const row of rows) {
+      if (!filter || filter(row.labels)) total += row.value;
+    }
+    return total;
+  }
+
+  function maxMetric(parsed, name, filter) {
+    let max = null;
+    for (const row of parsed.get(name) || []) {
+      if (filter && !filter(row.labels)) continue;
+      if (max == null || row.value > max) max = row.value;
+    }
+    return max;
+  }
+
+  function groupMetric(parsed, name, labelKey) {
+    const grouped = new Map();
+    for (const row of parsed.get(name) || []) {
+      const key = row.labels[labelKey];
+      if (key === undefined) continue;
+      grouped.set(key, (grouped.get(key) || 0) + row.value);
+    }
+    return grouped;
+  }
+
+  function pushPoint(list, at, value) {
+    list.push({ at, value });
+    if (list.length > MONITOR.windowSize) list.shift();
+  }
+
+  // 카운터는 누적값이다. 앱이 재기동하면 0으로 돌아가는데, 그때 차분이 음수가 되므로
+  // 그 구간은 버린다(가짜 스파이크를 만드는 대신 한 표본을 잃는 쪽을 택한다).
+  function perSecond(current, previous, seconds) {
+    if (previous == null || seconds <= 0) return null;
+    const delta = current - previous;
+    if (delta < 0) return null;
+    return delta / seconds;
+  }
+
+  // --- 값 표기 ---------------------------------------------------------------
+
+  function compactNumber(value) {
+    if (!Number.isFinite(value)) return "-";
+    return Math.round(value).toLocaleString();
+  }
+
+  function rateText(value) {
+    if (value == null || !Number.isFinite(value)) return "-";
+    if (value >= 100) return `${Math.round(value).toLocaleString()}/s`;
+    return `${value.toFixed(1)}/s`;
+  }
+
+  function secondsToMsText(value) {
+    if (value == null || !Number.isFinite(value)) return "-";
+    return `${Math.round(value * 1000).toLocaleString()} ms`;
+  }
+
+  function clockText(at) {
+    return new Date(at).toLocaleTimeString("ko-KR", { hour12: false });
+  }
+
+  // --- 선형 차트 -------------------------------------------------------------
+  //
+  // 컨테이너 실제 폭을 재서 픽셀 좌표로 그린다. viewBox를 늘려 쓰면 축 글자와 선 굵기가
+  // 같이 늘어나므로 쓰지 않는다. 2초마다 다시 그리므로 창 크기를 바꿔도 곧 맞춰진다.
+
+  function chartPath(points, geo) {
+    let path = "";
+    let open = false;
+    points.forEach((point, index) => {
+      if (point.value == null) {
+        open = false;
+        return;
+      }
+      const x = geo.left + index * geo.stepX;
+      const y = geo.bottom - (point.value - geo.min) * geo.scaleY;
+      path += `${open ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+      open = true;
+    });
+    return path;
+  }
+
+  function drawLineChart(chartId, config) {
+    const plot = document.querySelector(`[data-chart="${chartId}"] .chart-plot`);
+    if (!plot) return;
+
+    const svg = plot.querySelector("svg");
+    const width = Math.max(plot.clientWidth || 0, 320);
+    const height = config.height || 200;
+    const padding = { top: 16, right: 62, bottom: 26, left: 8 };
+
+    const lengths = config.series.map((entry) => entry.points.length);
+    const count = Math.max(...lengths, 0);
+    if (count < 2) {
+      svg.setAttribute("width", width);
+      svg.setAttribute("height", height);
+      svg.innerHTML = `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="${MONITOR.muted}" font-size="13">표본을 모으는 중입니다…</text>`;
+      return;
+    }
+
+    let max = 0;
+    let min = 0;
+    for (const entry of config.series) {
+      for (const point of entry.points) {
+        if (point.value == null) continue;
+        if (point.value > max) max = point.value;
+        if (point.value < min) min = point.value;
+      }
+    }
+    if (config.forceMax != null) max = Math.max(max, config.forceMax);
+    if (max === min) max = min + 1;
+    const headroom = (max - min) * 0.12;
+    max += headroom;
+
+    const geo = {
+      left: padding.left,
+      bottom: height - padding.bottom,
+      stepX: (width - padding.left - padding.right) / (count - 1),
+      scaleY: (height - padding.top - padding.bottom) / (max - min),
+      min,
+      max,
+      count,
+      width,
+      height,
+    };
+    // 시리즈 길이가 서로 다를 수 있으므로 시간축은 가장 긴 시리즈를 기준으로 잡는다.
+    const axisPoints = config.series.reduce(
+      (longest, entry) => (entry.points.length > longest.length ? entry.points : longest),
+      [],
+    );
+    chartState[chartId] = { geo, config, axisPoints };
+
+    const format = config.format || compactNumber;
+    let markup = "";
+
+    // 눈금선은 배경으로 물러나 있어야 데이터가 앞으로 나온다.
+    for (let step = 0; step <= 2; step += 1) {
+      const value = min + ((max - min) / 2) * step;
+      const y = geo.bottom - (value - min) * geo.scaleY;
+      markup += `<line x1="${geo.left}" y1="${y.toFixed(1)}" x2="${width - padding.right}" y2="${y.toFixed(1)}" stroke="${MONITOR.grid}" stroke-width="1" />`;
+      markup += `<text x="${width - padding.right + 8}" y="${(y + 4).toFixed(1)}" fill="${MONITOR.muted}" font-size="11">${escapeHtml(format(value))}</text>`;
+    }
+
+    config.series.forEach((entry) => {
+      const path = chartPath(entry.points, geo);
+      if (!path) return;
+      if (config.series.length === 1) {
+        const area = `${path}L${(geo.left + (count - 1) * geo.stepX).toFixed(1)} ${geo.bottom}L${geo.left} ${geo.bottom}Z`;
+        markup += `<path d="${area}" fill="${entry.color}" fill-opacity="0.10" stroke="none" />`;
+      }
+      markup += `<path d="${path}" fill="none" stroke="${entry.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`;
+
+      // 마지막 점만 직접 라벨을 단다. 모든 점에 숫자를 붙이면 선이 읽히지 않는다.
+      const last = [...entry.points].reverse().find((point) => point.value != null);
+      if (last) {
+        const lastIndex = entry.points.lastIndexOf(last);
+        const x = geo.left + lastIndex * geo.stepX;
+        const y = geo.bottom - (last.value - min) * geo.scaleY;
+        markup += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${entry.color}" stroke="#ffffff" stroke-width="2" />`;
+      }
+    });
+
+    if (axisPoints.length) {
+      markup += `<text x="${geo.left}" y="${height - 6}" fill="${MONITOR.muted}" font-size="11">${escapeHtml(clockText(axisPoints[0].at))}</text>`;
+      markup += `<text x="${(width - padding.right).toFixed(1)}" y="${height - 6}" text-anchor="end" fill="${MONITOR.muted}" font-size="11">${escapeHtml(clockText(axisPoints[axisPoints.length - 1].at))}</text>`;
+    }
+
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
+    svg.innerHTML = markup;
+
+    const hovered = plot.dataset.hoverIndex;
+    if (hovered !== undefined && hovered !== "") showChartHover(chartId, Number(hovered));
+  }
+
+  function showChartHover(chartId, rawIndex) {
+    const entry = chartState[chartId];
+    const plot = document.querySelector(`[data-chart="${chartId}"] .chart-plot`);
+    if (!entry || !plot) return;
+    const index = Math.max(0, Math.min(entry.geo.count - 1, rawIndex));
+    const cursor = plot.querySelector(".chart-cursor");
+    const tip = plot.querySelector(".chart-tip");
+    if (!cursor || !tip) return;
+
+    const x = entry.geo.left + index * entry.geo.stepX;
+    cursor.style.left = `${x}px`;
+    cursor.style.height = `${entry.geo.bottom - 10}px`;
+    cursor.hidden = false;
+
+    const format = entry.config.format || compactNumber;
+    const stamp = (entry.axisPoints || [])[index];
+    const rows = entry.config.series
+      .map((series) => {
+        const point = series.points[index];
+        const text = point && point.value != null ? format(point.value) : "-";
+        return `<div class="chart-tip-row"><span class="chart-dot" style="background:${series.color}"></span>${escapeHtml(series.name)}<strong>${escapeHtml(text)}</strong></div>`;
+      })
+      .join("");
+    tip.innerHTML = `<div class="chart-tip-time">${escapeHtml(stamp ? clockText(stamp.at) : "")}</div>${rows}`;
+    tip.hidden = false;
+    const flip = x > entry.geo.width * 0.6;
+    tip.style.left = `${flip ? x - tip.offsetWidth - 12 : x + 12}px`;
+    plot.dataset.hoverIndex = String(index);
+  }
+
+  function hideChartHover(plot) {
+    const cursor = plot.querySelector(".chart-cursor");
+    const tip = plot.querySelector(".chart-tip");
+    if (cursor) cursor.hidden = true;
+    if (tip) tip.hidden = true;
+    delete plot.dataset.hoverIndex;
+  }
+
+  function bindChartHover() {
+    document.querySelectorAll("[data-chart] .chart-plot").forEach((plot) => {
+      const chartId = plot.closest("[data-chart]").dataset.chart;
+      plot.addEventListener("mousemove", (event) => {
+        const entry = chartState[chartId];
+        if (!entry) return;
+        const bounds = plot.getBoundingClientRect();
+        const offset = event.clientX - bounds.left - entry.geo.left;
+        showChartHover(chartId, Math.round(offset / entry.geo.stepX));
+      });
+      plot.addEventListener("mouseleave", () => hideChartHover(plot));
+    });
+  }
+
+  function chartCard(chartId, title, description, legend) {
+    return `<figure class="chart-card" data-chart="${chartId}">
+      <figcaption>
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(description)}</p>
+      </figcaption>
+      ${legend || ""}
+      <div class="chart-plot"><svg role="img" aria-label="${escapeHtml(title)}"></svg><div class="chart-cursor" hidden></div><div class="chart-tip" hidden></div></div>
+    </figure>`;
+  }
+
+  function chartLegend(items) {
+    return `<div class="chart-legend">${items
+      .map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`)
+      .join("")}</div>`;
+  }
+
+  // --- 실패 사유 막대 --------------------------------------------------------
+  //
+  // 사유가 열 개를 넘을 수 있어 색으로 구분하지 않는다. 이름이 바로 옆에 붙는 가로 막대라
+  // 정체는 라벨이, 크기는 막대 길이가 나른다. 색은 한 가지만 쓴다.
+
+  function failureBars() {
+    const rows = [...monitor.reasons.entries()]
+      .filter(([, value]) => value > 0)
+      .sort((left, right) => right[1] - left[1]);
+
+    if (!rows.length) {
+      return '<p class="chart-empty">아직 실패로 집계된 요청이 없습니다.</p>';
+    }
+
+    const max = rows[0][1];
+    return `<ul class="bar-list">${rows
+      .map(([reason, value]) => {
+        const label = REASON_LABELS[reason] || reason;
+        const kind = BUSINESS_REASONS.has(reason) ? "정상 거절" : "시스템 실패";
+        const width = Math.max(2, (value / max) * 100);
+        return `<li class="bar-row${BUSINESS_REASONS.has(reason) ? "" : " system"}">
+          <div class="bar-head"><span class="bar-name">${escapeHtml(label)}</span><span class="bar-kind">${kind}</span><strong>${compactNumber(value)}</strong></div>
+          <div class="bar-track"><span style="width:${width.toFixed(1)}%"></span></div>
+        </li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  function statTile(label, value, note, tone) {
+    return `<article class="metric-card stat-tile${tone ? ` ${tone}` : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(note || "")}</small>
+    </article>`;
+  }
+
+  // --- 화면 갱신 -------------------------------------------------------------
+
+  function updateMonitoringView() {
+    if (currentRoute() !== "admin/monitoring") return;
+
+    const notice = document.querySelector("#monitor-notice");
+    if (notice) {
+      notice.hidden = !monitor.error;
+      if (monitor.error) notice.textContent = monitor.error;
+    }
+
+    const tiles = document.querySelector("#monitor-tiles");
+    if (tiles) {
+      const tps = monitor.history.successTps.at(-1);
+      const pending = monitor.gauges.hikariPending;
+      const mismatch = monitor.gauges.reconcileMismatch;
+      tiles.innerHTML = [
+        statTile("발급 성공 누계", compactNumber(monitor.totals.success), "실제로 쿠폰이 만들어진 건수"),
+        statTile("초당 발급", rateText(tps ? tps.value : null), "최근 2초 구간"),
+        statTile(
+          "커넥션 대기",
+          pending == null ? "-" : compactNumber(pending),
+          "HikariCP pending — 0을 벗어나면 풀 포화",
+          pending > 0 ? "alert" : "",
+        ),
+        statTile(
+          "Redis 보상 발생",
+          compactNumber(monitor.totals.compensation),
+          "DB 저장 실패 후 재고 되돌림",
+          monitor.totals.compensation > 0 ? "alert" : "",
+        ),
+        statTile(
+          "재고 불일치 (REC-01)",
+          mismatch == null ? "-" : compactNumber(mismatch),
+          "0이 아니면 회차를 자료로 쓸 수 없음",
+          mismatch > 0 ? "alert" : "",
+        ),
+      ].join("");
+    }
+
+    const bars = document.querySelector("#monitor-failures");
+    if (bars) bars.innerHTML = failureBars();
+
+    const stockNote = document.querySelector("#monitor-stock-note");
+    if (stockNote) {
+      const { total, remaining, live } = monitor.stock;
+      if (remaining == null) {
+        stockNote.textContent = "재고풀을 선택하면 실시간으로 표시됩니다.";
+      } else {
+        const used = total ? Math.round(((total - remaining) / total) * 100) : 0;
+        stockNote.textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}장 남음 · ${used}% 소진 · ${live ? "실시간 수신 중" : "자동 갱신 중"}`;
+      }
+    }
+
+    drawLineChart("stock", {
+      height: 200,
+      format: compactNumber,
+      forceMax: monitor.stock.total || null,
+      series: [{ name: "잔여 재고", color: MONITOR.accent, points: monitor.stock.series }],
+    });
+
+    drawLineChart("throughput", {
+      height: 200,
+      format: rateText,
+      series: [{ name: "발급 성공", color: MONITOR.primary, points: monitor.history.successTps }],
+    });
+
+    drawLineChart("latency", {
+      height: 200,
+      format: secondsToMsText,
+      series: [
+        { name: "p95", color: MONITOR.primary, points: monitor.history.p95 },
+        { name: "p99", color: MONITOR.accent, points: monitor.history.p99 },
+      ],
+    });
+  }
+
+  // --- 지표 수집 -------------------------------------------------------------
+
+  async function sampleMetrics() {
+    if (currentRoute() !== "admin/monitoring") return;
+
+    let text;
+    try {
+      const response = await fetch("/actuator/prometheus", { headers: { Accept: "text/plain" } });
+      if (!response.ok) throw new Error(String(response.status));
+      text = await response.text();
+    } catch (_error) {
+      monitor.error =
+        "지표를 읽지 못했습니다. application.yml의 management.endpoints.web.exposure.include에 prometheus가 있는지 확인해 주세요.";
+      updateMonitoringView();
+      return;
+    }
+
+    const parsed = parsePrometheusText(text);
+    const at = Date.now();
+    const isIssue = (labels) => labels.uri === MONITOR.issueUri;
+
+    const counters = {
+      success: sumMetric(parsed, "coupon_issue_success_total"),
+      failure: sumMetric(parsed, "coupon_issue_failure_total"),
+    };
+
+    if (!parsed.has("coupon_issue_success_total")) {
+      monitor.error =
+        "coupon_issue_success_total 지표가 없습니다. 발급 지표 카운터가 포함된 버전으로 앱을 다시 띄워야 합니다.";
+    } else {
+      monitor.error = null;
+    }
+
+    monitor.totals.success = counters.success;
+    monitor.totals.compensation = sumMetric(parsed, "coupon_redis_compensation_total");
+    monitor.reasons = groupMetric(parsed, "coupon_issue_failure_total", "reason");
+
+    monitor.gauges.hikariPending = sumMetric(parsed, "hikaricp_connections_pending");
+    monitor.gauges.hikariActive = sumMetric(parsed, "hikaricp_connections_active");
+    monitor.gauges.tomcatBusy = sumMetric(parsed, "tomcat_threads_busy_threads");
+    monitor.gauges.reconcileMismatch = parsed.has("coupon_reconciliation_mismatch_count")
+      ? sumMetric(parsed, "coupon_reconciliation_mismatch_count")
+      : null;
+
+    // percentiles 설정이 내보내는 quantile 시리즈를 그대로 읽는다. 브라우저에서
+    // 히스토그램 버킷을 적분하는 것보다 정확하고 싸다.
+    // 상태 코드·메서드별로 시리즈가 나뉘어 있다. 분위수는 더할 수 있는 값이 아니므로
+    // 그중 가장 나쁜 값을 취한다.
+    const quantile = (value) =>
+      maxMetric(
+        parsed,
+        "http_server_requests_seconds",
+        (labels) => isIssue(labels) && labels.quantile === value,
+      );
+
+    if (monitor.prev) {
+      const seconds = (at - monitor.prev.at) / 1000;
+      const successTps = perSecond(counters.success, monitor.prev.success, seconds);
+      const failTps = perSecond(counters.failure, monitor.prev.failure, seconds);
+      pushPoint(monitor.history.successTps, at, successTps);
+      pushPoint(monitor.history.failTps, at, failTps);
+      pushPoint(monitor.history.p95, at, quantile("0.95"));
+      pushPoint(monitor.history.p99, at, quantile("0.99"));
+    }
+
+    monitor.prev = { at, success: counters.success, failure: counters.failure };
+    updateMonitoringView();
+  }
+
+  // --- 재고 스트림 -----------------------------------------------------------
+
+  function stopMonitorStock() {
+    if (state.monitorStream) state.monitorStream.close();
+    state.monitorStream = null;
+    if (state.monitorStockTimer) window.clearInterval(state.monitorStockTimer);
+    state.monitorStockTimer = null;
+  }
+
+  function applyStockSample(status) {
+    monitor.stock.total = status.totalStock ?? monitor.stock.total;
+    monitor.stock.remaining = status.remainingStock;
+    pushPoint(monitor.stock.series, Date.now(), status.remainingStock);
+    updateMonitoringView();
+  }
+
+  function startMonitorStock() {
+    stopMonitorStock();
+    monitor.stock = { total: 0, remaining: null, series: [], live: false };
+    const pool = monitor.pool;
+    if (!pool || previewMode) return;
+
+    const params = new URLSearchParams({ routeId: pool.routeId, fareClass: pool.fareClass });
+    const stream = new EventSource(`/api/campaigns/${pool.campaignId}/status/stream?${params}`);
+    state.monitorStream = stream;
+
+    stream.addEventListener("open", () => {
+      monitor.stock.live = true;
+    });
+
+    stream.addEventListener("stock-update", (event) => {
+      if (state.monitorStream !== stream) return;
+      try {
+        applyStockSample(JSON.parse(event.data));
+      } catch (_error) {
+        // 다음 이벤트에서 다시 받는다.
+      }
+    });
+
+    // SSE는 재고가 "변할 때"만 이벤트를 보낸다. 발급이 멈춰 있으면 선이 그려지지 않으므로,
+    // 값이 그대로여도 2초마다 같은 값을 한 점씩 찍어 시간 축을 계속 흐르게 한다.
+    state.monitorStockTimer = window.setInterval(() => {
+      if (currentRoute() !== "admin/monitoring") return stopMonitorStock();
+      if (monitor.stock.remaining != null) {
+        pushPoint(monitor.stock.series, Date.now(), monitor.stock.remaining);
+        updateMonitoringView();
+      }
+    }, MONITOR.pollMs);
+
+    stream.addEventListener("error", () => {
+      if (state.monitorStream !== stream) return;
+      // 연결이 끊기면 폴링으로 내려앉는다. 화면이 조용히 멈춰 있는 것이 가장 나쁘다.
+      stream.close();
+      state.monitorStream = null;
+      monitor.stock.live = false;
+      updateMonitoringView();
+    });
+
+    getCampaignStatus(pool.campaignId, pool).then(applyStockSample).catch(() => {});
+  }
+
+  // --- 화면 조립 -------------------------------------------------------------
+
+  function poolOptions() {
+    return monitor.pools
+      .map((pool) => {
+        const value = `${pool.campaignId}|${pool.routeId}|${pool.fareClass}`;
+        const selected = monitor.pool && value === monitor.pool.key ? " selected" : "";
+        return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(pool.campaignName)} · ${escapeHtml(routeLabel(pool.routeId))} · ${fareLabel(pool.fareClass)}</option>`;
+      })
+      .join("");
+  }
+
+  async function loadMonitorPools() {
+    monitor.pools = [];
+    let campaigns = [];
+    try {
+      campaigns = await getCampaigns(true);
+    } catch (_error) {
+      return;
+    }
+    const details = await Promise.all(
+      campaigns.map((campaign) =>
+        getCampaign(campaign.campaignId).catch(() => ({ ...campaign, stocks: [] })),
+      ),
+    );
+    details.forEach((campaign) => {
+      (campaign.stocks || []).forEach((stock) => {
+        monitor.pools.push({
+          key: `${campaign.campaignId}|${stock.routeId}|${stock.fareClass}`,
+          campaignId: campaign.campaignId,
+          campaignName: campaign.name,
+          campaignStatus: campaign.status,
+          routeId: stock.routeId,
+          fareClass: stock.fareClass,
+        });
+      });
+    });
+    // 진행 중인 캠페인의 재고풀을 먼저 고른다. 모니터링 화면을 여는 이유가 대개 그것이다.
+    monitor.pool =
+      monitor.pools.find((pool) => pool.campaignStatus === "OPEN") || monitor.pools[0] || null;
+  }
+
+  async function renderMonitoring(token) {
+    resetMonitorState();
+    await loadMonitorPools();
+    // 같은 페이지를 다시 열었을 때(예: 새로고침 클릭) 이전 호출이 이 시점에 막 await를 끝내고
+    // 돌아와 방금 시작한 새 렌더를 덮어쓰는 경합을 막는다. 다른 admin 하위 페이지들과 같은 패턴이다.
+    if (token !== state.renderToken) return;
+
+    const host = window.location.hostname || "localhost";
+    const legendLatency = chartLegend([
+      { name: "p95", color: MONITOR.primary },
+      { name: "p99", color: MONITOR.accent },
+    ]);
+
+    app.innerHTML = adminLayout(
+      "monitoring",
+      `<header class="page-header">
+        <div>
+          <p class="page-kicker">Observability</p>
+          <h1 class="page-title">시스템 모니터링</h1>
+          <p class="page-description">발급이 지금 어떤 속도로 나가고 있는지, 무엇 때문에 막히는지를 2초마다 갱신해 보여줍니다.</p>
+        </div>
+        <div class="monitor-control">
+          <label for="monitor-pool">실시간 재고풀</label>
+          <select id="monitor-pool">${poolOptions() || '<option value="">재고풀 없음</option>'}</select>
+        </div>
+      </header>
+
+      <p class="notice" id="monitor-notice" hidden></p>
+
+      <div class="metric-grid five" id="monitor-tiles"></div>
+
+      <div class="chart-grid">
+        ${chartCard("stock", "재고 소진 곡선", "선택한 재고풀의 잔여 재고입니다. 선이 가파를수록 빠르게 나가고 있습니다.", `<p class="chart-note" id="monitor-stock-note">재고풀을 선택하면 실시간으로 표시됩니다.</p>`)}
+        ${chartCard("throughput", "발급 처리량", "초당 실제 발급 성립 건수입니다. 누적값이 아니라 구간 속도입니다.")}
+      </div>
+
+      <div class="chart-grid">
+        ${chartCard("latency", "발급 API 응답 지연", "p95와 p99입니다. 두 선이 벌어지면 일부 요청만 오래 걸리고 있다는 뜻입니다.", legendLatency)}
+        <figure class="chart-card">
+          <figcaption>
+            <h3>실패 사유별 누계</h3>
+            <p>재고 소진과 중복 발급은 정상 거절입니다. '시스템 실패'로 표시된 항목만 조치가 필요합니다.</p>
+          </figcaption>
+          <div id="monitor-failures"></div>
+        </figure>
+      </div>
+
+      <div class="monitor-grid">
+        <article class="monitor-card">
+          <h3>통합 모니터링 대시보드</h3>
+          <p>회차 기록용 상세 지표와 인프라 exporter 결과를 확인합니다.</p>
+          <a class="primary-button" href="http://${escapeHtml(host)}:3000/d/uply-coupon" target="_blank" rel="noopener">Grafana 열기 ↗</a>
+        </article>
+        <article class="monitor-card">
+          <h3>수집 지표 조회</h3>
+          <p>Prometheus가 실제로 무엇을 수집하고 있는지 직접 질의합니다.</p>
+          <a class="secondary-button" href="http://${escapeHtml(host)}:9090/targets" target="_blank" rel="noopener">Prometheus 열기 ↗</a>
+        </article>
+        <article class="monitor-card">
+          <h3>서비스 상태 확인</h3>
+          <p>애플리케이션이 정상적으로 요청을 받을 수 있는지 확인합니다.</p>
+          <a class="ghost-button" href="/actuator/health" target="_blank" rel="noopener">상태 확인 ↗</a>
+        </article>
+        <article class="monitor-card">
+          <h3>데이터 반영 확인</h3>
+          <p>메시지 처리 완료 후 재고와 저장 데이터가 일치하는지 확인합니다.</p>
+          <button class="ghost-button" data-route="admin/batches">일괄 작업으로 이동</button>
+        </article>
+      </div>`,
+    );
+
+    const select = document.querySelector("#monitor-pool");
+    if (select) {
+      select.addEventListener("change", (event) => {
+        monitor.pool = monitor.pools.find((pool) => pool.key === event.target.value) || null;
+        startMonitorStock();
+        updateMonitoringView();
+      });
+    }
+
+    bindChartHover();
+    updateMonitoringView();
+
+    if (previewMode) {
+      monitor.error = "미리보기 모드에서는 실시간 지표를 수집하지 않습니다.";
+      updateMonitoringView();
+      return;
+    }
+
+    startMonitorStock();
+    sampleMetrics();
+    state.monitorTimer = window.setInterval(sampleMetrics, MONITOR.pollMs);
   }
 
   async function renderRoute() {

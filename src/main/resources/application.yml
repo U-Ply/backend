@@ -58,6 +58,18 @@ management:
   metrics:
     tags:
       application: coupon-service
+    distribution:
+      # 요구분석서 15.3이 요구하는 p95/p99용. Grafana는 _bucket 시리즈에
+      # histogram_quantile을 걸고, 버킷 계산이 어려운 인앱 대시보드는 아래 percentiles가
+      # 직접 내보내는 quantile 시리즈를 그대로 읽는다.
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.95, 0.99
+      # 발급 API 판정 구간에 버킷 경계를 맞춘다. 기본 버킷은 이 구간에서 간격이 넓어
+      # p95가 실제보다 크게 튀어 보인다.
+      slo:
+        http.server.requests: 50ms, 100ms, 200ms, 500ms, 1s, 2s
 
 # 발급 전략 선택. 재빌드 없이 환경변수로 바꿀 수 있다.
 # NO_LOCK / PESSIMISTIC_LOCK / LUA_SCRIPT

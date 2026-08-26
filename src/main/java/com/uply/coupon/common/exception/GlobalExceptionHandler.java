@@ -1,6 +1,7 @@
 package com.uply.coupon.common.exception;
 
 import com.uply.coupon.campaign.service.CacheAutoRecoveryTrigger;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.operation.admin.BatchConflictException;
 import com.uply.coupon.operation.admin.BatchExecutionNotFoundException;
@@ -29,9 +30,11 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    // CONCURRENCY_CONFLICT는 IssueFailReason이 아니라 PessimisticLockingFailureException에서만
+    // 나오므로 사유별 집계와 분리해 여기서 직접 든다.
     private final Counter concurrencyConflictCounter;
-    private final Counter connectionUnavailableCounter;
-    private final Counter campaignNotCachedCounter;
+
+    private final CouponIssueMetrics issueMetrics;
 
     // 자동 트리거는 coupon.cache-recovery.auto-trigger-enabled=true일 때만 빈이 존재한다
     // (기본 비활성화). ObjectProvider로 받아 없으면 조용히 건너뛴다 — V3 전용
@@ -47,26 +50,17 @@ public class GlobalExceptionHandler {
                         .tag("reason", "concurrency_conflict")
                         .description("발급 요청이 DB 수준 경합으로 실패한 횟수")
                         .register(meterRegistry);
-        this.connectionUnavailableCounter =
-                Counter.builder("coupon.issue.failure")
-                        .tag("reason", "connection_unavailable")
-                        .description("발급 요청이 DB 커넥션 획득 실패로 종료된 횟수")
-                        .register(meterRegistry);
-        // CAMPAIGN_NOT_CACHED는 Redis가 정상 응답했는데 openAt/expireAt/stock 키 중
-        // 하나가 없을 때만 발생한다(issue_coupon.lua 참고). Redis 연결 자체가 끊기면
-        // 이 경로를 타지 않고 Exception.class 핸들러로 떨어지므로, 이 카운터는
-        // 캐시 웜업 누락·유실을 가리키는 잡음 적은 신호로 쓸 수 있다.
-        this.campaignNotCachedCounter =
-                Counter.builder("coupon.issue.failure")
-                        .tag("reason", "campaign_not_cached")
-                        .description("발급 요청이 Redis 캠페인 캐시 미스(웜업 누락/유실)로 실패한 횟수")
-                        .register(meterRegistry);
+        // 사유별 실패 카운터는 CouponIssueMetrics가 이름과 태그를 소유한다. 생성자를 넓히지
+        // 않고 여기서 직접 만드는 이유는, Micrometer가 이름·태그가 같으면 같은 미터를
+        // 돌려주기 때문이다. 발급 성공을 세는 CouponServiceImpl 쪽 빈과 집계가 한 곳에 모인다.
+        this.issueMetrics = new CouponIssueMetrics(meterRegistry);
     }
 
     @ExceptionHandler(CouponIssueException.class)
     public ResponseEntity<ApiErrorResponse> handleCouponIssue(CouponIssueException exception) {
         IssueFailReason reason =
                 Objects.requireNonNullElse(exception.getReason(), IssueFailReason.SYSTEM_ERROR);
+        issueMetrics.failure(reason);
         return switch (reason) {
             case OUT_OF_STOCK -> conflict("OUT_OF_STOCK", "쿠폰 재고가 소진되었습니다.");
             case ALREADY_ISSUED -> conflict("ALREADY_ISSUED", "이미 발급받은 쿠폰입니다.");
@@ -90,7 +84,6 @@ public class GlobalExceptionHandler {
                             "KAFKA_PUBLISH_FAILED",
                             "이벤트 메시지 발행에 실패했습니다.");
             case CAMPAIGN_NOT_CACHED -> {
-                campaignNotCachedCounter.increment();
                 notifyCacheMiss(exception.getCampaignId());
                 yield response(
                         HttpStatus.SERVICE_UNAVAILABLE,
@@ -102,13 +95,11 @@ public class GlobalExceptionHandler {
                             HttpStatus.SERVICE_UNAVAILABLE, // 불확실한 실패 -> 503
                             "SAVE_RESULT_UNKNOWN",
                             "쿠폰 발급 처리 결과가 불확실합니다. 잠시 후 발급 내역을 확인해 주세요.");
-            case CONNECTION_UNAVAILABLE -> {
-                connectionUnavailableCounter.increment();
-                yield response(
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "CONNECTION_UNAVAILABLE",
-                        "일시적으로 요청을 처리할 수 없습니다.");
-            }
+            case CONNECTION_UNAVAILABLE ->
+                    response(
+                            HttpStatus.SERVICE_UNAVAILABLE,
+                            "CONNECTION_UNAVAILABLE",
+                            "일시적으로 요청을 처리할 수 없습니다.");
             case SYSTEM_ERROR ->
                     response(
                             HttpStatus.INTERNAL_SERVER_ERROR,
@@ -236,7 +227,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(CannotCreateTransactionException.class)
     public ResponseEntity<ApiErrorResponse> handleConnectionUnavailable(
             CannotCreateTransactionException exception) {
-        connectionUnavailableCounter.increment();
+        issueMetrics.failure(IssueFailReason.CONNECTION_UNAVAILABLE);
         log.warn(
                 "Connection unavailable on issue: type={}, message={}",
                 exception.getClass().getSimpleName(),

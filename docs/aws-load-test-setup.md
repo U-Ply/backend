@@ -125,7 +125,7 @@ docker exec coupon-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 --list
 ```
 
-`cAdvisor`, `mysqld_exporter`, `redis_exporter`, `kafka_exporter` 및 해당 Prometheus scrape 설정은 공식 성능 회차 전에 별도 PR로 추가한다. exporter가 준비되지 않은 회차는 API 결과 확인용 리허설로만 사용한다.
+`cAdvisor`, `mysqld_exporter`, `redis_exporter`, `kafka_exporter` 및 해당 Prometheus scrape 설정은 `docker-compose.yml`/`prometheus/prometheus.yml`에 추가되어 있다(`feat/monitoring-visualization`). `docker compose up -d`로 함께 기동되며, 공식 성능 회차 전에 `docker compose ps`로 4개 exporter 컨테이너가 모두 healthy인지 확인한다. exporter 컨테이너가 하나라도 없는 상태로 진행한 회차는 API 결과 확인용 리허설로만 사용한다.
 
 ## 6. 애플리케이션 배포
 
