@@ -295,6 +295,31 @@ class RedisIdempotencyCheckerTest {
             assertThat(result).isFalse();
         }
 
+        // Redis 일시 장애나 손상된 캐시로 Lua 실행 자체가 예외를 던져도, complete()는 이를
+        // 삼키고 false로 귀결해야 한다 - 그러지 않으면 이미 커밋된 발급/사용·취소·일괄회수
+        // 로직 뒤에서 예외가 그대로 올라가 불필요한 500이나 잘못된 release()로 이어진다.
+        @Test
+        @DisplayName("complete 중 Redis 실행이 예외를 던지면 삼키고 false를 반환한다")
+        void complete_redisExecuteThrows_returnsFalseWithoutPropagating() throws Exception {
+            given(objectMapper.writeValueAsString(any(IdempotencyCache.class)))
+                    .willReturn("{\"status\":\"COMPLETED\"}");
+            given(
+                            redisTemplate.execute(
+                                    any(DefaultRedisScript.class),
+                                    anyList(),
+                                    any(),
+                                    any(),
+                                    any(),
+                                    any()))
+                    .willThrow(
+                            new org.springframework.data.redis.RedisSystemException("boom", null));
+
+            boolean result =
+                    idempotencyChecker.complete(IDEMPOTENCY_KEY, "owner-1", "hash-1", "{}", 200);
+
+            assertThat(result).isFalse();
+        }
+
         @Test
         @DisplayName("release는 idempotency_release Lua를 ownerToken과 함께 실행한다")
         void release_executesReleaseScriptWithOwnerToken() {
@@ -339,6 +364,18 @@ class RedisIdempotencyCheckerTest {
             boolean result = idempotencyChecker.renew(IDEMPOTENCY_KEY, "owner-1");
 
             assertThat(result).isTrue();
+        }
+
+        @Test
+        @DisplayName("renew 중 Redis 실행이 예외를 던지면 삼키고 false를 반환한다")
+        void renew_redisExecuteThrows_returnsFalseWithoutPropagating() {
+            given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), any(), any()))
+                    .willThrow(
+                            new org.springframework.data.redis.RedisSystemException("boom", null));
+
+            boolean result = idempotencyChecker.renew(IDEMPOTENCY_KEY, "owner-1");
+
+            assertThat(result).isFalse();
         }
     }
 }

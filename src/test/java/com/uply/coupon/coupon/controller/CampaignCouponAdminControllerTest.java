@@ -155,10 +155,12 @@ class CampaignCouponAdminControllerTest {
         verify(idempotencyChecker).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
     }
 
-    // complete()가 예외를 던지면 500을 반환하고, RuntimeException catch 블록에서 release로
-    // PROCESSING 선점을 해제하는지 확인
+    // 회수가 DB에 이미 커밋된 뒤 complete()가 예외를 던져도(Redis 장애 등) 회수는 성립했으므로
+    // 최초 성공 응답(200)을 그대로 반환하고, release()는 호출하지 않으며, 회수 로직은 한 번만
+    // 실행되는지 확인한다. release()를 호출해 버리면 같은 키의 재요청이 이미 끝난 회수 로직을
+    // 다시 실행해 중복 회수로 이어진다(리뷰 반영).
     @Test
-    void cacheFailureReturns500AndReleasesProcessingKey() throws Exception {
+    void cacheFailureAfterRevoke_stillReturns200AndDoesNotReleaseProcessingKey() throws Exception {
         String responseJson = "{\"campaignId\":10,\"revokedCount\":2}";
         given(campaignCouponRevokeService.revoke(CAMPAIGN_ID, IDEMPOTENCY_KEY)).willReturn(2);
         given(objectMapper.writeValueAsString(any(CampaignCouponRevokeResponse.class)))
@@ -170,12 +172,14 @@ class CampaignCouponAdminControllerTest {
         mockMvc.perform(
                         post("/api/admin/campaigns/{campaignId}/coupons/revoke", CAMPAIGN_ID)
                                 .header("Idempotency-Key", IDEMPOTENCY_KEY))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.errorCode").value("INTERNAL_SERVER_ERROR"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.campaignId").value(CAMPAIGN_ID))
+                .andExpect(jsonPath("$.revokedCount").value(2));
 
-        // complete()가 예외를 던졌으므로 응답 자체를 만들지 못했다 - RuntimeException catch 블록으로
-        // 떨어져 release가 호출된다(발급과 달리 이 컨트롤러는 RuntimeException 전체를 잡는다).
-        verify(idempotencyChecker).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
+        verify(campaignCouponRevokeService, org.mockito.Mockito.times(1))
+                .revoke(CAMPAIGN_ID, IDEMPOTENCY_KEY);
+        verify(idempotencyChecker, never()).release(anyString(), any());
+        verify(idempotencyOwnershipMetrics).recordCompleteRejected(IDEMPOTENCY_KEY);
     }
 
     // complete CAS가 소유권 상실로 거부되면(예외 없이 false) 응답은 그대로 반환하되 지표를 기록하는지 확인

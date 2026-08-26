@@ -158,31 +158,41 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
             return false;
         }
 
-        Long result =
-                redisTemplate.execute(
-                        completeScript,
-                        List.of(redisKey),
-                        ownerToken,
-                        normalizeHash(requestHash),
-                        jsonValue,
-                        String.valueOf(COMPLETED_TTL.toMillis()));
+        // release()와 마찬가지로 Lua 실행 자체를 방어한다. Redis 일시 장애나 손상된 캐시로
+        // cjson.decode가 실패하면 RedisSystemException이 올라오는데, 이 메서드는 항상
+        // "완료 처리를 못 했다"는 false로 귀결돼야 한다 - 예외를 그대로 던지면 이미 커밋된
+        // 비즈니스 로직 뒤에서 불필요한 500을 유발하거나(발급/사용·취소), 호출부가 이를
+        // "확정 실패"로 오인해 release()로 이어져 중복 실행을 유발할 수 있다(일괄 회수).
+        try {
+            Long result =
+                    redisTemplate.execute(
+                            completeScript,
+                            List.of(redisKey),
+                            ownerToken,
+                            normalizeHash(requestHash),
+                            jsonValue,
+                            String.valueOf(COMPLETED_TTL.toMillis()));
 
-        boolean success = Long.valueOf(1L).equals(result);
-        if (success) {
-            log.info(
-                    "[멱등성 응답 캐싱 성공] key: {}, httpStatus: {}, ownerToken: {}",
-                    redisKey,
-                    httpStatus,
-                    ownerToken);
-        } else {
-            // 이 요청이 이미 소유권을 잃었다는 뜻이다. 현재 값(다른 요청의 PROCESSING/COMPLETED)을
-            // 덮어쓰면 안 되므로 그대로 둔다.
-            log.warn(
-                    "[멱등성 응답 캐싱 실패] 소유권 상실 또는 상태·해시 불일치 - key: {}, ownerToken: {}",
-                    redisKey,
-                    ownerToken);
+            boolean success = Long.valueOf(1L).equals(result);
+            if (success) {
+                log.info(
+                        "[멱등성 응답 캐싱 성공] key: {}, httpStatus: {}, ownerToken: {}",
+                        redisKey,
+                        httpStatus,
+                        ownerToken);
+            } else {
+                // 이 요청이 이미 소유권을 잃었다는 뜻이다. 현재 값(다른 요청의 PROCESSING/COMPLETED)을
+                // 덮어쓰면 안 되므로 그대로 둔다.
+                log.warn(
+                        "[멱등성 응답 캐싱 실패] 소유권 상실 또는 상태·해시 불일치 - key: {}, ownerToken: {}",
+                        redisKey,
+                        ownerToken);
+            }
+            return success;
+        } catch (Exception e) {
+            log.error("[멱등성 응답 캐싱 실패] Redis 실행 오류 - key: {}", redisKey, e);
+            return false;
         }
-        return success;
     }
 
     @Override
@@ -214,13 +224,18 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
         }
 
         String redisKey = redisKey(idempotencyKey);
-        Long result =
-                redisTemplate.execute(
-                        renewScript,
-                        List.of(redisKey),
-                        ownerToken,
-                        String.valueOf(PROCESSING_TTL.toMillis()));
-        return Long.valueOf(1L).equals(result);
+        try {
+            Long result =
+                    redisTemplate.execute(
+                            renewScript,
+                            List.of(redisKey),
+                            ownerToken,
+                            String.valueOf(PROCESSING_TTL.toMillis()));
+            return Long.valueOf(1L).equals(result);
+        } catch (Exception e) {
+            log.error("[멱등성 TTL 연장 실패] Redis 실행 오류 - key: {}", redisKey, e);
+            return false;
+        }
     }
 
     private String createProcessingJson(String ownerToken, String requestHash) {
