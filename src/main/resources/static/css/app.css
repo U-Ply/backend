@@ -1291,18 +1291,24 @@ select:focus-visible {
 .monitor-control {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 14px;
   min-width: 280px;
 }
 
-.monitor-control label {
+.monitor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.monitor-field label {
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
 }
 
-.monitor-control select,
-.monitor-control input {
+.monitor-field select,
+.monitor-field input {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1312,6 +1318,7 @@ select:focus-visible {
 
 .metric-grid.five {
   grid-template-columns: repeat(5, 1fr);
+  margin-bottom: 16px;
 }
 
 .stat-tile strong {

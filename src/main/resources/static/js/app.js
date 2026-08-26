@@ -1898,10 +1898,14 @@
           <p class="page-description">발급이 지금 어떤 속도로 나가고 있는지, 무엇 때문에 막히는지를 2초마다 갱신해 보여줍니다.</p>
         </div>
         <div class="monitor-control">
-          <label for="monitor-pool">실시간 재고풀</label>
-          <select id="monitor-pool">${poolOptions() || '<option value="">재고풀 없음</option>'}</select>
-          <label for="monitor-prometheus-url">Prometheus 주소</label>
-          <input id="monitor-prometheus-url" type="url" value="${escapeHtml(prometheusUrl)}" placeholder="http://localhost:9090" />
+          <div class="monitor-field">
+            <label for="monitor-pool">실시간 재고풀</label>
+            <select id="monitor-pool">${poolOptions() || '<option value="">재고풀 없음</option>'}</select>
+          </div>
+          <div class="monitor-field">
+            <label for="monitor-prometheus-url">Prometheus 주소</label>
+            <input id="monitor-prometheus-url" type="url" value="${escapeHtml(prometheusUrl)}" placeholder="http://localhost:9090" />
+          </div>
         </div>
       </header>
 
