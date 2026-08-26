@@ -1,12 +1,18 @@
 package com.uply.coupon.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.BDDMockito.willThrow;
 
 import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import com.uply.coupon.coupon.strategy.save.CouponSaveStrategy;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -17,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 @SpringBootTest(
@@ -135,5 +142,67 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @SpyBean private CouponSaveStrategy couponSaveStrategy;
+
+    @Test
+    void V2_DB_저장_실패시_Redis_보상_후_재시도하면_성공한다() {
+        long userId = 30001L;
+        long campaignId = CouponIntegrationFixture.CAMPAIGN_ID;
+        long stockId = CouponIntegrationFixture.STOCK_ID;
+        String idempotencyKey = "compensation-test-" + userId;
+
+        // 1차 호출만 실패하도록 스텁, 2차부터는 실제 메서드 실행
+        willThrow(new CouponIssueException(IssueFailReason.DB_SAVE_FAILED))
+                .willCallRealMethod()
+                .given(couponSaveStrategy)
+                .save(
+                        any(),
+                        eq(userId),
+                        eq(campaignId),
+                        eq(stockId),
+                        eq(idempotencyKey),
+                        any(),
+                        any());
+
+        // when: 1차 요청 - 실패해야 함
+        assertThatThrownBy(
+                        () ->
+                                couponService.issue(
+                                        idempotencyKey,
+                                        new CouponIssueRequest(
+                                                userId,
+                                                campaignId,
+                                                CouponIntegrationFixture.ROUTE,
+                                                CouponIntegrationFixture.FARE)))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.DB_SAVE_FAILED);
+
+        // then: Redis 보상 확인
+        assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("10"); // 원복
+        assertThat(redis.opsForSet().isMember("issued:" + campaignId, String.valueOf(userId)))
+                .isFalse();
+
+        // DB 미저장 확인
+        assertThat(fixture.couponCount()).isZero();
+        assertThat(fixture.historyCount()).isZero();
+
+        // when: 재시도 - 이번엔 성공해야 함
+        var response =
+                couponService.issue(
+                        idempotencyKey,
+                        new CouponIssueRequest(
+                                userId,
+                                campaignId,
+                                CouponIntegrationFixture.ROUTE,
+                                CouponIntegrationFixture.FARE));
+
+        // then: 최종 일치 확인
+        assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
+        assertThat(fixture.couponCount()).isEqualTo(1);
+        assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("9");
+        assertThat(fixture.remaining()).isEqualTo(9);
     }
 }
