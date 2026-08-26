@@ -54,7 +54,7 @@
 | 부하 테스트 | k6 |
 | 관측 | Spring Boot Actuator, Micrometer, Prometheus, Grafana |
 | 실행 환경 | Docker Compose |
-| 식별자 생성 | TSID (`com.github.f4b6a3:tsid-creator`) |
+| 식별자 생성 | TSID (`io.hypersistence:hypersistence-tsid:2.1.4`) |
 
 ## 5. 핵심 도메인
 
@@ -307,6 +307,55 @@ Redis에는 다음 정보를 저장한다.
 
 실제 발급 수는 쿠폰 상태와 관계없이 해당 재고 풀에서 생성된 전체 쿠폰 수다. 발급 이후 재고는 복구되지 않는다.
 
+### 11.0 규칙 체계
+
+규칙은 접두어로 성격을 구분한다.
+
+| 접두어 | 대상 | 실행 조건 | 종합 판정 |
+| --- | --- | --- | --- |
+| `INV-` | MySQL 내부 정합성 | 항상 실행 | 위반 시 회차 실패 |
+| `CLOCK-` | 시계·타임존 전제 | CLOCK-01 항상, CLOCK-02 조건부 | 위반 시 회차 **무효** |
+| `REC-` | 외부 저장소 대사 | Redis 경로 회차만 | 위반 시 **불일치**(DB 자체는 정합) |
+
+`CLOCK-`가 별도 등급인 이유는, 시계가 어긋나면 다른 규칙의 판정 근거가 되는 타임스탬프
+자체를 믿을 수 없기 때문이다. 이 경우 나머지 규칙이 전부 통과해도 회차 결과를 쓰지 않는다.
+
+### 11.0.1 규칙 실행 상태
+
+각 규칙은 위반 수와 별개로 실행 상태를 기록한다. **검사하지 않은 것을 통과로 기록하지
+않기 위해서다.**
+
+| 상태 | 의미 |
+| --- | --- |
+| `CHECKED` | 실제로 검사했다. 위반 수가 판정에 반영된다 |
+| `NOT_APPLICABLE` | 이 회차에 해당하지 않는 규칙이다. 통과가 아니다 |
+| `SKIPPED` | 검사해야 했으나 전제 조건이 맞지 않아 실행하지 못했다 |
+
+`NOT_APPLICABLE`과 `SKIPPED`는 위반 수가 0이어도 통과로 세지 않는다. 위반 0을 통과로
+읽으려면 그 규칙이 `CHECKED`여야 한다.
+
+### 11.0.2 회차 종합 판정
+
+규칙별 결과를 다음 순서로 판정한다. 앞선 조건이 성립하면 뒤는 보지 않는다.
+
+| 순서 | 판정 | 조건 |
+| --- | --- | --- |
+| 1 | `INVALID` | `CLOCK-*` 위반이 있다. 어느 시점을 본 것인지 알 수 없다 |
+| 2 | `INCOMPLETE` | `SKIPPED` 규칙이 있다. 검사하지 않은 것을 통과로 세지 않는다 |
+| 3 | `BASELINE` | V0 회차. 위반 수로 통과·실패를 가르지 않는다 |
+| 4 | `FAILED` | `CHECKED` 상태의 `INV-*` 또는 미분류 규칙에 위반이 있다 |
+| 5 | `MISMATCH` | DB는 정합한데 `REC-*`만 어긋났다 |
+| 6 | `PASSED` | 검사한 규칙에 위반이 없다 |
+
+`INVALID`와 `INCOMPLETE`가 `BASELINE`보다 앞이다. 이 둘은 "이 회차가 정합했는가"가 아니라
+"이 회차를 읽을 수 있는가"를 말하기 때문이다. 시계가 어긋났거나 규칙이 빠진 V0는 기준선으로
+쓸 수 없다.
+
+이 판정 사슬은 관리자 API(`GET /api/admin/batch/verification/runs`)와 마크다운 리포트가
+동일하게 사용한다. 같은 회차가 두 출력에서 다른 이름으로 불리면 안 된다.
+
+### 11.1 불변식 규칙 (INV)
+
 | 코드 | 규칙 | 판정 기준 | 위반 대상 |
 | --- | --- | --- | --- |
 | INV-01 | 초과 발급 금지 | 재고 풀별 전체 쿠폰 수 `<= total_stock` | `campaign_stocks` |
@@ -319,6 +368,8 @@ Redis에는 다음 정보를 저장한다.
 | INV-08 | 참조 조합 일치 | coupons.campaign_id가 stock_id로 조회한 campaign_stocks.campaign_id와 같음 | `coupons` |
 | INV-09 | 도메인 멱등성 | 같은 쿠폰의 동일 도착 상태 이력이 두 번 이상 없음 | `coupon_history` |
 | INV-10 | 고아 행 없음 | 존재하지 않는 부모 행을 참조하는 자식 행이 없음 | 각 자식 테이블 |
+| INV-11 | 캠페인 기간 내 발급 | `open_at <= issued_at < expire_at` | `coupons` |
+| INV-12 | 만료 시각 캠페인 상속 | `coupons.expire_at = campaigns.expire_at` | `coupons` |
 
 INV-05의 허용 전이는 다음과 같다.
 
@@ -352,6 +403,85 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 - `coupons.campaign_id -> campaigns.campaign_id`
 - `coupons.stock_id -> campaign_stocks.stock_id`
 - `coupon_history.coupon_id -> coupons.coupon_id`
+
+INV-11은 발급 시각이 그 캠페인의 기간 안에 있는지 검사한다. 발급 API가 오픈 전 요청과
+종료된 캠페인을 거부하지만(6절 상태 원칙), 그 검사를 우회하거나 빠뜨린 경로가 있었는지를
+데이터 쪽에서 다시 확인한다. 쿠폰과 캠페인에 걸친 조건이라 FK로도 CHECK로도 표현할 수 없다.
+
+**경계 처리가 양쪽이 다르다. 통일하지 않는다.**
+
+- `open_at` 정각 발급은 **허용**한다. `issued_at < open_at`만 위반이다
+- `expire_at` 정각 발급은 **거부**한다. `issued_at >= expire_at`이 위반이다
+
+이는 12절의 `CAMPAIGN_NOT_OPEN`·`CAMPAIGN_EXPIRED` 거부 조건과 같은 기준이다.
+
+INV-12는 같은 캠페인에서 발급된 쿠폰의 만료 시각이 발급 시점과 무관하게 모두 같은지
+검사한다. 전략마다 만료 시각을 다르게 계산하면 여기서 잡힌다.
+
+**전제**: 캠페인이 발급 이후 수정되지 않아야 한다. `coupons.expire_at`을 따로 두는 이유
+중 하나가 "캠페인이 바뀌어도 이미 발급된 쿠폰의 약속을 지키기 위해서"이므로, 캠페인 수정
+기능이 생기면 이 규칙은 정상 운영을 위반으로 잡는다. 그때는 규칙을 제거하거나 캠페인 변경
+이력을 도입해야 한다. (현재 캠페인 수정 API 없음)
+
+**한계**: 위반 조건이 `c.expire_at <> g.expire_at`이므로 `coupons.expire_at`이 NULL이면
+비교 결과가 NULL이 되어 위반으로 잡히지 않는다. 만료 배치의 대상 조건
+(`expire_at <= NOW(3)`)도 NULL을 걸러내므로, NULL인 쿠폰은 검증을 통과하고 만료도 되지
+않는다. 현재 스키마가 `expire_at`을 `NOT NULL`로 두어 발생하지 않는다.
+
+### CLOCK-01 애플리케이션·DB 시계 정합성
+
+모든 회차에서 실행한다. 위반이면 그 회차의 판정 전체를 신뢰할 수 없으므로 종합 판정은
+`INVALID`가 된다.
+
+두 가지를 함께 본다.
+
+| 항목 | 기준 |
+| --- | --- |
+| DB 세션 타임존 | `@@session.time_zone`이 `+00:00` 또는 `UTC` |
+| 시계 오차 | `\|애플리케이션 시각 - DB NOW(3)\|` <= **5.0초** |
+
+오차는 `UNIX_TIMESTAMP` 기반 epoch로 잰다. 타임존과 무관한 절대시각이라 순수한 시계 오차만
+나온다. **타임존 설정 자체는 별도 항목으로 확인한다.** 둘을 한 값으로 섞으면 원인을 가를 수
+없기 때문이다.
+
+행 단위 위반이 아니므로 위반 샘플은 남기지 않고, 측정값을 규칙 이름에 함께 기록한다.
+
+```text
+session_tz=+00:00 drift=-0.001s
+```
+
+### CLOCK-02 Redis·DB 시계 정합성
+
+**Redis 시계로 발급 시각을 기록하는 회차에서만 판정한다.**
+
+| 회차 | 판정 여부 | 근거 |
+| --- | --- | --- |
+| V0 NoLock | `NOT_APPLICABLE` | `issued_at`·`event_at`을 DB 시계로 기록 |
+| V1 비관적 락 | `NOT_APPLICABLE` | 동일 |
+| V2 Redis Lua + 동기 저장 | **판정** | Lua가 반환한 시각이 `issued_at`·`event_at`에 그대로 들어감 |
+| V3 Redis Lua + Kafka | **판정** | 동일 |
+
+Redis 컨테이너는 V0·V1 회차에도 떠 있다. **연결 가능 여부로 판단하면 Redis를 쓰지 않는
+회차에서 없는 문제를 만든다.** 그래서 회차 버전으로 가른다.
+
+| 조건 | 결과 |
+| --- | --- |
+| Redis 경로 회차가 아님 | `NOT_APPLICABLE` — 통과가 아니라 해당 없음 |
+| Redis 경로 회차인데 Redis 미구성 | **위반** — 설정 오류다 |
+| Redis 경로 회차인데 Redis 연결 실패 | **위반** |
+| `\|Redis TIME - DB NOW(3)\|` > 허용 오차 | **위반** |
+
+허용 오차는 `coupon.verification.redis-clock-tolerance-sec`로 설정하며 기본값은 **0.3초**다.
+`application.yml`과 코드의 `@Value` 기본값이 반드시 같아야 한다. 두 값이 다르면 설정이
+실리지 않은 경로로 기동했을 때 더 빡빡한 쪽이 조용히 적용되고, CLOCK 위반은 회차 전체를
+`INVALID`로 만든다.
+
+**측정값은 순수 시계 차이가 아니다.** Redis `TIME`과 `NOW(3)`를 순차로 읽으므로 왕복 2회의
+네트워크 지연이 섞인다. 허용 오차는 그 잡음보다 크게 잡는다. `LOCAL-DOCKER-01` 실측 drift는
+±0.09초 이내였다.
+
+Redis-DB drift는 곧 INV-04(이력 순서)·INV-06(시각 순서)·INV-11(캠페인 기간)의 오차가 된다.
+이 세 규칙의 경계가 밀리초 단위이기 때문에 시계 규칙을 별도 등급으로 둔다.
 
 ### REC-01 Redis–DB 재고 대사
 
@@ -392,14 +522,37 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 | `LOCK_TIMEOUT` | 503 | 비관적 락 대기 시간 초과 (재시도 가능) |
 | `CONCURRENCY_CONFLICT` | 503 | DB 교착 등 동시성 경합으로 처리 실패 (재시도 가능) |
 | `CONNECTION_UNAVAILABLE` | 503 | DB 커넥션 획득 실패 (재시도 가능) |
+| `CAMPAIGN_NOT_CACHED` | 503 | 캠페인 재고가 Redis에 적재되지 않음 (재시도 가능) |
+| `SAVE_RESULT_UNKNOWN` | 503 | Kafka 발행 결과가 불명확함 (재시도 가능) |
+| `CACHE_RECOVERY_NOT_SETTLED` | 503 | Kafka 미정착 상태에서 캐시 복구를 요청함 |
+| `DB_SAVE_FAILED` | 500 | 쿠폰 정보 저장 실패 |
+| `KAFKA_PUBLISH_FAILED` | 500 | 이벤트 메시지 발행 실패 |
+| `INTERNAL_SERVER_ERROR` | 500 | 분류되지 않은 서버 오류 |
+| `INVALID_REQUEST` | 400 | 요청 값·헤더 형식 오류, 배치 파라미터 오류 |
+| `BATCH_CONFLICT` | 409 | 같은 Job이 실행 중이거나 같은 `runId`로 이미 완료됨 |
+| `BATCH_NOT_IMPLEMENTED` | 501 | 구현되지 않은 Job 요청 |
+| `BATCH_EXECUTION_NOT_FOUND` | 404 | 존재하지 않는 `jobExecutionId` |
+| `VERIFICATION_RUN_NOT_FOUND` | 404 | 존재하지 않는 검증 `runId` |
 
-503으로 응답하는 세 코드는 **재시도 가능한 일시적 실패**다. 요청 자체는 유효하며 서버 상태가
+503으로 응답하는 코드는 **재시도 가능한 일시적 실패**다. 요청 자체는 유효하며 서버 상태가
 회복되면 같은 요청이 성공할 수 있다. 4xx와 달리 클라이언트가 요청을 고칠 필요가 없다.
 
-세 코드는 발생 지점이 서로 다르다. `LOCK_TIMEOUT`은 `SELECT ... FOR UPDATE`로 락을 기다리다
-한계를 넘긴 경우, `CONCURRENCY_CONFLICT`는 트랜잭션 커밋 단계의 DB 교착,
-`CONNECTION_UNAVAILABLE`은 트랜잭션 시작 단계에서 커넥션 풀을 얻지 못한 경우다.
+발생 지점은 서로 다르다.
+
+| 코드 | 발생 지점 |
+| --- | --- |
+| `LOCK_TIMEOUT` | `SELECT ... FOR UPDATE`로 락을 기다리다 한계 초과 |
+| `CONCURRENCY_CONFLICT` | 트랜잭션 커밋 단계의 DB 교착 |
+| `CONNECTION_UNAVAILABLE` | 트랜잭션 시작 단계에서 커넥션 풀 획득 실패 |
+| `CAMPAIGN_NOT_CACHED` | 발급 판정 전, 캠페인 재고가 Redis에 없음 |
+| `SAVE_RESULT_UNKNOWN` | Redis 차감은 성공했으나 Kafka 발행 결과가 불명확 |
+| `CACHE_RECOVERY_NOT_SETTLED` | Kafka lag·DLT가 정착하지 않은 상태의 캐시 복구 요청 |
+
 자세한 내용은 `docs/lock-and-transaction-settings.md` 6절에 있다.
+
+**부하 테스트 응답 분류 검산식에 위 여섯 코드를 모두 포함해야 한다.** 하나라도 빠지면
+"응답 분류 합계 = 전체 요청 수"가 성립하지 않아 회차 결과 자체가 의심받는다
+(`docs/test-plan.md` §6.6).
 
 ## 13. Redis 키
 
@@ -407,9 +560,23 @@ INV-10은 다음 참조 관계의 고아 행을 검사한다.
 | --- | --- | --- | --- |
 | 재고 | `stock:{stockId}` | String 정수 | 없음 |
 | 캠페인별 발급 사용자 | `issued:{campaignId}` | Set | 없음 |
+| 재고 풀 ID 매핑 | `stockId:{campaignId}:{routeId}:{fareClass}` | String 정수 | 없음 |
+| 캠페인 오픈 시각 | `campaign:{campaignId}:openAt` | String epoch millis | 없음 |
+| 캠페인 만료 시각 | `campaign:{campaignId}:expireAt` | String epoch millis | 없음 |
+| 발급 Set 원자 교체용 임시 키 | `temp:issued:{campaignId}` | Set | 없음 (RENAME 직후 소멸) |
 | API 멱등성 | `idempotency:{idempotencyKey}` | String JSON | PROCESSING 30초, COMPLETED 10분 |
 | 쿠폰 DB 반영 대기 | `coupon:pending:{couponId}` | String (`PENDING`) | 24시간 |
-| 대기열 | `waiting:{campaignId}` | Sorted Set | 없음 |
+| 캐시 복구 락 | `cache:recovery:{campaignId}` | String 토큰 | 복구 작업 시간 |
+
+재고와 발급 Set에 TTL을 두지 않는 것은 의도다. 고정 TTL을 걸면 캠페인이 그보다 길 때 발급
+도중 키가 사라진다. 키를 지우는 것은 회차 초기화 스크립트와 웜업의 책임이지 만료 시간의
+책임이 아니다.
+
+`temp:issued:*`는 캐시 복구가 발급 Set을 원자적으로 교체할 때만 쓴다. 기존 키에 `SADD`로
+덧칠하면 DB에 없는 사용자가 Set에 남아 발급이 부당하게 거부되므로, 임시 키에 DB 기준으로
+적재한 뒤 `RENAME`으로 바꾼다.
+
+대기열(`waiting:{campaignId}`)은 3.2 선택 범위이며 **현재 구현하지 않았다.**
 
 ## 14. 개인정보 및 로그 요구사항
 
