@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 @SpringBootTest(
         properties = {
@@ -204,5 +205,54 @@ class V2LuaIssueIntegrationTest extends IntegrationTestContainers {
         assertThat(fixture.couponCount()).isEqualTo(1);
         assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("9");
         assertThat(fixture.remaining()).isEqualTo(9);
+    }
+
+    @Test
+    void V2_DB_커넥션_획득_실패시_Redis_보상_후_재시도하면_성공한다() {
+        long userId = 30002L; // 1차 테스트와 겹치지 않는 userId 사용 권장
+        long campaignId = CouponIntegrationFixture.CAMPAIGN_ID;
+        long stockId = CouponIntegrationFixture.STOCK_ID;
+        String idempotencyKey = "connection-fail-test-" + userId;
+
+        willThrow(new CannotCreateTransactionException("DB 커넥션 획득 실패 테스트"))
+                .willCallRealMethod()
+                .given(couponSaveStrategy)
+                .save(
+                        any(),
+                        eq(userId),
+                        eq(campaignId),
+                        eq(stockId),
+                        eq(idempotencyKey),
+                        any(),
+                        any());
+
+        assertThatThrownBy(
+                        () ->
+                                couponService.issue(
+                                        idempotencyKey,
+                                        new CouponIssueRequest(
+                                                userId,
+                                                campaignId,
+                                                CouponIntegrationFixture.ROUTE,
+                                                CouponIntegrationFixture.FARE)))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.CONNECTION_UNAVAILABLE); // 1차와 다른 부분
+
+        assertThat(redis.opsForValue().get("stock:" + stockId)).isEqualTo("10");
+        assertThat(redis.opsForSet().isMember("issued:" + campaignId, String.valueOf(userId)))
+                .isFalse();
+        assertThat(fixture.couponCount()).isZero();
+
+        var response =
+                couponService.issue(
+                        idempotencyKey,
+                        new CouponIssueRequest(
+                                userId,
+                                campaignId,
+                                CouponIntegrationFixture.ROUTE,
+                                CouponIntegrationFixture.FARE));
+
+        assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
     }
 }
