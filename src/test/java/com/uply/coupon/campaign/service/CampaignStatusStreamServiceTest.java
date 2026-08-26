@@ -6,7 +6,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -14,6 +16,9 @@ import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CampaignStockCacheMissException;
+import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
@@ -31,6 +36,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -42,6 +48,8 @@ class CampaignStatusStreamServiceTest {
     @Mock private CampaignStockRepository campaignStockRepository;
 
     @Mock private CampaignCacheRepository campaignCacheRepository;
+
+    @Mock private ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider;
 
     @Mock private CampaignStock stock;
 
@@ -102,6 +110,27 @@ class CampaignStatusStreamServiceTest {
 
         assertThatThrownBy(() -> service.subscribe(1L, "JEJU", "FIRST"))
                 .isInstanceOf(CampaignNotFoundException.class);
+    }
+
+    // 구독 시점(SSE 응답 시작 전)에 재고 캐시가 비어 있으면 CouponIssueException(CAMPAIGN_NOT_CACHED)으로
+    // 변환되어 GlobalExceptionHandler가 503과 자동 복구 트리거를 처리할 수 있게 하는지 검증한다.
+    @Test
+    void subscribe_cacheMiss_throwsCouponIssueExceptionWithCampaignNotCached() {
+        given(campaignStockRepository.findByCampaignIdAndRouteIdAndFareClass(1L, "JEJU", "ECONOMY"))
+                .willReturn(Optional.of(stock));
+        given(stock.getId()).willReturn(10L);
+        given(campaignCacheRepository.getRemainingStock(10L))
+                .willThrow(new CampaignStockCacheMissException(10L));
+
+        assertThatThrownBy(() -> service.subscribe(1L, "JEJU", "ECONOMY"))
+                .isInstanceOf(CouponIssueException.class)
+                .satisfies(
+                        exception -> {
+                            CouponIssueException issueException = (CouponIssueException) exception;
+                            assertThat(issueException.getReason())
+                                    .isEqualTo(IssueFailReason.CAMPAIGN_NOT_CACHED);
+                            assertThat(issueException.getCampaignId()).isEqualTo(1L);
+                        });
     }
 
     // Redis 재고 값이 이전과 같으면 추가 stock-update 전송이 없는지 검증한다.
@@ -283,6 +312,42 @@ class CampaignStatusStreamServiceTest {
 
             verify(emitterA, times(1)).send(any(SseEmitter.SseEventBuilder.class));
             verify(emitterB, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+    }
+
+    // 폴링 도중 캐시 미스가 나면: 자동 복구를 정확한 campaignId로 트리거하고, 구독자에게 에러
+    // 이벤트를 보낸 뒤 연결을 종료하고, 채널을 polling 대상에서 제거해 같은 오류가 반복되지
+    // 않는지 검증한다.
+    @Test
+    void pollChannel_cacheMiss_triggersRecoveryAndTerminatesChannelWithoutRepeating()
+            throws IOException {
+        givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
+        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        CacheAutoRecoveryTrigger trigger = mock(CacheAutoRecoveryTrigger.class);
+        given(cacheAutoRecoveryTriggerProvider.getIfAvailable()).willReturn(trigger);
+
+        try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
+            service.subscribe(1L, "JEJU", "ECONOMY");
+            SseEmitter emitter = mocked.constructed().get(0);
+            StockChannel channel = channelFor(10L);
+
+            given(campaignCacheRepository.getRemainingStock(10L))
+                    .willThrow(new CampaignStockCacheMissException(10L));
+
+            service.pollChannel(channel, channel.getLastHeartbeatAt());
+
+            verify(trigger).onCacheMiss(1L);
+            // subscribe()에서 최초 stock-update 1회 + 캐시 미스 시 error 이벤트 1회 = 총 2회.
+            verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+            verify(emitter).complete();
+            assertThat(channelsMap()).doesNotContainKey(10L);
+
+            // 채널이 제거되었으므로 다음 polling에서는 이 재고 풀을 다시 조회하지 않는다
+            // (= 같은 캐시 미스가 무한 반복되지 않는다).
+            clearInvocations(campaignCacheRepository, trigger);
+            service.pollStocks();
+            verify(campaignCacheRepository, never()).getRemainingStock(10L);
+            verify(trigger, never()).onCacheMiss(any());
         }
     }
 

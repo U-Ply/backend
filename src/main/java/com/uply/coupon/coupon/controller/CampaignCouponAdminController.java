@@ -4,12 +4,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyClaim;
 import com.uply.coupon.common.idempotency.IdempotencyKeyValidator;
+import com.uply.coupon.common.idempotency.IdempotencyOwnershipMetrics;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
 import com.uply.coupon.coupon.dto.response.CampaignCouponRevokeResponse;
 import com.uply.coupon.coupon.service.CampaignCouponRevokeService;
 import java.util.Objects;
-import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,6 +26,7 @@ public class CampaignCouponAdminController {
 
     private final CampaignCouponRevokeService campaignCouponRevokeService;
     private final IdempotencyChecker idempotencyChecker;
+    private final IdempotencyOwnershipMetrics idempotencyOwnershipMetrics;
     private final ObjectMapper objectMapper;
 
     @PostMapping("/{campaignId}/coupons/revoke")
@@ -33,24 +35,30 @@ public class CampaignCouponAdminController {
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
         IdempotencyKeyValidator.validateUuidV4(idempotencyKey);
         String requestHash = createRequestHash(campaignId);
-        Optional<String> cachedBody =
-                idempotencyChecker.getCachedResponse(idempotencyKey, requestHash);
-        if (cachedBody.isPresent()) {
-            CampaignCouponRevokeResponse cachedResponse = parseCachedResponse(cachedBody.get());
+        IdempotencyClaim claim = idempotencyChecker.acquire(idempotencyKey, requestHash);
+        if (claim.hasCachedResponse()) {
+            CampaignCouponRevokeResponse cachedResponse =
+                    parseCachedResponse(claim.cachedResponse());
             if (!Objects.equals(campaignId, cachedResponse.campaignId())) {
                 throw new IdempotencyKeyReusedException();
             }
             return ResponseEntity.ok(cachedResponse);
         }
+        String ownerToken = claim.ownerToken();
 
         try {
             int revokedCount = campaignCouponRevokeService.revoke(campaignId, idempotencyKey);
             CampaignCouponRevokeResponse response =
                     CampaignCouponRevokeResponse.of(campaignId, revokedCount);
-            idempotencyChecker.cacheResponse(idempotencyKey, requestHash, toJson(response), 200);
+            if (!idempotencyChecker.complete(
+                    idempotencyKey, ownerToken, requestHash, toJson(response), 200)) {
+                idempotencyOwnershipMetrics.recordCompleteRejected(idempotencyKey);
+            }
             return ResponseEntity.ok(response);
         } catch (RuntimeException exception) {
-            idempotencyChecker.clearProgress(idempotencyKey);
+            if (!idempotencyChecker.release(idempotencyKey, ownerToken)) {
+                idempotencyOwnershipMetrics.recordReleaseRejected(idempotencyKey);
+            }
             throw exception;
         }
     }

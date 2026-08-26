@@ -5,6 +5,9 @@ import com.uply.coupon.campaign.dto.response.CampaignStatusResponse;
 import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CampaignStockCacheMissException;
+import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -13,6 +16,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -25,6 +29,11 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class CampaignStatusStreamService {
     private final CampaignStockRepository campaignStockRepository;
     private final CampaignCacheRepository campaignCacheRepository;
+
+    // 자동 트리거는 coupon.cache-recovery.auto-trigger-enabled=true일 때만 빈이 존재한다
+    // (기본 비활성화). GlobalExceptionHandler와 같은 패턴으로 ObjectProvider로 받아
+    // 없으면 조용히 건너뛴다.
+    private final ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider;
 
     private final Map<Long, StockChannel> channels = new ConcurrentHashMap<>();
 
@@ -46,7 +55,15 @@ public class CampaignStatusStreamService {
                                         new CampaignNotFoundException(
                                                 campaignId, routeId, fareClass));
 
-        Integer remainingStock = campaignCacheRepository.getRemainingStock(stock.getId());
+        // 구독 시점(SSE 응답 시작 전)의 캐시 미스는 CouponIssueException으로 변환해
+        // GlobalExceptionHandler의 기존 503 CAMPAIGN_NOT_CACHED 처리(카운터 증가 +
+        // 자동 복구 트리거)를 그대로 재사용한다.
+        Integer remainingStock;
+        try {
+            remainingStock = campaignCacheRepository.getRemainingStock(stock.getId());
+        } catch (CampaignStockCacheMissException exception) {
+            throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, campaignId);
+        }
 
         SseEmitter emitter = new SseEmitter(timeoutMs);
         String emitterId = UUID.randomUUID().toString();
@@ -99,8 +116,20 @@ public class CampaignStatusStreamService {
         Integer currentRemainingStock;
         try {
             currentRemainingStock = campaignCacheRepository.getRemainingStock(channel.getStockId());
+        } catch (CampaignStockCacheMissException e) {
+            // 이미 SSE 응답이 시작된 뒤라 GlobalExceptionHandler가 503 JSON을 돌려줄 수 없다.
+            // 여기서 직접 자동 복구를 트리거하고, 같은 오류를 매 tick 반복하지 않도록
+            // 채널을 정리한다(에러 이벤트 전송 + emitter 종료 + polling 대상에서 제거).
+            log.warn(
+                    "재고 캐시 미스로 SSE 채널을 종료한다: stockId={}, campaignId={}",
+                    channel.getStockId(),
+                    channel.getCampaignId(),
+                    e);
+            terminateChannelDueToCacheMiss(channel);
+            return;
         } catch (IllegalStateException e) {
-            // Redis 캐시가 일시적으로 비어있는 경우: 이번 tick만 건너뛰고 다음 tick에서 재시도
+            // Redis 값이 잘못된 경우(파싱 실패): 캐시 미스가 아니라 시스템 오류이므로 자동 복구를
+            // 트리거하지 않고, 이번 tick만 건너뛰고 다음 tick에서 재시도한다.
             log.warn("재고 캐시 조회 실패, 다음 polling에서 재시도: stockId={}", channel.getStockId(), e);
             return;
         }
@@ -121,6 +150,44 @@ public class CampaignStatusStreamService {
                 .forEach(
                         (emitterId, emitter) ->
                                 sendEvent(channel, emitterId, emitter, eventName, payload));
+    }
+
+    /**
+     * 폴링 도중 캐시 미스가 나면 자동 복구를 트리거하고, 구독자에게 에러 이벤트를 보낸 뒤 연결을 종료하고 채널을 polling 대상에서 제거한다. 채널을 지우지 않으면
+     * 다음 tick에서 같은 캐시 미스가 무한 반복된다.
+     */
+    private void terminateChannelDueToCacheMiss(StockChannel channel) {
+        notifyCacheMiss(channel.getCampaignId());
+
+        channel.getEmitters()
+                .forEach(
+                        (emitterId, emitter) -> {
+                            try {
+                                emitter.send(
+                                        SseEmitter.event()
+                                                .name("error")
+                                                .data(
+                                                        new CacheMissErrorPayload(
+                                                                "CAMPAIGN_NOT_CACHED",
+                                                                "캠페인 발급 준비가 완료되지 않았습니다. 잠시 후"
+                                                                        + " 다시 시도해 주세요."),
+                                                        MediaType.APPLICATION_JSON));
+                            } catch (Exception e) {
+                                log.debug("캐시 미스 에러 이벤트 전송 실패: emitterId={}", emitterId, e);
+                            } finally {
+                                emitter.complete();
+                            }
+                        });
+
+        // 이 채널의 emitter는 모두 종료했으므로 남은 구독자 유무와 무관하게 polling 대상에서 뺀다.
+        channels.remove(channel.getStockId());
+    }
+
+    private void notifyCacheMiss(Long campaignId) {
+        CacheAutoRecoveryTrigger trigger = cacheAutoRecoveryTriggerProvider.getIfAvailable();
+        if (trigger != null) {
+            trigger.onCacheMiss(campaignId);
+        }
     }
 
     private void sendEvent(
@@ -167,4 +234,6 @@ public class CampaignStatusStreamService {
     }
 
     private record HeartbeatPayload(String timestamp) {}
+
+    private record CacheMissErrorPayload(String errorCode, String message) {}
 }

@@ -1,6 +1,6 @@
 package com.uply.coupon.common.idempotency;
 
-import java.util.Optional;
+import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -10,17 +10,30 @@ import org.springframework.stereotype.Component;
 public class NoOpIdempotencyChecker implements IdempotencyChecker {
 
     @Override
-    public Optional<String> getCachedResponse(String idempotencyKey) {
-        return Optional.empty();
+    public IdempotencyClaim acquire(String idempotencyKey, String requestHash) {
+        // 벤치마크에서는 아무 것도 추적하지 않는다 - 매 호출을 항상 최초 요청으로 취급한다.
+        return IdempotencyClaim.acquired(UUID.randomUUID().toString());
     }
 
     @Override
-    public void cacheResponse(String idempotencyKey, String responseBody, int httpStatus) {
+    public boolean complete(
+            String idempotencyKey,
+            String ownerToken,
+            String requestHash,
+            String responseBody,
+            int httpStatus) {
         // 벤치마크에서는 최초 응답을 Redis에 저장하지 않는다.
+        return true;
     }
 
     @Override
-    public void clearProgress(String idempotencyKey) {
+    public boolean release(String idempotencyKey, String ownerToken) {
         // 선점한 PROCESSING 키가 없으므로 해제할 작업도 없다.
+        return true;
+    }
+
+    @Override
+    public boolean renew(String idempotencyKey, String ownerToken) {
+        return true;
     }
 }

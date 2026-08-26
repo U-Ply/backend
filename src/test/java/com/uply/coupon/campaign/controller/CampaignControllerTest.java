@@ -14,7 +14,9 @@ import com.uply.coupon.campaign.dto.response.CampaignStockSummaryResponse;
 import com.uply.coupon.campaign.dto.response.CampaignSummaryResponse;
 import com.uply.coupon.campaign.service.CampaignQueryService;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.List;
@@ -133,18 +135,28 @@ class CampaignControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("CAMPAIGN_NOT_FOUND"));
     }
 
-    // Redis 재고 캐시가 준비되지 않은 경우 500 INTERNAL_SERVER_ERROR로 처리되는지 검증한다.
+    // Redis 재고 캐시가 준비되지 않은 경우(캐시 미스) 503 CAMPAIGN_NOT_CACHED로 처리되는지 검증한다.
     @Test
-    void getCampaignStatus_cacheNotReadyReturns500() throws Exception {
+    void getCampaignStatus_cacheNotReadyReturns503() throws Exception {
         given(campaignQueryService.getCampaignStatus(1L, "JEJU", "ECONOMY"))
-                .willThrow(
-                        new IllegalStateException("Remaining stock cache not ready: stockId=10"));
+                .willThrow(new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, 1L));
 
         mockMvc.perform(
                         get("/api/campaigns/{campaignId}/status", 1L)
                                 .param("routeId", "JEJU")
                                 .param("fareClass", "ECONOMY"))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.errorCode").value("INTERNAL_SERVER_ERROR"));
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("CAMPAIGN_NOT_CACHED"));
+    }
+
+    // 캠페인 기본 정보 조회 중 재고 캐시 미스가 나면 503 CAMPAIGN_NOT_CACHED로 처리되는지 검증한다.
+    @Test
+    void getCampaign_cacheNotReadyReturns503() throws Exception {
+        given(campaignQueryService.getCampaign(1L))
+                .willThrow(new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, 1L));
+
+        mockMvc.perform(get("/api/campaigns/{campaignId}", 1L))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("CAMPAIGN_NOT_CACHED"));
     }
 }

@@ -11,6 +11,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class IdempotencyCache {
     private String status; // PROCESSING 또는 COMPLETED
+    private String ownerToken; // PROCESSING을 선점한 요청 실행의 UUID. COMPLETED에는 없다.
     private int httpStatus;
     private String body;
     private String requestHash;

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.StockIdLookupSelector;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyClaim;
+import com.uply.coupon.common.idempotency.IdempotencyOwnershipMetrics;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
 import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.CouponStatus;
@@ -14,7 +16,6 @@ import com.uply.coupon.coupon.strategy.CouponIssueStrategy;
 import com.uply.coupon.coupon.strategy.CouponIssueStrategySelector;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import com.uply.coupon.coupon.strategy.IssueResult;
-import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,7 @@ import org.springframework.stereotype.Service;
 public class CouponServiceImpl implements CouponService {
 
     private final IdempotencyChecker idempotencyChecker;
+    private final IdempotencyOwnershipMetrics idempotencyOwnershipMetrics;
     private final ObjectMapper objectMapper;
     private final CouponIssueStrategySelector strategySelector;
     private final StockIdLookupSelector stockIdLookupSelector;
@@ -33,16 +35,18 @@ public class CouponServiceImpl implements CouponService {
     public CouponIssueResponse issue(String idempotencyKey, CouponIssueRequest request) {
 
         String requestHash = null;
+        String ownerToken = null;
         if (hasIdempotencyKey(idempotencyKey)) {
             requestHash = createRequestHash(request);
             // 1.PROCESSING 일 경우 여기서 먼저 에러 발생
-            Optional<String> cachedBody =
-                    idempotencyChecker.getCachedResponse(idempotencyKey, requestHash);
+            IdempotencyClaim claim = idempotencyChecker.acquire(idempotencyKey, requestHash);
             // 2.에러 없이 캐시된 데이터가 존재한다 = COMPLETED 상태이다. -> 이전의 응답 데이터를 그대로 사용자에게 반환
-            if (cachedBody.isPresent()) {
+            if (claim.hasCachedResponse()) {
                 log.info("[멱등성 처리] 이전 성공 응답 재반환 - key: {}", idempotencyKey);
-                return parseCachedResponse(cachedBody.get());
+                return parseCachedResponse(claim.cachedResponse());
             }
+            // 최초 요청만 PROCESSING을 소유하며, 이 요청 실행 전용 ownerToken을 받는다.
+            ownerToken = claim.ownerToken();
         }
 
         // #2. 최초 요청 처리
@@ -86,7 +90,14 @@ public class CouponServiceImpl implements CouponService {
             // #3. 성공 응답 JSON 직렬화 후 Redis 캐싱 (COMPLETED, TTL 10분)
             if (hasIdempotencyKey(idempotencyKey)) {
                 String responseJson = toJson(response);
-                idempotencyChecker.cacheResponse(idempotencyKey, requestHash, responseJson, 200);
+                boolean completed =
+                        idempotencyChecker.complete(
+                                idempotencyKey, ownerToken, requestHash, responseJson, 200);
+                // CAS 실패 = 이 요청은 이미 소유권을 잃었다. 발급 자체는 이미 성립했으므로
+                // 응답은 그대로 반환하되, 현재 Redis 값(다른 요청의 것)은 건드리지 않는다.
+                if (!completed) {
+                    idempotencyOwnershipMetrics.recordCompleteRejected(idempotencyKey);
+                }
             }
 
             return response;
@@ -98,7 +109,7 @@ public class CouponServiceImpl implements CouponService {
             //  - issuanceCompleted    : 발급은 성립했고 응답 단계만 실패한 경우.
             if (canClearProgress(idempotencyKey, issuanceCompleted)
                     && e.getReason() != IssueFailReason.SAVE_RESULT_UNKNOWN) {
-                idempotencyChecker.clearProgress(idempotencyKey);
+                releaseProgress(idempotencyKey, ownerToken);
             }
             throw e;
 
@@ -106,9 +117,15 @@ public class CouponServiceImpl implements CouponService {
             // CouponIssueException으로 변환되지 않은 예외(캐시 누락, stockId 조회 실패 등)도
             // 발급 전이라면 키를 풀어 정상 재시도를 막지 않는다.
             if (canClearProgress(idempotencyKey, issuanceCompleted)) {
-                idempotencyChecker.clearProgress(idempotencyKey);
+                releaseProgress(idempotencyKey, ownerToken);
             }
             throw e;
+        }
+    }
+
+    private void releaseProgress(String idempotencyKey, String ownerToken) {
+        if (!idempotencyChecker.release(idempotencyKey, ownerToken)) {
+            idempotencyOwnershipMetrics.recordReleaseRejected(idempotencyKey);
         }
     }
 
