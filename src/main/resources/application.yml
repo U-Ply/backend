@@ -84,6 +84,10 @@ coupon:
     threshold-count: ${CACHE_RECOVERY_THRESHOLD_COUNT:5}
     window-seconds: ${CACHE_RECOVERY_WINDOW_SECONDS:5}
     lock-seconds: ${CACHE_RECOVERY_LOCK_SECONDS:30}
+  pending-monitor:
+    scheduler-enabled: ${PENDING_MONITOR_SCHEDULER_ENABLED:false}
+    stale-threshold: ${PENDING_MONITOR_STALE_THRESHOLD:PT10M}
+    fixed-delay: ${PENDING_MONITOR_FIXED_DELAY:PT5M}
   verification:
         # CLOCK-02 의 Redis-DB 시계 허용 오차.
         # INV-04(이력 순서) · INV-06(시각 순서) · INV-11(캠페인 기간)의 경계가 밀리초라
