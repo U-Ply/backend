@@ -2,13 +2,13 @@ package com.uply.coupon.coupon.strategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uply.coupon.it.IntegrationTestContainers;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -21,8 +21,7 @@ import org.springframework.scripting.support.ResourceScriptSource;
  * 한 번만 올라간다"는 성질은 실제 Redis 없이는 증명할 수 없다. SREM 반환값으로 게이트하는 구조가 그 성질을 만드는데, 모의로는 그 상호작용이 그대로 재현되지 않기
  * 때문이다.
  */
-@SpringBootTest
-class RollbackCouponScriptIntegrationTest {
+class RollbackCouponScriptIntegrationTest extends IntegrationTestContainers {
 
     private static final Long CAMPAIGN_ID = 900L;
     private static final Long STOCK_ID = 910L;
