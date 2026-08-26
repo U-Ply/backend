@@ -19,6 +19,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 /** Redis + Lua Script 기반 발급 전략 */
 @Component("luaScriptIssueStrategy")
@@ -136,6 +137,21 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
                 throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
             }
             throw e;
+
+        } catch (CannotCreateTransactionException e) {
+            // 트랜잭션 진입(커넥션 획득) 자체의 실패. @Transactional 프록시가 메서드 본문에
+            // 들어가기 전에 커넥션을 획득하므로, 이 예외는 couponSaveStrategy.save() 내부의
+            // catch 블록을 거치지 않고 곧장 여기로 전파된다. DB에는 아무 것도 쓰이지 않았음이
+            // 확실하므로 결과 불명확 유예 없이 바로 Redis 보상을 실행한다.
+            log.error(
+                    "[DB 커넥션 획득 실패] 트랜잭션 시작 전 실패로 DB 미기록이 확실합니다. Redis 보상 로직을 실행합니다. couponId: {}",
+                    couponId,
+                    e);
+
+            if (!rollbackInRedis(stockIdKey, issuedCampaignKey, userId)) {
+                throw new CouponIssueException(IssueFailReason.SAVE_RESULT_UNKNOWN, e);
+            }
+            throw new CouponIssueException(IssueFailReason.CONNECTION_UNAVAILABLE, e);
 
         } catch (Exception e) {
             // 기타 예상치 못한 인프라/시스템 예외 발생 시 보상 유예
