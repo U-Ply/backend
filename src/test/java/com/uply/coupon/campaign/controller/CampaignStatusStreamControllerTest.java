@@ -16,6 +16,7 @@ import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -28,12 +29,15 @@ class CampaignStatusStreamControllerTest {
     private CampaignStatusStreamService campaignStatusStreamService;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
         campaignStatusStreamService = mock(CampaignStatusStreamService.class);
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CampaignStatusStreamController(campaignStatusStreamService))
-                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
+                        .setControllerAdvice(
+                                new GlobalExceptionHandler(
+                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
                         .build();
     }
 

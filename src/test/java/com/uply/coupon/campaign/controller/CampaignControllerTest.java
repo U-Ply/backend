@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -33,7 +34,9 @@ class CampaignControllerTest {
         campaignQueryService = mock(CampaignQueryService.class);
         mockMvc =
                 MockMvcBuilders.standaloneSetup(new CampaignController(campaignQueryService))
-                        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
+                        .setControllerAdvice(
+                                new GlobalExceptionHandler(
+                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
                         .build();
     }
 

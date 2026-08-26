@@ -58,7 +58,7 @@ POST /api/admin/batch/reconcile?runId=BULK-01
 남아 있어서 나온 값이며, 위반 대상도 그 5건 그대로다. 7절 참고.
 
 리포트 원본이 파일로 남아 있는 회차는 `BULK-06` 하나다
-(`BULK-06-report.md` · `BULK-06-rules.json` · `BULK-06-violations.json`).
+(`BULK-06-report.md`).
 나머지 회차는 이 문서의 표가 기록이다 — `verification_report` 는 시드 스크립트가 지우는
 테이블이라 보관 장소로 쓸 수 없다. 부록 참고.
 

@@ -264,4 +264,143 @@ class CampaignCacheWarmupIntegrationTest extends IntegrationTestContainers {
         Boolean hasIssuedKey = redisTemplate.hasKey(issuedKey);
         assertThat(hasIssuedKey).isFalse();
     }
+
+    // recoverMissingCache: 운영 중 부분 유실 복구. warmupCampaign 테스트와 달리, 실제
+    // Redis GET/SETNX로 "살아있는 키는 절대 덮어쓰지 않는다"를 직접 검증한다.
+
+    @Test
+    @DisplayName("부분 복구: 실시간으로 감소 중인 stock 값은 그대로 두고, 없는 expireAt만 채운다.")
+    void recoverMissingCache_PreservesLiveStockValue_FillsOnlyMissingKey() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+        Campaign campaign =
+                Campaign.builder()
+                        .name("나고야 노선 할인 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-NGO")
+                        .fareClass("Y")
+                        .totalStock(100)
+                        .build();
+        stock.decreaseStock(30); // DB 기준 잔여 70
+        CampaignStock savedStock = campaignStockRepository.save(stock);
+
+        // 이미 웜업된 상태에서, 발급이 계속 진행돼 Redis 재고가 DB보다 한 걸음 더 앞선(65) 상황을
+        // 흉내낸다. expireAt 키만 유실됐다고 가정한다 (openAt은 이 테스트의 관심사가 아니다).
+        String stockKey = String.format("stock:%d", savedStock.getId());
+        redisTemplate.opsForValue().set(stockKey, "65");
+
+        // when
+        List<String> mismatches =
+                campaignCacheWarmupService.recoverMissingCache(savedCampaign.getId());
+
+        // then
+        // stock 값이 SETNX로 덮어써졌다면 70(DB 스냅샷)이 됐을 것이다. 65 그대로면 살아있는
+        // 값을 건드리지 않았다는 뜻이다.
+        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("65");
+
+        String expireAtKey = String.format("campaign:%d:expireAt", savedCampaign.getId());
+        assertThat(redisTemplate.opsForValue().get(expireAtKey)).isNotNull();
+
+        // redis(65) < db(70)는 트래픽이 계속돼 DB가 못 따라온 정상적인 시간차다 — 초과 발급
+        // 위험이 없는 방향이므로 자체 점검은 이걸 위험으로 보고하면 안 된다.
+        assertThat(mismatches).isEmpty();
+    }
+
+    @Test
+    @DisplayName("부분 복구 자체 점검: Redis 재고가 DB보다 많으면(되살아난 방향) 실제로 탐지한다.")
+    void recoverMissingCache_ScopedCheck_DetectsRedisExceedingDb() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+        Campaign campaign =
+                Campaign.builder()
+                        .name("삿포로 노선 할인 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-CTS")
+                        .fareClass("Y")
+                        .totalStock(100)
+                        .build();
+        stock.decreaseStock(30); // DB 기준 잔여 70
+        CampaignStock savedStock = campaignStockRepository.save(stock);
+
+        // Redis 쪽 재고가 DB(70)보다 더 많이(80) 남아있는, 재고가 부당하게 되살아난 위험한 상황을
+        // 흉내낸다 — SETNX는 이미 있는 이 값을 건드리지 않으므로 오염이 그대로 남는다.
+        String stockKey = String.format("stock:%d", savedStock.getId());
+        redisTemplate.opsForValue().set(stockKey, "80");
+
+        // when
+        List<String> mismatches =
+                campaignCacheWarmupService.recoverMissingCache(savedCampaign.getId());
+
+        // then
+        assertThat(redisTemplate.opsForValue().get(stockKey)).isEqualTo("80"); // SETNX가 안 고침
+        assertThat(mismatches).hasSize(1);
+        assertThat(mismatches.get(0))
+                .contains("stockId=" + savedStock.getId(), "redis=80", "db=70");
+    }
+
+    @Test
+    @DisplayName("부분 복구: issued Set이 없으면 DB 기준으로 SADD만으로 채운다 (RENAME 없음).")
+    void recoverMissingCache_RebuildsIssuedSetAdditively() {
+        // given
+        LocalDateTime now = LocalDateTime.now();
+        Campaign campaign =
+                Campaign.builder()
+                        .name("싱가포르 노선 할인 쿠폰")
+                        .openAt(now.minusHours(1))
+                        .expireAt(now.plusDays(7))
+                        .build();
+        Campaign savedCampaign = campaignRepository.save(campaign);
+
+        CampaignStock stock =
+                CampaignStock.builder()
+                        .campaign(savedCampaign)
+                        .routeId("ICN-SIN")
+                        .fareClass("Y")
+                        .totalStock(50)
+                        .build();
+        CampaignStock savedStock = campaignStockRepository.save(stock);
+
+        jdbcTemplate.update(
+                "INSERT INTO users (user_id, email, name) VALUES (?, ?, ?)",
+                200L,
+                "recover-user200@test.com",
+                "유저200");
+        Coupon coupon =
+                Coupon.issue(
+                        4001L,
+                        200L,
+                        savedCampaign.getId(),
+                        savedStock.getId(),
+                        savedCampaign.getOpenAt(),
+                        savedCampaign.getExpireAt());
+        couponRepository.save(coupon);
+
+        // issued Set 자체가 Redis에 없는 상태(유실) — 다른 키는 아무것도 준비하지 않는다.
+
+        // when
+        List<String> mismatches =
+                campaignCacheWarmupService.recoverMissingCache(savedCampaign.getId());
+
+        // then
+        String issuedKey = String.format("issued:%d", savedCampaign.getId());
+        Set<String> issuedUsers = redisTemplate.opsForSet().members(issuedKey);
+        assertThat(issuedUsers).containsExactly("200");
+
+        // 총재고 50, 발급 0건 상태로 채워졌으므로(DB remainingStock=50) 자체 점검은 통과한다.
+        assertThat(mismatches).isEmpty();
+    }
 }

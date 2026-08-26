@@ -34,7 +34,7 @@ public class RedisStockIdLookup implements StockIdLookup {
             // DB에는 있는데 Redis 조회 실패 -> 503 CAMPAIGN_NOT_CACHED 을 줘야한다.
             if (campaignStockRepository.existsByCampaignIdAndRouteIdAndFareClass(
                     campaignId, routeId, fareClass)) {
-                throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED);
+                throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, campaignId);
             }
             // DB에도 없으면 CampaignNotFoundException(404)
             throw new CampaignNotFoundException(campaignId, routeId, fareClass);

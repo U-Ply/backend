@@ -275,8 +275,19 @@ class CouponServiceIntegrationTest {
             executorService.shutdown();
 
             // then
-            assertThat(successCount.get()).isEqualTo(1); // 1번만 성공
-            assertThat(failCount.get()).isEqualTo(9); // 나머지 9번은 중복 요청으로 실패
+            // successCount는 "예외 없이 정상 반환된 요청 수"일 뿐이다. 동일 Idempotency-Key로
+            // 먼저 끝난 요청이 COMPLETED 응답을 캐싱해두면, 그 뒤에 도착한 요청들도 실제 재발급
+            // 없이 그 캐시된 응답을 그대로 반환받아 예외 없이 성공한다(CouponServiceImpl.issue()
+            // 의 캐시 히트 경로). 그래서 successCount만으로는 "실제 발급이 1번만 일어났다"를
+            // 증명할 수 없고, 몇 건이 캐시 히트로 성공했는지는 타이밍에 따라 달라져 고정값을
+            // 단정할 수 없다. 대신 요청은 전부 성공 또는 실패 중 하나로 귀결됐는지를 확인하고,
+            // 실제 발급 1회는 아래 Kafka 발행 횟수 검증으로 판단한다.
+            //
+            // DB 쿠폰 수로는 교차 검증하지 않는다 — 이 클래스는 kafkaTemplate이 @MockBean이라
+            // send()가 실제 브로커로 나가지 않고, 그걸 소비해 DB에 쓰는 컨슈머도 전혀 동작하지
+            // 않는다. 그래서 이 테스트에서는 DB에 쿠폰이 항상 0건이며, 이는 "발급 실패"가 아니라
+            // Kafka 저장 전략이 DB 반영을 컨슈머에 위임하기 때문이다.
+            assertThat(successCount.get() + failCount.get()).isEqualTo(concurrentRequests);
 
             then(kafkaTemplate)
                     .should(times(1))

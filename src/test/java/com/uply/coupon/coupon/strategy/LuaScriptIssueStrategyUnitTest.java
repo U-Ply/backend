@@ -37,6 +37,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 @ExtendWith(MockitoExtension.class)
 class LuaScriptIssueStrategyUnitTest {
@@ -425,5 +426,97 @@ class LuaScriptIssueStrategyUnitTest {
         // - 최초 차감용 Lua Script만 1회 실행됨
         verify(redisTemplate, times(1))
                 .execute(any(DefaultRedisScript.class), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName(
+            "DB 커넥션 획득 실패(CannotCreateTransactionException)로 트랜잭션 진입 전에 예외가 발생하면"
+                    + " Redis 보상을 실행하고 CONNECTION_UNAVAILABLE을 던진다")
+    void issue_CannotCreateTransactionException_RollbackRedisAndThrowsConnectionUnavailable() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+
+        // 1. Redis 선점 성공 설정
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
+
+        // 2. 보상 스크립트 성공 설정
+        given(
+                        redisTemplate.execute(
+                                eq(luaScriptIssueStrategy.rollbackScript), anyList(), anyString()))
+                .willReturn(1L);
+
+        // 3. @Transactional 프록시가 메서드 본문 진입 전 커넥션 획득에 실패한 상황을 모킹.
+        //    SyncMysqlSaveStrategy 내부 catch를 거치지 않고 원본 예외가 그대로 전파된다.
+        willThrow(new CannotCreateTransactionException("커넥션 풀 고갈"))
+                .given(couponSaveStrategy)
+                .save(
+                        anyLong(),
+                        eq(userId),
+                        eq(campaignId),
+                        eq(stockId),
+                        eq(idempotencyKey),
+                        eq(issuedAt),
+                        eq(expireAt));
+
+        // when & then
+        assertThatThrownBy(
+                        () ->
+                                luaScriptIssueStrategy.issue(
+                                        campaignId, userId, stockId, idempotencyKey))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.CONNECTION_UNAVAILABLE);
+
+        // Redis 보상 로직 실행 검증 (선점 1회 + 보상 1회 = 총 2회 execute 호출)
+        verify(redisTemplate, times(2))
+                .execute(any(DefaultRedisScript.class), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName("DB 커넥션 획득 실패 시 Redis 보상 자체가 실패하면 SAVE_RESULT_UNKNOWN으로 승격된다")
+    void issue_CannotCreateTransactionException_RollbackFailed_EscalatesToUnknown() {
+        // given
+        Long campaignId = 1L;
+        Long userId = 100L;
+        Long stockId = 10L;
+        Long couponId = 1000L;
+        String idempotencyKey = "idempotency-key-123";
+
+        given(couponIdGenerator.generate()).willReturn(couponId);
+        given(redisTemplate.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .willReturn(List.of(1L, issuedAtEpochMillis, expireAtEpochMillis));
+
+        // 보상 스크립트 실행 중 인프라 예외 발생
+        given(
+                        redisTemplate.execute(
+                                eq(luaScriptIssueStrategy.rollbackScript), anyList(), anyString()))
+                .willThrow(new RuntimeException("Redis 연결 끊김"));
+
+        willThrow(new CannotCreateTransactionException("커넥션 풀 고갈"))
+                .given(couponSaveStrategy)
+                .save(
+                        anyLong(),
+                        eq(userId),
+                        eq(campaignId),
+                        eq(stockId),
+                        eq(idempotencyKey),
+                        eq(issuedAt),
+                        eq(expireAt));
+
+        // when & then
+        assertThatThrownBy(
+                        () ->
+                                luaScriptIssueStrategy.issue(
+                                        campaignId, userId, stockId, idempotencyKey))
+                .isInstanceOf(CouponIssueException.class)
+                .extracting("reason")
+                .isEqualTo(IssueFailReason.SAVE_RESULT_UNKNOWN);
     }
 }
