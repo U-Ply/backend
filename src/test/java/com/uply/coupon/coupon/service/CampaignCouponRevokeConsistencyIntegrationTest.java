@@ -13,6 +13,7 @@ import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
 import com.uply.coupon.coupon.repository.CouponRepository;
+import com.uply.coupon.it.IntegrationTestContainers;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -29,27 +30,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-@DataJpaTest
-@ActiveProfiles("test")
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({
-    CampaignCouponRevokeService.class,
-    CampaignCouponRevokeChunkProcessor.class,
-    CouponStateTransitionService.class
-})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
-class CampaignCouponRevokeConsistencyIntegrationTest {
+class CampaignCouponRevokeConsistencyIntegrationTest extends IntegrationTestContainers {
 
     private static final AtomicLong COUPON_ID_SEQUENCE = new AtomicLong(8_200_000_000_000L);
     private static final String REVOKE_IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000070";

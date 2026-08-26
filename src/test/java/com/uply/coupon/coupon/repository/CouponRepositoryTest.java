@@ -8,6 +8,7 @@ import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
+import com.uply.coupon.it.IntegrationTestContainers;
 import com.uply.coupon.user.repository.UserRepository;
 import jakarta.persistence.EntityManager;
 import java.sql.Statement;
@@ -19,20 +20,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
-import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
-@DataJpaTest
-@ActiveProfiles("test")
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(UserRepository.class)
-class CouponRepositoryTest {
+@Transactional
+class CouponRepositoryTest extends IntegrationTestContainers {
 
     private static final AtomicLong COUPON_ID_SEQUENCE = new AtomicLong(8_000_000_000_000L);
 
