@@ -2,6 +2,7 @@ package com.uply.coupon.common.idempotency;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uply.coupon.common.LuaScriptLoader;
 import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import jakarta.annotation.PostConstruct;
@@ -12,10 +13,8 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 
 /**
@@ -51,16 +50,9 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
 
     @PostConstruct
     public void init() {
-        releaseScript = loadScript("scripts/idempotency_release.lua");
-        completeScript = loadScript("scripts/idempotency_complete.lua");
-        renewScript = loadScript("scripts/idempotency_renew.lua");
-    }
-
-    private DefaultRedisScript<Long> loadScript(String classpathLocation) {
-        DefaultRedisScript<Long> script = new DefaultRedisScript<>();
-        script.setScriptSource(new ResourceScriptSource(new ClassPathResource(classpathLocation)));
-        script.setResultType(Long.class);
-        return script;
+        releaseScript = LuaScriptLoader.load("scripts/idempotency_release.lua", Long.class);
+        completeScript = LuaScriptLoader.load("scripts/idempotency_complete.lua", Long.class);
+        renewScript = LuaScriptLoader.load("scripts/idempotency_renew.lua", Long.class);
     }
 
     @Override
@@ -109,24 +101,15 @@ public class RedisIdempotencyChecker implements IdempotencyChecker {
 
         String status = cache.getStatus();
 
-        // 선행 요청이 아직 처리 중인 경우 (동시성 요청 차단)
-        if ("PROCESSING".equals(status)) {
-            log.warn("[멱등성 검사] 이미 처리 중인 요청입니다. key: {}", redisKey);
-            throw new IdempotencyRequestInProgressException();
+        // 처리가 완료됐고 응답 본문이 있는 경우만 재실행 없이 최초 응답을 그대로 반환한다.
+        if ("COMPLETED".equals(status) && cache.getBody() != null) {
+            return IdempotencyClaim.completed(cache.getBody());
         }
 
-        if ("COMPLETED".equals(status)) {
-            if (cache.getBody() != null) {
-                return IdempotencyClaim.completed(cache.getBody());
-            }
-            // COMPLETED인데 body가 없는 비정상 캐시: 신규 요청처럼 재실행하면 중복 처리로
-            // 이어질 수 있으므로 차단한다.
-            log.warn("[멱등성 검사] COMPLETED 상태인데 body가 없어 재실행을 차단합니다. key: {}", redisKey);
-            throw new IdempotencyRequestInProgressException();
-        }
-
-        // 알 수 없는 status: 마찬가지로 재실행을 차단한다.
-        log.warn("[멱등성 검사] 알 수 없는 status로 재실행을 차단합니다. key: {}, status: {}", redisKey, status);
+        // 그 외(아직 처리 중, COMPLETED인데 body 없음, 알 수 없는 status)는 모두 재실행을
+        // 차단한다 - 손상되거나 불완전한 캐시를 신규 요청처럼 다시 실행하면 중복 처리로
+        // 이어질 수 있다.
+        log.warn("[멱등성 검사] 재실행을 차단합니다. key: {}, status: {}", redisKey, status);
         throw new IdempotencyRequestInProgressException();
     }
 

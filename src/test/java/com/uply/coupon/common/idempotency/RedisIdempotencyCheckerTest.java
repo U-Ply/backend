@@ -351,6 +351,22 @@ class RedisIdempotencyCheckerTest {
         }
 
         @Test
+        @DisplayName("release 중 Redis 실행이 예외를 던지면 삼키고 false를 반환한다")
+        void release_redisExecuteThrows_returnsFalseWithoutPropagating() {
+            given(
+                            redisTemplate.execute(
+                                    any(DefaultRedisScript.class),
+                                    eq(List.of(REDIS_KEY)),
+                                    eq("owner-1")))
+                    .willThrow(
+                            new org.springframework.data.redis.RedisSystemException("boom", null));
+
+            boolean result = idempotencyChecker.release(IDEMPOTENCY_KEY, "owner-1");
+
+            assertThat(result).isFalse();
+        }
+
+        @Test
         @DisplayName("renew는 idempotency_renew Lua를 PROCESSING_TTL(30초)과 함께 실행한다")
         void renew_executesRenewScriptWithProcessingTtl() {
             given(

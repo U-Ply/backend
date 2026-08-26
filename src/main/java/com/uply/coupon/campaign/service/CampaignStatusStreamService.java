@@ -8,12 +8,15 @@ import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CampaignStockCacheMissException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -34,6 +37,8 @@ public class CampaignStatusStreamService {
     // (기본 비활성화). GlobalExceptionHandler와 같은 패턴으로 ObjectProvider로 받아
     // 없으면 조용히 건너뛴다.
     private final ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider;
+
+    private final MeterRegistry meterRegistry;
 
     private final Map<Long, StockChannel> channels = new ConcurrentHashMap<>();
 
@@ -155,11 +160,32 @@ public class CampaignStatusStreamService {
     /**
      * 폴링 도중 캐시 미스가 나면 자동 복구를 트리거하고, 구독자에게 에러 이벤트를 보낸 뒤 연결을 종료하고 채널을 polling 대상에서 제거한다. 채널을 지우지 않으면
      * 다음 tick에서 같은 캐시 미스가 무한 반복된다.
+     *
+     * <p>emitter 정리와 채널 제거를 {@link #channels}의 같은 {@code compute()} 호출 안에서 원자적으로 묶는다. {@code
+     * subscribe()}/{@code removeEmitter()}와 마찬가지로, 분리해서 처리하면 정리 도중 새로 들어온 {@code subscribe()}가 이 채널
+     * 객체에 emitter를 추가했는데 그 직후 채널이 통째로 지워져, 새 구독자가 에러 이벤트도 못 받고 이후 polling 대상에서도 빠지는 고아 상태가 된다.
      */
     private void terminateChannelDueToCacheMiss(StockChannel channel) {
         notifyCacheMiss(channel.getCampaignId());
 
-        channel.getEmitters()
+        // compute() 안에서는 맵에서 떼어내는 작업만 하고(빠르게), 실제 전송·종료 I/O는 이미
+        // 떼어낸 뒤 락 밖에서 수행한다. compute()가 반환하는 값은 "새로 매핑할 값"이라 지워지기
+        // 전의 채널 객체 자체는 별도로 캡처해야 한다.
+        AtomicReference<StockChannel> removedChannel = new AtomicReference<>();
+        channels.compute(
+                channel.getStockId(),
+                (id, existing) -> {
+                    removedChannel.set(existing);
+                    return null;
+                });
+
+        StockChannel finalChannel = removedChannel.get();
+        if (finalChannel == null) {
+            return;
+        }
+
+        finalChannel
+                .getEmitters()
                 .forEach(
                         (emitterId, emitter) -> {
                             try {
@@ -174,16 +200,32 @@ public class CampaignStatusStreamService {
                                                         MediaType.APPLICATION_JSON));
                             } catch (Exception e) {
                                 log.debug("캐시 미스 에러 이벤트 전송 실패: emitterId={}", emitterId, e);
-                            } finally {
+                            }
+                            try {
                                 emitter.complete();
+                            } catch (Exception e) {
+                                // send()와 별개로 방어한다 - complete()가 실패해도(예: 클라이언트가
+                                // 이미 컨테이너 쪽에서 연결을 끊어 정리된 경우) 나머지 emitter
+                                // 정리를 계속해야 한다. 채널은 이미 맵에서 제거됐으므로 이 예외가
+                                // "다음 tick에서 같은 캐시 미스가 무한 반복"되는 결과로 이어지지도
+                                // 않는다.
+                                log.debug("캐시 미스 emitter 종료 실패: emitterId={}", emitterId, e);
                             }
                         });
-
-        // 이 채널의 emitter는 모두 종료했으므로 남은 구독자 유무와 무관하게 polling 대상에서 뺀다.
-        channels.remove(channel.getStockId());
     }
 
     private void notifyCacheMiss(Long campaignId) {
+        // GlobalExceptionHandler와 이름·태그가 동일한 카운터를 조회(없으면 생성)한다.
+        // Micrometer는 같은 이름+태그의 Counter.builder().register()를 여러 곳에서 호출해도
+        // 동일한 등록된 인스턴스를 반환하므로, 발급 API 경로(GlobalExceptionHandler)와 SSE
+        // 폴링 경로가 하나의 카운터를 공유하게 된다 - 그러지 않으면 SSE에서 발견한 캐시 미스가
+        // 이 지표에서 누락된다.
+        Counter.builder("coupon.issue.failure")
+                .tag("reason", "campaign_not_cached")
+                .description("발급 요청이 Redis 캠페인 캐시 미스(웜업 누락/유실)로 실패한 횟수")
+                .register(meterRegistry)
+                .increment();
+
         CacheAutoRecoveryTrigger trigger = cacheAutoRecoveryTriggerProvider.getIfAvailable();
         if (trigger != null) {
             trigger.onCacheMiss(campaignId);

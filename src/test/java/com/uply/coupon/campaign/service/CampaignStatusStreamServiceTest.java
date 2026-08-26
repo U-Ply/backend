@@ -19,6 +19,7 @@ import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CampaignStockCacheMissException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
@@ -32,7 +33,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -43,7 +43,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @ExtendWith(MockitoExtension.class)
 class CampaignStatusStreamServiceTest {
 
-    @InjectMocks private CampaignStatusStreamService service;
+    private CampaignStatusStreamService service;
 
     @Mock private CampaignStockRepository campaignStockRepository;
 
@@ -55,8 +55,18 @@ class CampaignStatusStreamServiceTest {
 
     @Mock private CampaignStock stockB;
 
+    // Counter.builder(...).register(...)가 실제로 동작해야 하는 카운터 검증 대상이라 목이 아닌
+    // 실제 레지스트리를 쓴다 - GlobalExceptionHandlerTest 등 다른 테스트와 같은 패턴이다.
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     @BeforeEach
     void setUp() {
+        service =
+                new CampaignStatusStreamService(
+                        campaignStockRepository,
+                        campaignCacheRepository,
+                        cacheAutoRecoveryTriggerProvider,
+                        meterRegistry);
         ReflectionTestUtils.setField(service, "timeoutMs", 1_800_000L);
         ReflectionTestUtils.setField(service, "heartbeatIntervalMs", 15_000L);
         ReflectionTestUtils.setField(service, "reconnectTimeMs", 3_000L);
@@ -341,6 +351,16 @@ class CampaignStatusStreamServiceTest {
             verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
             verify(emitter).complete();
             assertThat(channelsMap()).doesNotContainKey(10L);
+            // 발급 API 경로(GlobalExceptionHandler)와 같은 이름·태그의 카운터를 SSE 폴링
+            // 경로도 증가시키는지 검증한다 - 그러지 않으면 SSE에서 발견한 캐시 미스가
+            // coupon.issue.failure{reason=campaign_not_cached} 지표에서 누락된다.
+            assertThat(
+                            meterRegistry
+                                    .get("coupon.issue.failure")
+                                    .tag("reason", "campaign_not_cached")
+                                    .counter()
+                                    .count())
+                    .isEqualTo(1.0);
 
             // 채널이 제거되었으므로 다음 polling에서는 이 재고 풀을 다시 조회하지 않는다
             // (= 같은 캐시 미스가 무한 반복되지 않는다).
