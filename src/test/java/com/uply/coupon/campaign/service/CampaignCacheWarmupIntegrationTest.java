@@ -9,6 +9,7 @@ import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.repository.CouponRepository;
+import com.uply.coupon.it.IntegrationTestContainers;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -16,15 +17,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Redis 캐시에 사전 적재된 데이터에서 stockId 조회 및 캐시 웜업 복구 테스트 */
-@SpringBootTest
 @Transactional
-class CampaignCacheWarmupIntegrationTest {
+class CampaignCacheWarmupIntegrationTest extends IntegrationTestContainers {
 
     @Autowired private CampaignCacheWarmupService campaignCacheWarmupService;
 

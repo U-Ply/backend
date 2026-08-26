@@ -6,20 +6,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CampaignNotOpenException;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
+import com.uply.coupon.it.IntegrationTestContainers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
-@SpringBootTest
-@ActiveProfiles("test")
 @TestPropertySource(
         properties = {"coupon.issue.strategy=PESSIMISTIC_LOCK", "coupon.idempotency.enabled=false"})
-class CouponIssueValidationIntegrationTest {
+class CouponIssueValidationIntegrationTest extends IntegrationTestContainers {
 
     @Autowired CouponService couponService;
 

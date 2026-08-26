@@ -13,6 +13,8 @@
 
 ## 공통 시드와 초기화
 
+공식 회차의 공통 환경값과 무효 조건은 [`docs/load-test-environment.md`](../../docs/load-test-environment.md)를 기준으로 한다.
+
 최초 한 번 공통 데이터를 생성한다. 이 작업은 `coupon_db`와 Redis의 기존 데이터를 모두 삭제한다.
 
 ```bash
@@ -45,6 +47,20 @@ issued:1                             = 비어 있음
 ```
 
 초기화 후에는 사용자와 캠페인은 유지되고 쿠폰·이력·검증 결과가 삭제된다. DB와 Redis 재고는 10,000으로 돌아가고 Redis의 발급 사용자 및 멱등성 키도 제거된다.
+
+전체 절차는 다음 두 스크립트로 실행할 수 있다. 준비 단계는 모든 애플리케이션 인스턴스를 중지하고, MySQL·Redis·Kafka 컨테이너가 있는 호스트에서 실행한다. AWS 분리 환경에서는 데이터·관측 EC2가 준비 스크립트 실행 호스트다.
+
+```bash
+BASE_URL=http://<앱-사설-IP>:8081 \
+  ./scripts/load-test/prepare-level2-run.sh V2 --seed
+BASE_URL=http://<앱-사설-IP>:8081 \
+  ./scripts/load-test/prepare-level2-run.sh V2
+
+# 준비 스크립트가 출력한 V2 환경변수로 애플리케이션 실행 후
+./scripts/load-test/run-level2.sh V2 L2-V2-01
+```
+
+`run-level2.sh`는 k6 JSON, DB·Redis·Kafka 상태, 배치 실행 결과, Markdown 검증 리포트와 작성용 `result.md`를 `load-tests/results/<runId>/`에 저장한다. AWS에서 k6 호스트를 분리할 때는 `LEVEL2_PHASE=load`를 k6 호스트에서 실행하고, `k6-summary.json`만이 아니라 결과 폴더 전체를 복사한 뒤 데이터·관측 EC2에서 `LEVEL2_PHASE=finalize`를 실행한다. 상세 AWS 절차는 [`docs/aws-load-test-setup.md`](../../docs/aws-load-test-setup.md)를 따른다.
 
 ## 전략별 애플리케이션 실행
 

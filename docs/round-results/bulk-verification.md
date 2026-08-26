@@ -52,8 +52,15 @@ POST /api/admin/batch/reconcile?runId=BULK-01
 | `BULK-01` | 정상 | PASSED | 검사 13 / N/A 2 / 미실행 0 | 0 | 55,757 ms |
 | `BULK-03` | 정상 (재실행) | PASSED | 검사 13 / N/A 2 / 미실행 0 | 0 | 54,417 ms |
 | `BULK-04` | 오염 5건 | FAILED | 검사 13 / N/A 2 / 미실행 0 | **5** | 67,771 ms |
+| `BULK-06` | 오염 5건 + 만료 배치 이후 | FAILED | 검사 13 / N/A 2 / 미실행 0 | **5** | 70,954 ms |
 
-`BULK-02` 는 `round=V2` 로 잘못 붙여 실행한 회차다. 삭제하지 않고 남긴다 (아래 관찰 참고).
+`BULK-06` 의 `FAILED` 는 만료 배치의 실패가 아니다. `BULK-04` 의 오염 5건이 데이터에 그대로
+남아 있어서 나온 값이며, 위반 대상도 그 5건 그대로다. 7절 참고.
+
+리포트 원본이 파일로 남아 있는 회차는 `BULK-06` 하나다
+(`BULK-06-report.md` · `BULK-06-rules.json` · `BULK-06-violations.json`).
+나머지 회차는 이 문서의 표가 기록이다 — `verification_report` 는 시드 스크립트가 지우는
+테이블이라 보관 장소로 쓸 수 없다. 부록 참고.
 
 ---
 
@@ -106,6 +113,44 @@ WHERE a.run_id='BULK-01' AND b.run_id='BULK-03'
 | INV-10 | 6,141 ms | 5,270 ms |
 
 판정에 쓰는 값은 결정적이고 시간만 흔들린다. 명세가 "실행 시간은 평가하지 않는다" 고 한 것과 맞는다.
+
+### 4.1 완전 재구축 후 동일성 (`BULK-06`)
+
+`BULK-01` vs `BULK-03` 은 같은 프로세스 안에서 배치를 두 번 돌린 것이다. 데이터가 그대로였으니
+"같은 데이터면 같은 결과" 의 절반만 보인다.
+
+2026-08-26, 데이터베이스를 통째로 비우고 **같은 인자로 처음부터 다시 만든 뒤** 같은 절차를
+반복했다.
+
+```bash
+./gradlew bootRun --args="--spring.profiles.active=dummy --spring.main.web-application-type=none --users=1000000 --coupons=3000000 --seed=42 --corrupt=5 --truncate"
+POST /api/admin/batch/expiration
+POST /api/admin/batch/verification?runId=BULK-06&round=V1&failOnViolation=false
+POST /api/admin/batch/reconcile?runId=BULK-06
+```
+
+`BULK-04` 와 `BULK-06` 은 **서로 다른 날, 서로 다른 적재본** 위에서 돌았다. 그 사이에
+데이터베이스를 통째로 비우고 300만 건을 다시 만들었다. 두 회차가 공유하는 것은 생성기 인자
+(`--seed=42 --corrupt=5`) 뿐이다.
+
+| 항목 | `BULK-04` | `BULK-06` |
+| --- | --- | --- |
+| 적재본 | 2026-08-25 | 2026-08-26 (재구축) |
+| INV-04 위반 | 5 | 5 |
+| INV-04 `target_id` | 4 · 19 · 31 · 37 · 40 | 4 · 19 · 31 · 37 · 40 |
+| INV-04 검사 행 | 3,000,000 | 3,000,000 |
+| 나머지 14개 규칙 위반 | 0 | 0 |
+| 규칙 수 | 15 (검사 13 / N/A 2 / 미실행 0) | 15 (검사 13 / N/A 2 / 미실행 0) |
+
+**오염 5건의 `coupon_id` 까지 같다.** 생성기가 난수도 `NOW()` 도 쓰지 않고 모든 값을 시드와
+인덱스에서 파생시키기 때문이다. 개수만 같은 것이 아니라 대상까지 같으므로 "우연히 5건" 이
+배제된다.
+
+`BULK-06` 은 여기에 만료 배치까지 다시 돌린 상태다. `coupon_history` 가 3,898,982 →
+4,949,780 으로 늘었고(차이 1,050,798), INV-05·INV-09 의 `checked_rows` 가 그 값을 그대로
+받는다. 재구축 → 만료 → 검증 전체가 같은 결과로 재현된다.
+
+리포트 원본은 `docs/round-results/BULK-06-report.md` 에 있다.
 
 ---
 
@@ -180,27 +225,103 @@ INV-04 의 소요가 13,328ms → 25,202ms 로 늘었다. 위반이 나오면 �
 
 ---
 
-## 관찰 1 — 회차 라벨과 실제 전략이 어긋나도 검출되지 않는다
+## 7. 만료 배치 — 105만 건 상태 전이
 
-`BULK-02` 는 `round=V2` 로 기록됐지만, 애플리케이션은 `coupon.issue.strategy=PESSIMISTIC_LOCK`
-으로 떠 있었다. 그런데도 판정은 `PASSED` 다.
+만료 배치의 지금까지 최대 실적은 10만 건 데이터에서 34,796건이었다 (`round-results.md`,
+2026-08-21). 300만 건 데이터는 종료 캠페인 15개에 만료 대상을 105만 건 갖고 있어, 같은
+배치를 **30배 규모**에서 돌려볼 수 있었다.
 
-`round` 는 URL 파라미터로 들어오고 실제 전략은 애플리케이션 설정에서 온다. 두 값이 모순돼도
-아무도 확인하지 않는다. Level 2/3 공식 회차에서 "V3 회차" 라고 붙였는데 앱이 V1 설정으로 떠
-있으면, 리포트에는 `round=V3 PASSED` 가 남고 §11 비교표가 잘못된 라벨로 채워진다.
+### 기대값을 먼저 적었다
 
-검증 배치가 `coupon.issue.strategy` 를 읽어 `round` 와 모순되면 거절하거나 최소한 기록해야 한다.
+결과를 본 뒤에 해석하면 어떤 숫자가 나와도 그럴듯해 보인다. 실행 전에 스냅샷을 뜨고 기대값을
+확정했다.
 
-## 관찰 2 — 검증과 대사 사이의 스냅샷 간격
+| 항목 | 배치 전 | 기대 | 실제 |
+| --- | ---: | ---: | ---: |
+| 만료 대상 (`ISSUED` + 만료일 경과) | 1,050,798 | 0 | **0** |
+| `coupons` ISSUED | 2,175,782 | 1,124,984 | **1,124,984** |
+| `coupons` EXPIRED | 75,083 | 1,125,881 | **1,125,881** |
+| `coupons` USED | 599,553 | 599,553 | **599,553** |
+| `coupons` CANCELLED | 149,582 | 149,582 | **149,582** |
+| `coupon_history` | 3,898,982 | 4,949,780 | **4,949,780** |
+| `to_status='EXPIRED'` 이력 | 75,083 | 1,125,881 | **1,125,881** |
 
-`BULK-01` 에서 검증 규칙의 `snapshot_at` 은 `02:44:55`, REC-01 은 `02:52:07` 이다. 8분 차이다.
-대사 배치를 나중에 따로 호출했기 때문이다.
+여섯 숫자가 전부 일치한다. `USED`·`CANCELLED` 가 그대로인 것은 만료 배치가 종료 상태를
+건드리지 않았다는 뜻이다 (`UPDATE ... WHERE status = 'ISSUED'`).
 
-지금은 데이터가 정적이라 문제가 없지만, 실제 회차에서는 그 사이에 데이터가 변하면 한 리포트 안에
-서로 다른 시점의 결과가 섞인다. §14.4 는 "lag 0 이후 실행" 만 정하고 있으므로, 검증과 대사 사이
-간격에 대한 규정을 추가하는 것이 좋다.
+### 실행
+
+```
+POST /api/admin/batch/expiration     ->  jobExecutionId 113
+```
+
+```
+job_execution_id  job_name        step_name        read_count  write_count  commit_count
+113               expirationJob   cutoffStep                0            0             1
+113               expirationJob   expirationStep    1,050,798    1,050,798         1,051
+```
+
+`cutoffStep` 이 `SELECT NOW(3)` 으로 기준 시각을 한 번 고정해 `JobExecutionContext` 에 넣고,
+`expirationStep` 이 그 값으로 `JdbcPagingItemReader`(청크 1,000)를 돌린다. 커밋 1,051회는
+1,050,798 / 1,000 과 맞는다.
+
+### 재실행 멱등성
+
+같은 배치를 7분 뒤에 한 번 더 호출했다.
+
+```
+114               expirationJob   expirationStep            0            0             1
+```
+
+**0건을 읽고 아무것도 바꾸지 않았다.** 이력이 중복으로 쌓이지도 않았다 — 라이터가
+`idempotency_key = CONCAT('expire-', coupon_id)` 를 쓰고, `UPDATE` 에 `status = 'ISSUED'`
+조건이 걸려 있어 두 번째 회차의 대상 집합이 비었다.
+
+### 만료는 재고를 복원하지 않는다 (§2.8)
+
+배치 전에 `campaign_stocks` 300행 전체를 `stock_before_expire` 로 복제해 두고 비교했다.
+
+```sql
+SELECT COUNT(*) AS diff_rows
+FROM ((SELECT * FROM campaign_stocks) EXCEPT (SELECT * FROM stock_before_expire)) d;
+```
+
+**결과: 0.** 105만 장이 만료됐는데 재고는 한 컬럼도 움직이지 않았다. INV-03 도 위반 0으로
+같은 결론을 낸다.
+
+### 새 이력이 실제로 검사됐다는 증거
+
+만료 배치 이후 회차(`BULK-06`)에서 이력 기반 두 규칙의 `checked_rows` 가 늘었다.
+
+| 규칙 | 만료 전 (`BULK-01`~`BULK-04`) | 만료 후 (`BULK-06`) |
+| --- | ---: | ---: |
+| INV-05 상태 전이 유효성 | 3,898,982 | **4,949,780** |
+| INV-09 도메인 멱등성 | 3,898,982 | **4,949,780** |
+
+만료 배치가 새로 넣은 1,050,798행이 검사 대상에 그대로 들어갔다. 규칙이 옛날 행만 훑고
+통과한 것이 아니다. INV-05 는 `ISSUED -> EXPIRED` 전이 105만 건을, INV-07 은 EXPIRED 쿠폰이
+`expired_at` 만 갖고 `used_at`·`cancelled_at` 은 비어 있는지를 처음으로 이 규모에서 봤다.
+
+INV-04 의 소요는 25,202ms(BULK-04) → 29,026ms 로 늘었다. `coupon_history` 가 27% 커진 것과
+같은 방향이다.
+
+### 위반 5건은 만료 배치와 무관하다
+
+```
+GET /api/admin/batch/verification/runs/BULK-06/violations?ruleCode=INV-04
+
+target_id 4   current=CANCELLED last_history=USED
+target_id 19  current=CANCELLED last_history=USED
+target_id 31  current=CANCELLED last_history=USED
+target_id 37  current=CANCELLED last_history=USED
+target_id 40  current=CANCELLED last_history=USED
+```
+
+`BULK-04` 에서 주입한 오염 5건 그대로다. **만료 배치가 건드린 1,050,798건 중 이력이 어긋난
+것은 하나도 없다.** 개수만이 아니라 `target_id` 까지 같으므로 "우연히 5건" 이 아니다.
 
 ---
+
 
 ## 요구사항 대조
 
@@ -209,7 +330,72 @@ INV-04 의 소요가 13,328ms → 25,202ms 로 늘었다. 위반이 나오면 �
 | 가상 사용자 100만 명 적재 | 충족 | `users` 1,000,000 |
 | 발급 이력 300만 건 적재 | 충족 | `coupon_history` 3,898,982 |
 | 검증은 300만 건 전체 대상 | 충족 | `checked_rows` 3,000,000 / 3,898,982 |
-| 같은 데이터 재실행 시 같은 결과 | 충족 | BULK-01 vs BULK-03 비교 0행 |
+| 같은 데이터 재실행 시 같은 결과 | 충족 | BULK-01 vs BULK-03 비교 0행, BULK-04 vs BULK-06 재구축 후 동일 |
 | 스스로 검증할 수단 | 충족 | INV-01~12 + CLOCK-01·02 + REC-01, 관리자 API |
 | (선택) 검증 결과 리포트 자동화 | 충족 | 마크다운 리포트 자동 생성 |
 | 검증기 자체의 검출력 | 충족 | 오염 5건 → INV-04 정확히 5건, 오탐 0 |
+| 발급·사용·취소·만료 전체 상태 관리 | 충족 | 만료 배치 105만 건 전이, 이력 105만 건 (7절) |
+| 동일 상태 변경이 반복돼도 한 번만 반영 | 충족 | 만료 배치 재실행 시 0건 처리 (7절) |
+
+---
+
+## 부록 — 원시 데이터 보존 상태
+
+2026-08-25 저녁, 레벨 2 리허설 준비를 위해 `scripts/load-test/seed-level2.sh` 를 실행했다.
+이 스크립트가 부르는 `load-tests/sql/seed-level2.sql` 은 `verification_report` 와
+`verification_violation` 을 TRUNCATE 한다. 따라서 **그 이전 회차의 규칙별 행은 DB 에 남아
+있지 않다.** 이 문서의 표가 그 회차들의 기록이다.
+
+`seed-level2.sql` 이 지우는 테이블은 `verification_violation` · `verification_report` ·
+`coupon_history` · `coupons` · `campaign_stocks` · `campaigns` · `users` 일곱 개다.
+**Spring Batch 메타데이터는 건드리지 않는다.** 만료 배치의 실행 기록은 그대로 남아 있다.
+
+```sql
+SELECT s.job_execution_id, s.step_name, s.read_count, s.write_count, s.commit_count, e.start_time
+FROM BATCH_STEP_EXECUTION s
+JOIN BATCH_JOB_EXECUTION e ON e.job_execution_id = s.job_execution_id
+JOIN BATCH_JOB_INSTANCE  i ON i.job_instance_id  = e.job_instance_id
+WHERE i.job_name = 'expirationJob'
+ORDER BY s.job_execution_id;
+```
+
+| jobExecutionId | 일시 | read | write | commit |
+| ---: | --- | ---: | ---: | ---: |
+| 6 | 2026-08-19 01:45 | 54,579 | 54,579 | 55 |
+| 47 | 2026-08-21 09:15 | 34,806 | 34,806 | 35 |
+| **113** | **2026-08-25 07:46** | **1,050,798** | **1,050,798** | **1,051** |
+| 114 | 2026-08-25 07:53 | 0 | 0 | 1 |
+
+이전 최대 실적의 **19.2배**다. 재실행(114)이 0건인 것도 여기 남아 있어, 멱등성 근거는 회차
+리포트 없이도 성립한다.
+
+### 복원 방법
+
+데이터 생성기가 결정적이므로 같은 인자로 그대로 되살릴 수 있다.
+
+```bash
+./gradlew bootRun --args="--spring.profiles.active=dummy --spring.main.web-application-type=none --users=1000000 --coupons=3000000 --seed=42 --corrupt=5 --truncate"
+```
+
+이후 만료 배치 → 검증 → 대사를 다시 실행한다. **runId 는 새 값을 써야 한다.**
+`seed-level2.sql` 도 `reset-level2.sh` 도 `BATCH_JOB_INSTANCE` 는 지우지 않으므로, 한 번 쓴
+runId 로는 배치가 아예 뜨지 않는다 (`A job instance already exists and is complete`).
+`BULK-07` 이후를 쓴다. 공식 회차도 마찬가지다 — `L2-V1-01` 을 재시도하려면 `L2-V1-02` 로 간다.
+
+**복원은 2026-08-26 에 실제로 수행했다.** `BULK-06` 이 그 결과이며 4.1절에 비교표가 있다.
+그때 리포트를 파일로 떨궈 두었으므로 DB 가 다시 지워져도 남는다.
+
+```bash
+curl -s ".../verification/runs/BULK-06/report"                       > docs/round-results/BULK-06-report.md
+curl -s ".../verification/runs/BULK-06"                              > docs/round-results/BULK-06-rules.json
+curl -s ".../verification/runs/BULK-06/violations?ruleCode=INV-04"    > docs/round-results/BULK-06-violations.json
+```
+
+**회차 리포트는 실행 직후 파일로 저장한다.** DB 의 `verification_report` 는 시드 스크립트가
+지우는 테이블이라 보관 장소로 쓸 수 없다.
+
+### 회차 재실행 시 주의 — runId 는 전역 유일해야 한다
+
+`reset-level2.sh` 도 `BATCH_*` 테이블은 지우지 않는다. 공식 회차에서 `L2-V1-01` 을 한 번
+쓰고 조건을 바꿔 다시 돌리려면 `L2-V1-02` 로 가야 한다. 같은 runId 를 재사용하면 배치가
+아예 뜨지 않는다.
