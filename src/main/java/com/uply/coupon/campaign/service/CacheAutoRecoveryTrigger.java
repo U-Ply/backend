@@ -2,14 +2,19 @@ package com.uply.coupon.campaign.service;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 
 /**
@@ -31,7 +36,6 @@ public class CacheAutoRecoveryTrigger {
 
     private static final String COUNT_KEY = "cache:recovery:trigger-count:%d";
     private static final String LOCK_KEY = "cache:recovery:lock:%d";
-    private static final String LOCK_VALUE = "1";
 
     private final StringRedisTemplate redisTemplate;
     private final CampaignCacheWarmupService campaignCacheWarmupService;
@@ -41,6 +45,9 @@ public class CacheAutoRecoveryTrigger {
     private final int thresholdCount;
     private final long windowSeconds;
     private final long lockSeconds;
+
+    private DefaultRedisScript<Long> countScript;
+    private DefaultRedisScript<Long> unlockScript;
 
     public CacheAutoRecoveryTrigger(
             StringRedisTemplate redisTemplate,
@@ -62,6 +69,21 @@ public class CacheAutoRecoveryTrigger {
                         .register(meterRegistry);
     }
 
+    @PostConstruct
+    public void init() {
+        countScript = new DefaultRedisScript<>();
+        countScript.setScriptSource(
+                new ResourceScriptSource(
+                        new ClassPathResource("scripts/cache_recovery_count.lua")));
+        countScript.setResultType(Long.class);
+
+        unlockScript = new DefaultRedisScript<>();
+        unlockScript.setScriptSource(
+                new ResourceScriptSource(
+                        new ClassPathResource("scripts/cache_recovery_unlock.lua")));
+        unlockScript.setResultType(Long.class);
+    }
+
     /**
      * 발급 요청 스레드에서 호출된다 — 여기서 시간이 걸리면 실패 응답(503) 자체가 늦어지므로, 임계치 판정과 락 선점까지만 동기로 하고 실제 복구는 {@link
      * #cacheRecoveryExecutor}로 넘긴다. 이 메서드 자체가 실패해도(Redis 순간 장애 등) 원래의 503 응답에는 영향을 주면 안 되므로 예외를
@@ -78,7 +100,12 @@ public class CacheAutoRecoveryTrigger {
                 return;
             }
 
-            if (!tryAcquireLock(campaignId)) {
+            // 락 값으로 이 시도 전용 고유 토큰을 쓴다 — runRecovery가 끝난 뒤(성공/실패
+            // 무관) 그 토큰을 가진 락만 지우는 compare-and-delete로 해제해야, 복구가
+            // 오래 걸려 TTL이 먼저 만료된 뒤 다른 인스턴스가 새로 잡은 락을 대신
+            // 지우는 사고를 막을 수 있다.
+            String lockToken = UUID.randomUUID().toString();
+            if (!tryAcquireLock(campaignId, lockToken)) {
                 log.debug("자동 복구 락 선점 실패(다른 인스턴스가 이미 처리 중) — campaignId: {}", campaignId);
                 return;
             }
@@ -95,11 +122,11 @@ public class CacheAutoRecoveryTrigger {
             // "다수 캠페인이 동시에 CAMPAIGN_NOT_CACHED를 쏟아내는" 상황에서 가장
             // 발생하기 쉬운 실패 모드다. 카운터도 실제 제출에 성공했을 때만 올린다.
             try {
-                cacheRecoveryExecutor.execute(() -> runRecovery(campaignId));
+                cacheRecoveryExecutor.execute(() -> runRecovery(campaignId, lockToken));
             } catch (RejectedExecutionException e) {
                 log.error(
                         "자동 복구 작업 제출 실패(Executor 포화) — 락을 즉시 해제한다. campaignId: {}", campaignId, e);
-                releaseLock(campaignId);
+                releaseLock(campaignId, lockToken);
                 return;
             }
             autoRecoveryTriggeredCounter.increment();
@@ -108,34 +135,42 @@ public class CacheAutoRecoveryTrigger {
         }
     }
 
-    private void runRecovery(Long campaignId) {
+    private void runRecovery(Long campaignId, String lockToken) {
         try {
             List<String> mismatches = campaignCacheWarmupService.recoverMissingCache(campaignId);
             log.info("자동 캐시 복구 완료 — campaignId: {}, mismatches: {}", campaignId, mismatches.size());
         } catch (Exception e) {
             log.error("자동 캐시 복구 실행 실패 — campaignId: {}", campaignId, e);
+        } finally {
+            // 성공하든 실패하든 여기서 반드시 해제한다 — 그러지 않으면 다음 시도가
+            // lockSeconds(기본 30초) 동안 막힌다.
+            releaseLock(campaignId, lockToken);
         }
     }
 
     private long incrementAndGetCount(Long campaignId) {
         String key = String.format(COUNT_KEY, campaignId);
-        Long count = redisTemplate.opsForValue().increment(key);
-        if (count != null && count == 1L) {
-            redisTemplate.expire(key, Duration.ofSeconds(windowSeconds));
-        }
+        Long count =
+                redisTemplate.execute(countScript, List.of(key), String.valueOf(windowSeconds));
         return count == null ? 0L : count;
     }
 
-    private boolean tryAcquireLock(Long campaignId) {
+    private boolean tryAcquireLock(Long campaignId, String lockToken) {
         String key = String.format(LOCK_KEY, campaignId);
         Boolean acquired =
                 redisTemplate
                         .opsForValue()
-                        .setIfAbsent(key, LOCK_VALUE, Duration.ofSeconds(lockSeconds));
+                        .setIfAbsent(key, lockToken, Duration.ofSeconds(lockSeconds));
         return Boolean.TRUE.equals(acquired);
     }
 
-    private void releaseLock(Long campaignId) {
-        redisTemplate.delete(String.format(LOCK_KEY, campaignId));
+    private void releaseLock(Long campaignId, String lockToken) {
+        String key = String.format(LOCK_KEY, campaignId);
+        Long deleted = redisTemplate.execute(unlockScript, List.of(key), lockToken);
+        if (deleted == null || deleted == 0L) {
+            log.warn(
+                    "자동 복구 락 해제 실패 — 이미 TTL 만료 후 다른 인스턴스가 재획득했을 수 있다." + " campaignId: {}",
+                    campaignId);
+        }
     }
 }
