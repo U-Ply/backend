@@ -25,12 +25,13 @@ public class VerificationRunner {
     /**
      * Redis-DB 시계 허용 오차.
      *
-     * <p>INV-04(이력 순서) · INV-06(시각 순서) · INV-11(캠페인 기간)의 경계가 밀리초라 1.0초는 너무 느슨했다. 같은 호스트의 컨테이너면 실제
-     * drift 는 거의 0 이다.
-     *
      * <p>측정값은 순수 시계 차이가 아니다. Redis TIME 과 NOW(3) 를 순차로 읽으므로 왕복 2회가 섞인다. 허용치는 그 잡음보다 크게 잡는다.
+     *
+     * <p><b>이 기본값은 application.yml 과 반드시 같아야 한다.</b> 두 값이 다르면 설정이 실리지 않은 경로로 기동했을 때 더 빡빡한 쪽이 조용히
+     * 적용된다. CLOCK 규칙 위반은 회차를 INVALID 로 만들어 나머지 규칙이 전부 통과해도 결과를 통째로 버리게 하므로, 이 불일치는 회차 하나를 날린다. 실측
+     * drift 상한이 0.09s 라 0.1s 는 잡음과 거의 붙어 있다. 기준값은 test-plan §14.3 의 0.3s 다.
      */
-    @Value("${coupon.verification.redis-clock-tolerance-sec:0.1}")
+    @Value("${coupon.verification.redis-clock-tolerance-sec:0.3}")
     private double redisClockToleranceSec;
 
     /** 설정 경로가 틀려도 @Value 기본값으로 조용히 돌아간다. 실제 적용값을 기동 시 남긴다. */
