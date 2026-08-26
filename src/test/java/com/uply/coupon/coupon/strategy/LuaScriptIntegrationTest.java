@@ -2,6 +2,7 @@ package com.uply.coupon.coupon.strategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.uply.coupon.it.IntegrationTestContainers;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -9,14 +10,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.data.redis.DataRedisTest;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scripting.support.ResourceScriptSource;
 
-@DataRedisTest
-class LuaScriptIntegrationTest {
+class LuaScriptIntegrationTest extends IntegrationTestContainers {
 
     @Autowired private StringRedisTemplate redisTemplate;
 

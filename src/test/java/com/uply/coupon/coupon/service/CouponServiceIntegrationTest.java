@@ -16,6 +16,7 @@ import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.dto.response.CouponIssueResponse;
 import com.uply.coupon.coupon.repository.CouponRepository;
+import com.uply.coupon.it.IntegrationTestContainers;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
 import java.time.LocalDateTime;
@@ -48,7 +49,7 @@ class CouponServiceIntegrationTest {
             })
     @Transactional
     @DisplayName("1. 동기 DB 저장 전략 (sync-db) 통합 테스트")
-    class SyncDbStrategyTest {
+    class SyncDbStrategyTest extends IntegrationTestContainers {
 
         @Autowired private CouponService couponService;
         @Autowired private CampaignCacheWarmupService warmupService;
@@ -138,7 +139,7 @@ class CouponServiceIntegrationTest {
     @SpringBootTest(properties = {"coupon.save.strategy=kafka", "coupon.issue.strategy=LUA_SCRIPT"})
     @Transactional
     @DisplayName("2. 카프카 비동기 저장 전략 (kafka) 통합 테스트")
-    class KafkaStrategyTest {
+    class KafkaStrategyTest extends IntegrationTestContainers {
 
         @Autowired private CouponService couponService;
         @Autowired private CampaignCacheWarmupService warmupService;

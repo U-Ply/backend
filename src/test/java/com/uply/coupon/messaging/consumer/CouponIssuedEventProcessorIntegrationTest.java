@@ -4,19 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.uply.coupon.coupon.repository.CouponIssuanceProgressRepository;
+import com.uply.coupon.it.IntegrationTestContainers;
 import com.uply.coupon.messaging.event.CouponIssuedEvent;
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 
-@ActiveProfiles("test")
-@SpringBootTest
-class CouponIssuedEventProcessorIntegrationTest {
+class CouponIssuedEventProcessorIntegrationTest extends IntegrationTestContainers {
 
     private static final long CAMPAIGN_ID = 1L;
     private static final long STOCK_ID = 1L;

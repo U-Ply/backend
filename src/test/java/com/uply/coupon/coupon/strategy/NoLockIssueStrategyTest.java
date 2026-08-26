@@ -8,6 +8,7 @@ import static org.mockito.Mockito.doThrow;
 import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.coupon.domain.CouponHistory;
 import com.uply.coupon.coupon.repository.CouponHistoryRepository;
+import com.uply.coupon.it.IntegrationTestContainers;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.concurrent.CountDownLatch;
@@ -19,15 +20,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 
-@SpringBootTest
-@ActiveProfiles("test")
-class NoLockIssueStrategyTest {
+class NoLockIssueStrategyTest extends IntegrationTestContainers {
 
     @Autowired NoLockIssueStrategy strategy;
 
