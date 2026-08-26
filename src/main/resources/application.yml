@@ -91,3 +91,8 @@ coupon:
         # 측정값에는 Redis TIME 과 NOW(3) 를 순차로 읽는 왕복 2회가 섞이므로
         # 그 잡음보다는 크게 잡는다. 실측 후 조정한다.
         redis-clock-tolerance-sec: ${REDIS_CLOCK_TOLERANCE_SEC:0.3}
+  status-stream:
+    poll-interval-ms: ${STATUS_STREAM_POLL_INTERVAL_MS:1000}
+    heartbeat-interval-ms: ${STATUS_STREAM_HEARTBEAT_INTERVAL_MS:15000}
+    timeout-ms: ${STATUS_STREAM_TIMEOUT_MS:1800000}
+    reconnect-time-ms: ${STATUS_STREAM_RECONNECT_TIME_MS:3000}
