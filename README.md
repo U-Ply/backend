@@ -179,6 +179,8 @@ docker exec -i coupon-mysql mysql -uroot -proot1234 < docs/schema.sql
 | [팀 Notion](https://app.notion.com/p/3b36a058256c80b4bbb2db67664ccd57) | 프로젝트 일정, 회의 내용, 업무 분담 및 팀 협업 문서 |
 | [요구사항 분석서](docs/requirements-analysis.md) | 프로젝트 목표, 정책, 기능·비기능 요구사항 및 검증 규칙 |
 | [공통 테스트 설계서](docs/test-plan.md) | 테스트 단계, 공통 데이터, 비교 조건, 측정 지표 및 판정 기준을 정의한 SSOT |
+| [부하 테스트 환경 고정표](docs/load-test-environment.md) | V0~V3 공통 AWS 사양, 애플리케이션 설정, 부하 조건과 회차 무효 기준 |
+| [AWS 부하 테스트 구성 가이드](docs/aws-load-test-setup.md) | Level 2·3 네트워크, 배포, 초기화, 실행 및 결과 회수 절차 |
 | [데이터베이스 스키마](docs/schema.sql) | 테이블, 제약 조건, 인덱스 및 검증 결과 저장 구조 |
 
 <br>

@@ -10,7 +10,10 @@ KAFKA_GROUPS="/opt/kafka/bin/kafka-consumer-groups.sh"
 
 echo "WARNING: Stop every coupon application instance before resetting Kafka."
 echo "This deletes and recreates ${ISSUE_TOPIC}, ${DLT_TOPIC}, and ${CONSUMER_GROUP} offsets."
-read -r -p "Type RESET_KAFKA to continue: " confirmation
+confirmation="${LEVEL2_KAFKA_CONFIRM:-}"
+if [[ -z "${confirmation}" ]]; then
+    read -r -p "Type RESET_KAFKA to continue: " confirmation
+fi
 
 if [[ "${confirmation}" != "RESET_KAFKA" ]]; then
     echo "Cancelled. Kafka was not changed."
