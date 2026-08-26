@@ -566,7 +566,9 @@ Redis-DB drift는 곧 INV-04(이력 순서)·INV-06(시각 순서)·INV-11(캠�
 | 발급 Set 원자 교체용 임시 키 | `temp:issued:{campaignId}` | Set | 없음 (RENAME 직후 소멸) |
 | API 멱등성 | `idempotency:{idempotencyKey}` | String JSON | PROCESSING 30초, COMPLETED 10분 |
 | 쿠폰 DB 반영 대기 | `coupon:pending:{couponId}` | String (`PENDING`) | 24시간 |
-| 캐시 복구 락 | `cache:recovery:{campaignId}` | String 토큰 | 복구 작업 시간 |
+| 캐시 복구 락 | `cache:recovery:lock:{campaignId}` | String 토큰 | 복구 작업 시간 |
+| 자동 복구 감지 카운터 | `cache:recovery:trigger-count:{campaignId}` | String 정수 | 감지 구간, 기본 5초 |
+| 자동 복구 분산 락 | `cache:recovery:lock:{campaignId}` | String UUID 토큰 | 기본 30초 |
 
 재고와 발급 Set에 TTL을 두지 않는 것은 의도다. 고정 TTL을 걸면 캠페인이 그보다 길 때 발급
 도중 키가 사라진다. 키를 지우는 것은 회차 초기화 스크립트와 웜업의 책임이지 만료 시간의
