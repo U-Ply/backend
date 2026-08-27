@@ -1987,6 +1987,11 @@
     const prometheusInput = document.querySelector("#monitor-prometheus-url");
     if (prometheusInput) {
       prometheusInput.addEventListener("change", () => {
+        // 미리보기 모드는 실시간 지표를 아예 수집하지 않는다(아래 startMonitorStock/sampleMetrics
+        // 최초 호출도 previewMode에서 건너뛴다). 여기서 걸러주지 않으면 주소만 바꿔도
+        // sampleMetrics()가 실제로 나가서, "미리보기 모드에서는 수집하지 않는다"는 안내가
+        // "지표를 읽지 못했습니다" 에러로 덮어써진다.
+        if (previewMode) return;
         const value = prometheusInput.value.trim().replace(/\/$/, "");
         try {
           const parsed = new URL(value);
