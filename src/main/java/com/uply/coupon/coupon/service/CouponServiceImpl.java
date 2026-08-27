@@ -88,14 +88,28 @@ public class CouponServiceImpl implements CouponService {
                             .build();
 
             // #3. 성공 응답 JSON 직렬화 후 Redis 캐싱 (COMPLETED, TTL 10분)
+            //
+            // 발급은 이미 성립했다(issuanceCompleted=true). 이 블록(직렬화 포함)이 실패해도
+            // 예외를 밖으로 내보내면 안 된다 - 밖으로 나가면 catch(Exception)까지 흘러가
+            // 이미 성공한 발급이 클라이언트에게 500으로 보이고, 클라이언트가 실패로 오인해
+            // 재시도할 수 있다. CampaignCouponAdminController.revokeCoupons()와 같은 원칙이다.
             if (hasIdempotencyKey(idempotencyKey)) {
-                String responseJson = toJson(response);
-                boolean completed =
-                        idempotencyChecker.complete(
-                                idempotencyKey, ownerToken, requestHash, responseJson, 200);
-                // CAS 실패 = 이 요청은 이미 소유권을 잃었다. 발급 자체는 이미 성립했으므로
-                // 응답은 그대로 반환하되, 현재 Redis 값(다른 요청의 것)은 건드리지 않는다.
-                if (!completed) {
+                try {
+                    String responseJson = toJson(response);
+                    boolean completed =
+                            idempotencyChecker.complete(
+                                    idempotencyKey, ownerToken, requestHash, responseJson, 200);
+                    // CAS 실패 = 이 요청은 이미 소유권을 잃었다. 발급 자체는 이미 성립했으므로
+                    // 응답은 그대로 반환하되, 현재 Redis 값(다른 요청의 것)은 건드리지 않는다.
+                    if (!completed) {
+                        idempotencyOwnershipMetrics.recordCompleteRejected(idempotencyKey);
+                    }
+                } catch (RuntimeException e) {
+                    log.error(
+                            "[발급 응답 캐싱 실패] 발급은 이미 성립했다. couponId: {}, key: {}",
+                            result.couponId(),
+                            idempotencyKey,
+                            e);
                     idempotencyOwnershipMetrics.recordCompleteRejected(idempotencyKey);
                 }
             }

@@ -164,6 +164,9 @@ public class CampaignStatusStreamService {
      * <p>emitter 정리와 채널 제거를 {@link #channels}의 같은 {@code compute()} 호출 안에서 원자적으로 묶는다. {@code
      * subscribe()}/{@code removeEmitter()}와 마찬가지로, 분리해서 처리하면 정리 도중 새로 들어온 {@code subscribe()}가 이 채널
      * 객체에 emitter를 추가했는데 그 직후 채널이 통째로 지워져, 새 구독자가 에러 이벤트도 못 받고 이후 polling 대상에서도 빠지는 고아 상태가 된다.
+     *
+     * <p>맵에서 지울 때 반드시 현재 값이 이 메서드가 넘겨받은 {@code channel}과 같은 객체인지(참조 동일성) 확인한다. 이 채널이 이미 다른
+     * 경로로 맵에서 빠지고, 캐시가 복구되어 같은 stockId로 새 채널이 등록됐다면 그 새 채널까지 함께 지워버리게 된다.
      */
     private void terminateChannelDueToCacheMiss(StockChannel channel) {
         notifyCacheMiss(channel.getCampaignId());
@@ -175,6 +178,10 @@ public class CampaignStatusStreamService {
         channels.compute(
                 channel.getStockId(),
                 (id, existing) -> {
+                    // 현재 맵에 있는 게 이 메서드가 넘겨받은 channel이 아니면(이미 교체됨) 손대지 않는다.
+                    if (existing != channel) {
+                        return existing;
+                    }
                     removedChannel.set(existing);
                     return null;
                 });

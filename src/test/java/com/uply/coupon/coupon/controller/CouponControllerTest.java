@@ -314,9 +314,10 @@ class CouponControllerTest {
         verify(idempotencyChecker).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
     }
 
-    // 상태 변경 완료 후 응답 캐싱이 실패해도 멱등성 진행 상태를 삭제하지 않는지 검증한다.
+    // 상태 변경 완료 후 응답 캐싱이 실패해도 이미 성립한 상태 전이는 200으로 반환되고,
+    // 멱등성 진행 상태도 삭제하지 않는지 검증한다.
     @Test
-    void completedStateChangeDoesNotClearProgressWhenResponseCacheFails() throws Exception {
+    void completedStateChangeReturns200WhenResponseCacheFails() throws Exception {
         Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(USED_AT);
         given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY)).willReturn(coupon);
@@ -332,10 +333,13 @@ class CouponControllerTest {
         mockMvc.perform(
                         post("/api/coupons/{couponId}/use", COUPON_ID)
                                 .header("Idempotency-Key", IDEMPOTENCY_KEY))
-                .andExpect(status().isInternalServerError());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.couponId").value(String.valueOf(COUPON_ID)))
+                .andExpect(jsonPath("$.status").value("USED"));
 
         verify(couponStateTransitionService).use(COUPON_ID, IDEMPOTENCY_KEY);
         verify(idempotencyChecker, never()).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
+        verify(idempotencyOwnershipMetrics).recordCompleteRejected(IDEMPOTENCY_KEY);
     }
 
     // 존재하지 않는 쿠폰의 상태 변경 요청이 404 COUPON_NOT_FOUND를 반환하는지 검증한다.
