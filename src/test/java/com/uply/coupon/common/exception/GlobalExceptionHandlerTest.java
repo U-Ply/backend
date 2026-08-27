@@ -82,8 +82,11 @@ class GlobalExceptionHandlerTest {
     }
 
     // DB 커넥션 획득 실패를 503 CONNECTION_UNAVAILABLE로 변환하는지 검증한다.
+    // 이 경로는 @Transactional 프록시 단계에서 터진 CannotCreateTransactionException을
+    // handleConnectionUnavailable()이 직접 받는다 — handleCouponIssue()는 아예 호출되지
+    // 않으므로(예외 타입이 다르다) connection_unavailable 카운터는 정확히 1만 늘어야 한다.
     @Test
-    @DisplayName("커넥션 획득 실패는 503 CONNECTION_UNAVAILABLE로 응답한다")
+    @DisplayName("커넥션 획득 실패는 503 CONNECTION_UNAVAILABLE로 응답하고 카운터를 정확히 1 증가시킨다")
     void connectionUnavailableReturns503() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
                 .willThrow(
@@ -98,10 +101,15 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.errorCode").value("CONNECTION_UNAVAILABLE"))
                 .andExpect(jsonPath("$.timestamp").exists());
+
+        assertThat(failureCount("connection_unavailable")).isEqualTo(1.0);
     }
 
+    // 이 경로는 V2/V3 전략이 CannotCreateTransactionException을 이미 CouponIssueException으로
+    // 감싸 던진 경우다 — handleCouponIssue()만 호출되고 handleConnectionUnavailable()은 호출되지
+    // 않는다(예외 타입이 CouponIssueException이라 매칭되지 않는다). 마찬가지로 정확히 1이어야 한다.
     @Test
-    @DisplayName("V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답한다")
+    @DisplayName("V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답하고 카운터를 정확히 1 증가시킨다")
     void connectionUnavailableReasonReturns503() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
                 .willThrow(
@@ -118,6 +126,8 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.errorCode").value("CONNECTION_UNAVAILABLE"))
                 .andExpect(jsonPath("$.timestamp").exists());
+
+        assertThat(failureCount("connection_unavailable")).isEqualTo(1.0);
     }
 
     // CAMPAIGN_NOT_CACHED는 openAt/expireAt/stock 키 중 하나가 Redis에 없을 때 발생한다.
