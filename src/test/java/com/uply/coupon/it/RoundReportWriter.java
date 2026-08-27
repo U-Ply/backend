@@ -79,7 +79,11 @@ public class RoundReportWriter {
                 stockReconcileJob,
                 "reconciliation",
                 round,
-                new JobParametersBuilder().addString("runId", runId).toJobParameters());
+                new JobParametersBuilder()
+                        .addString("runId", runId)
+                        .addString("round", round, false)
+                        .addString("failOnViolation", "false", false)
+                        .toJobParameters());
 
         String markdown = renderer.render(runId);
 

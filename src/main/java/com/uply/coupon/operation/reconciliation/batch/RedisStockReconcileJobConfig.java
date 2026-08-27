@@ -4,7 +4,9 @@ import com.uply.coupon.operation.reconciliation.domain.ReconciliationStatus;
 import com.uply.coupon.operation.reconciliation.domain.StockReconcileRun;
 import com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner;
 import com.uply.coupon.operation.verification.batch.VerificationResultWriter;
+import com.uply.coupon.operation.verification.domain.RoundVersion;
 import com.uply.coupon.operation.verification.domain.VerificationRun;
+import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.ExitStatus;
@@ -23,7 +25,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 
-/** REC-01 전용 Job. Redis 연결 실패는 이 Job만 실패시키며 INV 검증에는 영향을 주지 않는다. */
+/** REC-01 전용 Job. Redis 연결 실패는 REC-01만 SKIPPED로 남기고 다음 검증 Step이 계속될 수 있게 한다. */
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
@@ -44,7 +46,7 @@ public class RedisStockReconcileJobConfig {
     @Bean
     public Step stockReconcileStep() {
         return new StepBuilder("stockReconcileStep", jobRepository)
-                .tasklet(stockReconcileTasklet(null, null), transactionManager)
+                .tasklet(stockReconcileTasklet(null, null, null, null), transactionManager)
                 .build();
     }
 
@@ -52,18 +54,32 @@ public class RedisStockReconcileJobConfig {
     @StepScope
     public Tasklet stockReconcileTasklet(
             @Value("#{jobParameters['runId']}") String runId,
-            @Value("#{jobParameters['failOnViolation']}") String failOnViolation) {
+            @Value("#{jobParameters['round']}") String round,
+            @Value("#{jobParameters['failOnViolation']}") String failOnViolation,
+            @Value("#{jobParameters['roundSnapshotAt']}") String roundSnapshotAtParam) {
+
         boolean shouldFail = !"false".equalsIgnoreCase(failOnViolation);
 
         return (StepContribution contribution, ChunkContext chunkContext) -> {
             StockReconcileRun run = runner.run();
 
-            // N/A · SKIPPED 도 기록한다. 검사하지 않았다는 사실 자체가 회차의 정보다.
-            // 여기서 빠져나가면 리포트에서 REC-01 줄이 통째로 사라지고,
-            // "해당 없음"과 "아예 안 돌림"을 구분할 수 없게 된다.
+            // 독립 stockReconcileJob은 round 없이 실행될 수 있다.
+            RoundVersion roundVersion =
+                    round == null || round.isBlank() ? null : RoundVersion.parse(round);
+
+            // 통합 회차에서는 REC-01과 INV/CLOCK에 같은 리포트 기준 시각을 저장한다.
+            // 독립 재고 대사는 기존 실제 실행 시각을 사용한다.
+            LocalDateTime reportSnapshotAt =
+                    roundSnapshotAtParam == null
+                            ? run.snapshotAt()
+                            : LocalDateTime.parse(roundSnapshotAtParam);
+
             resultWriter.write(
                     new VerificationRun(
-                            runId, null, run.snapshotAt(), java.util.List.of(run.result())));
+                            runId,
+                            roundVersion,
+                            reportSnapshotAt,
+                            java.util.List.of(run.result())));
 
             if (run.status() == ReconciliationStatus.NOT_APPLICABLE
                     || run.status() == ReconciliationStatus.SKIPPED_NOT_SETTLED) {

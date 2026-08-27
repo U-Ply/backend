@@ -2,9 +2,12 @@ package com.uply.coupon.operation.admin;
 
 import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.JobExecution;
@@ -29,12 +32,31 @@ public class AdminBatchController {
     private static final Map<String, String> JOB_KEYS =
             Map.of(
                     "verification", "verificationJob",
+                    "verification-round", "verificationRoundJob", // 추가
                     "expiration", "expirationJob",
                     "reconcile", "stockReconcileJob");
 
     private final BatchLaunchService launchService;
     private final JdbcTemplate jdbcTemplate;
     private final VerificationReportRenderer reportRenderer;
+
+    private static final Set<String> EXPECTED_RULES =
+            Set.of(
+                    "CLOCK-01",
+                    "CLOCK-02",
+                    "INV-01",
+                    "INV-02",
+                    "INV-03",
+                    "INV-04",
+                    "INV-05",
+                    "INV-06",
+                    "INV-07",
+                    "INV-08",
+                    "INV-09",
+                    "INV-10",
+                    "INV-11",
+                    "INV-12",
+                    "REC-01");
 
     // ─────────────────────── 실행 ───────────────────────
 
@@ -52,7 +74,10 @@ public class AdminBatchController {
             throw new BatchInvalidRequestException("알 수 없는 배치: " + jobKey);
         }
 
-        JobExecution execution = launchService.launch(jobName, runId, failOnViolation, round);
+        String normalizedRound = round == null ? null : round.trim().toUpperCase(Locale.ROOT);
+
+        JobExecution execution =
+                launchService.launch(jobName, runId, failOnViolation, normalizedRound);
         JobParameters params = execution.getJobParameters();
         String assignedRunId = params.getString("runId");
         String assignedRound = params.getString("round");
@@ -132,34 +157,110 @@ public class AdminBatchController {
      */
     @GetMapping("/verification/runs")
     public List<Map<String, Object>> runs(@RequestParam(defaultValue = "20") int limit) {
-        return jdbcTemplate.queryForList(
-                """
-                SELECT run_id,
-                       MAX(round)                                      AS round,
-                       MIN(snapshot_at)                                AS snapshot_at,
-                       SUM(violation_count)                            AS total_violations,
-                       SUM(status = 'CHECKED' AND violation_count > 0) AS failed_rules,
-                       SUM(status = 'CHECKED')                         AS checked_rules,
-                       SUM(status = 'NOT_APPLICABLE')                  AS not_applicable_rules,
-                       SUM(status = 'SKIPPED')                         AS skipped_rules,
-                       COUNT(*)                                        AS rule_count,
-                       SUM(elapsed_ms)                                 AS total_elapsed_ms,
-                       CASE
-                         WHEN SUM(rule_code LIKE 'CLOCK-%' AND violation_count > 0) > 0
-                              THEN 'INVALID'
-                         WHEN SUM(status = 'SKIPPED') > 0 THEN 'INCOMPLETE'
-                         WHEN MAX(round) = 'V0' THEN 'BASELINE'
-                         WHEN SUM(status = 'CHECKED' AND violation_count > 0
-                                  AND rule_code NOT LIKE 'REC-%') > 0 THEN 'FAILED'
-                         WHEN SUM(status = 'CHECKED' AND violation_count > 0) > 0 THEN 'MISMATCH'
-                         ELSE 'PASSED'
-                       END AS verdict
-                FROM verification_report
-                GROUP BY run_id
-                ORDER BY MIN(created_at) DESC
-                LIMIT ?
-                """,
-                limit);
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        List<Map<String, Object>> rows =
+                jdbcTemplate.queryForList(
+                        """
+                        SELECT run_id,
+                               MAX(round)                                      AS round,
+                               MIN(snapshot_at)                                AS snapshot_at,
+                               SUM(violation_count)                            AS total_violations,
+                               SUM(status = 'CHECKED' AND violation_count > 0) AS failed_rules,
+                               SUM(status = 'CHECKED')                         AS checked_rules,
+                               SUM(status = 'NOT_APPLICABLE')                  AS not_applicable_rules,
+                               SUM(status = 'SKIPPED')                         AS skipped_rules,
+                               COUNT(DISTINCT rule_code)                       AS rule_count,
+                               SUM(elapsed_ms)                                 AS total_elapsed_ms
+                        FROM verification_report
+                        GROUP BY run_id
+                        ORDER BY MIN(created_at) DESC
+                        LIMIT ?
+                        """,
+                        safeLimit);
+
+        List<Map<String, Object>> result = new ArrayList<>(rows.size());
+
+        for (Map<String, Object> sourceRow : rows) {
+            Map<String, Object> row = new LinkedHashMap<>(sourceRow);
+
+            String runId = String.valueOf(row.get("run_id"));
+
+            List<Map<String, Object>> ruleRows =
+                    jdbcTemplate.queryForList(
+                            "SELECT rule_code, status, violation_count "
+                                    + "FROM verification_report WHERE run_id = ?",
+                            runId);
+
+            Set<String> presentRules =
+                    ruleRows.stream()
+                            .map(rule -> String.valueOf(rule.get("rule_code")))
+                            .collect(java.util.stream.Collectors.toSet());
+
+            Set<String> missingRules = new HashSet<>(EXPECTED_RULES);
+            missingRules.removeAll(presentRules);
+
+            row.put("missing_rules", missingRules.stream().sorted().toList());
+            boolean hasSkipped =
+                    ruleRows.stream().anyMatch(rule -> "SKIPPED".equals(rule.get("status")));
+
+            row.put(
+                    "complete",
+                    missingRules.isEmpty() && presentRules.equals(EXPECTED_RULES) && !hasSkipped);
+            row.put("verdict", calculateVerdict(row, presentRules, missingRules, ruleRows));
+
+            result.add(row);
+        }
+        return result;
+    }
+
+    private static String calculateVerdict(
+            Map<String, Object> row,
+            Set<String> presentRules,
+            Set<String> missingRules,
+            List<Map<String, Object>> ruleRows) {
+        // 기존 판정 정책과 동일하게 시계 위반을 최우선으로 본다.
+        boolean clockInvalid =
+                ruleRows.stream()
+                        .anyMatch(
+                                r ->
+                                        String.valueOf(r.get("rule_code")).startsWith("CLOCK-")
+                                                && number(r.get("violation_count")) > 0);
+        if (clockInvalid) {
+            return "INVALID";
+        }
+
+        // 행 수가 아니라 필수 규칙 집합 자체가 완성됐는지 확인한다.
+        if (!missingRules.isEmpty() || !presentRules.equals(EXPECTED_RULES)) {
+            return "INCOMPLETE";
+        }
+
+        Number skipped = (Number) row.get("skipped_rules");
+        if (skipped != null && skipped.longValue() > 0) {
+            return "INCOMPLETE";
+        }
+
+        if ("V0".equals(String.valueOf(row.get("round")))) {
+            return "BASELINE";
+        }
+
+        boolean nonRecFailed =
+                ruleRows.stream()
+                        .anyMatch(
+                                r ->
+                                        !String.valueOf(r.get("rule_code")).startsWith("REC-")
+                                                && "CHECKED".equals(r.get("status"))
+                                                && number(r.get("violation_count")) > 0);
+        if (nonRecFailed) {
+            return "FAILED";
+        }
+
+        boolean anyFailed =
+                ruleRows.stream()
+                        .anyMatch(
+                                r ->
+                                        "CHECKED".equals(r.get("status"))
+                                                && number(r.get("violation_count")) > 0);
+        return anyFailed ? "MISMATCH" : "PASSED";
     }
 
     /**
@@ -203,6 +304,10 @@ public class AdminBatchController {
             result.add(rule);
         }
         return result;
+    }
+
+    private static long number(Object value) {
+        return value instanceof Number n ? n.longValue() : 0L;
     }
 
     /** 검사했고(CHECKED) 위반이 없을 때만 통과다. N/A·미실행은 통과가 아니다. */

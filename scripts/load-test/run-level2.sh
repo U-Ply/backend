@@ -210,7 +210,9 @@ launch_batch() {
     local url response execution_id
 
     url="${base_url}/api/admin/batch/${job_key}?runId=${run_id}"
-    if [[ "${job_key}" == "verification" ]]; then
+    if [[ "${job_key}" == "verification-round" ]]; then
+        url="${url}&round=${round}"
+    elif [[ "${job_key}" == "verification" ]]; then
         url="${url}&round=${round}"
         if [[ "${round}" == "V0" ]]; then
             url="${url}&failOnViolation=false"
@@ -298,8 +300,7 @@ finalize_run() {
     fi
 
     capture_final_state || final_exit=1
-    launch_batch verification || final_exit=1
-    launch_batch reconcile || final_exit=1
+    launch_batch verification-round || final_exit=1
 
     curl --silent --show-error --fail \
         "${base_url}/api/admin/batch/verification/runs/${run_id}" \

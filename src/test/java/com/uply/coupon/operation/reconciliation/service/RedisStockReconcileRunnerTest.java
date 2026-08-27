@@ -1,7 +1,6 @@
 package com.uply.coupon.operation.reconciliation.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -128,14 +127,17 @@ class RedisStockReconcileRunnerTest {
     }
 
     @Test
-    void failsOnlyTheReconcileRunWhenRedisCannotBeRead() throws Exception {
+    void skipsReconciliationWhenRedisCannotBeRead() throws Exception {
         givenDatabaseStocks();
         given(valueOperations.multiGet(List.of("stock:101", "stock:102")))
                 .willThrow(new IllegalStateException("Redis unavailable"));
 
-        assertThatThrownBy(() -> runner.run())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Redis unavailable");
+        var result = runner.run();
+
+        assertThat(result.status()).isEqualTo(ReconciliationStatus.SKIPPED_NOT_SETTLED);
+        assertThat(result.result().status()).isEqualTo(RuleStatus.SKIPPED);
+        assertThat(result.result().code()).isEqualTo("REC-01");
+        assertThat(result.detail()).contains("Redis 재고 조회 실패");
     }
 
     @Test

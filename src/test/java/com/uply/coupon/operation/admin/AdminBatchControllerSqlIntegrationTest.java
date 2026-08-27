@@ -7,6 +7,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.uply.coupon.it.IntegrationTestContainers;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,6 +35,23 @@ import org.springframework.test.web.servlet.MockMvc;
 class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
 
     private static final LocalDateTime SNAPSHOT_AT = LocalDateTime.of(2026, 8, 24, 12, 0);
+    private static final List<String> EXPECTED_RULE_CODES =
+            List.of(
+                    "CLOCK-01",
+                    "CLOCK-02",
+                    "INV-01",
+                    "INV-02",
+                    "INV-03",
+                    "INV-04",
+                    "INV-05",
+                    "INV-06",
+                    "INV-07",
+                    "INV-08",
+                    "INV-09",
+                    "INV-10",
+                    "INV-11",
+                    "INV-12",
+                    "REC-01");
 
     @Autowired MockMvc mockMvc;
 
@@ -102,12 +121,29 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 Timestamp.valueOf(SNAPSHOT_AT));
     }
 
+    /**
+     * 최종 판정은 완결된 회차(15개 규칙)에서만 검증한다.
+     *
+     * <p>운영 API는 15개 미만의 규칙이 기록된 회차를 {@code INCOMPLETE}로 반환한다. 따라서 이 보조 메서드는 각 테스트가 의도적으로 삽입한 규칙 외의
+     * 나머지 규칙을 통과 상태로 채운다.
+     */
+    private void completeRunWithPassingRules(
+            String runId, String round, String... alreadyInsertedRuleCodes) {
+        Set<String> insertedRuleCodes = Set.of(alreadyInsertedRuleCodes);
+        for (String ruleCode : EXPECTED_RULE_CODES) {
+            if (!insertedRuleCodes.contains(ruleCode)) {
+                insertReport(runId, round, ruleCode, "Passing " + ruleCode, "CHECKED", 0);
+            }
+        }
+    }
+
     @Test
     void verificationRuns_V0는_위반이_있어도_BASELINE으로_판정한다() throws Exception {
 
         insertReport("it-admin-v0", "V0", "REC-01", "V0 baseline rule", "CHECKED", 3);
 
-        insertReport("it-admin-v0", "V0", "REC-02", "V0 baseline rule 2", "CHECKED", 0);
+        insertReport("it-admin-v0", "V0", "INV-01", "V0 baseline rule 2", "CHECKED", 0);
+        completeRunWithPassingRules("it-admin-v0", "V0", "REC-01", "INV-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -115,9 +151,9 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V0"))
                 .andExpect(jsonPath("$[0].total_violations").value(3))
                 .andExpect(jsonPath("$[0].failed_rules").value(1))
-                .andExpect(jsonPath("$[0].checked_rules").value(2))
+                .andExpect(jsonPath("$[0].checked_rules").value(15))
                 .andExpect(jsonPath("$[0].skipped_rules").value(0))
-                .andExpect(jsonPath("$[0].rule_count").value(2))
+                .andExpect(jsonPath("$[0].rule_count").value(15))
                 .andExpect(jsonPath("$[0].verdict").value("BASELINE"));
     }
 
@@ -126,7 +162,8 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
 
         insertReport("it-admin-incomplete", "V1", "REC-01", "Checked rule", "CHECKED", 0);
 
-        insertReport("it-admin-incomplete", "V1", "REC-02", "Skipped rule", "SKIPPED", 0);
+        insertReport("it-admin-incomplete", "V1", "INV-01", "Skipped rule", "SKIPPED", 0);
+        completeRunWithPassingRules("it-admin-incomplete", "V1", "REC-01", "INV-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -134,9 +171,9 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V1"))
                 .andExpect(jsonPath("$[0].total_violations").value(0))
                 .andExpect(jsonPath("$[0].failed_rules").value(0))
-                .andExpect(jsonPath("$[0].checked_rules").value(1))
+                .andExpect(jsonPath("$[0].checked_rules").value(14))
                 .andExpect(jsonPath("$[0].skipped_rules").value(1))
-                .andExpect(jsonPath("$[0].rule_count").value(2))
+                .andExpect(jsonPath("$[0].rule_count").value(15))
                 .andExpect(jsonPath("$[0].verdict").value("INCOMPLETE"));
     }
 
@@ -146,6 +183,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
         insertReport("it-admin-failed", "V1", "INV-01", "Failed rule", "CHECKED", 1);
 
         insertReport("it-admin-failed", "V1", "INV-02", "Passed rule", "CHECKED", 0);
+        completeRunWithPassingRules("it-admin-failed", "V1", "INV-01", "INV-02");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -153,9 +191,9 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V1"))
                 .andExpect(jsonPath("$[0].total_violations").value(1))
                 .andExpect(jsonPath("$[0].failed_rules").value(1))
-                .andExpect(jsonPath("$[0].checked_rules").value(2))
+                .andExpect(jsonPath("$[0].checked_rules").value(15))
                 .andExpect(jsonPath("$[0].skipped_rules").value(0))
-                .andExpect(jsonPath("$[0].rule_count").value(2))
+                .andExpect(jsonPath("$[0].rule_count").value(15))
                 .andExpect(jsonPath("$[0].verdict").value("FAILED"));
     }
 
@@ -164,7 +202,8 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
 
         insertReport("it-admin-passed", "V1", "REC-01", "Passed rule", "CHECKED", 0);
 
-        insertReport("it-admin-passed", "V1", "REC-02", "Passed rule 2", "CHECKED", 0);
+        insertReport("it-admin-passed", "V1", "INV-01", "Passed rule 2", "CHECKED", 0);
+        completeRunWithPassingRules("it-admin-passed", "V1", "REC-01", "INV-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -172,9 +211,9 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V1"))
                 .andExpect(jsonPath("$[0].total_violations").value(0))
                 .andExpect(jsonPath("$[0].failed_rules").value(0))
-                .andExpect(jsonPath("$[0].checked_rules").value(2))
+                .andExpect(jsonPath("$[0].checked_rules").value(15))
                 .andExpect(jsonPath("$[0].skipped_rules").value(0))
-                .andExpect(jsonPath("$[0].rule_count").value(2))
+                .andExpect(jsonPath("$[0].rule_count").value(15))
                 .andExpect(jsonPath("$[0].verdict").value("PASSED"));
     }
 
@@ -183,7 +222,8 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
 
         insertReport("it-admin-priority", "V1", "REC-01", "Failed rule", "CHECKED", 1);
 
-        insertReport("it-admin-priority", "V1", "REC-02", "Skipped rule", "SKIPPED", 0);
+        insertReport("it-admin-priority", "V1", "INV-01", "Skipped rule", "SKIPPED", 0);
+        completeRunWithPassingRules("it-admin-priority", "V1", "REC-01", "INV-01");
 
         /*
          * SQL CASE 우선순위는
@@ -217,7 +257,8 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
 
         insertReport("it-admin-v0-skipped", "V0", "REC-01", "Checked rule", "CHECKED", 0);
 
-        insertReport("it-admin-v0-skipped", "V0", "REC-02", "Skipped rule", "SKIPPED", 0);
+        insertReport("it-admin-v0-skipped", "V0", "INV-01", "Skipped rule", "SKIPPED", 0);
+        completeRunWithPassingRules("it-admin-v0-skipped", "V0", "REC-01", "INV-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -266,6 +307,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
         insertReport("it-admin-clock-na", "V1", "CLOCK-02", "Redis clock", "NOT_APPLICABLE", 0);
 
         insertReport("it-admin-clock-na", "V1", "REC-01", "Checked rule", "CHECKED", 0);
+        completeRunWithPassingRules("it-admin-clock-na", "V1", "CLOCK-02", "REC-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -455,6 +497,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
         insertReport("it-admin-mismatch", "V2", "INV-01", "Passed invariant", "CHECKED", 0);
 
         insertReport("it-admin-mismatch", "V2", "REC-01", "Redis-DB 재고 일치", "CHECKED", 1);
+        completeRunWithPassingRules("it-admin-mismatch", "V2", "INV-01", "REC-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
@@ -462,7 +505,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
                 .andExpect(jsonPath("$[0].round").value("V2"))
                 .andExpect(jsonPath("$[0].total_violations").value(1))
                 .andExpect(jsonPath("$[0].failed_rules").value(1))
-                .andExpect(jsonPath("$[0].checked_rules").value(2))
+                .andExpect(jsonPath("$[0].checked_rules").value(15))
                 .andExpect(jsonPath("$[0].skipped_rules").value(0))
                 .andExpect(jsonPath("$[0].verdict").value("MISMATCH"));
     }
@@ -474,6 +517,7 @@ class AdminBatchControllerSqlIntegrationTest extends IntegrationTestContainers {
         insertReport("it-admin-both", "V2", "INV-04", "Broken invariant", "CHECKED", 2);
 
         insertReport("it-admin-both", "V2", "REC-01", "Redis-DB 재고 일치", "CHECKED", 1);
+        completeRunWithPassingRules("it-admin-both", "V2", "INV-04", "REC-01");
 
         mockMvc.perform(get("/api/admin/batch/verification/runs"))
                 .andExpect(status().isOk())
