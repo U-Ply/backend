@@ -1,5 +1,6 @@
 package com.uply.coupon.campaign.service;
 
+import com.uply.coupon.common.LuaScriptLoader;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
@@ -11,10 +12,8 @@ import java.util.concurrent.RejectedExecutionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 
 /**
@@ -71,17 +70,8 @@ public class CacheAutoRecoveryTrigger {
 
     @PostConstruct
     public void init() {
-        countScript = new DefaultRedisScript<>();
-        countScript.setScriptSource(
-                new ResourceScriptSource(
-                        new ClassPathResource("scripts/cache_recovery_count.lua")));
-        countScript.setResultType(Long.class);
-
-        unlockScript = new DefaultRedisScript<>();
-        unlockScript.setScriptSource(
-                new ResourceScriptSource(
-                        new ClassPathResource("scripts/cache_recovery_unlock.lua")));
-        unlockScript.setResultType(Long.class);
+        countScript = LuaScriptLoader.load("scripts/cache_recovery_count.lua", Long.class);
+        unlockScript = LuaScriptLoader.load("scripts/cache_recovery_unlock.lua", Long.class);
     }
 
     /**

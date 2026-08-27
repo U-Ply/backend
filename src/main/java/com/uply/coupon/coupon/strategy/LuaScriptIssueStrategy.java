@@ -1,6 +1,7 @@
 package com.uply.coupon.coupon.strategy;
 
 import com.uply.coupon.campaign.repository.CampaignRepository;
+import com.uply.coupon.common.LuaScriptLoader;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.id.CouponIdGenerator;
@@ -14,10 +15,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.CannotCreateTransactionException;
 
@@ -38,16 +37,9 @@ public class LuaScriptIssueStrategy implements CouponIssueStrategy {
 
     @PostConstruct
     public void init() {
-        issueScript = new DefaultRedisScript<>();
-        issueScript.setScriptSource(
-                new ResourceScriptSource(new ClassPathResource("scripts/issue_coupon.lua")));
-        issueScript.setResultType(List.class);
-
+        issueScript = LuaScriptLoader.load("scripts/issue_coupon.lua", List.class);
         // 보상 전용 스크립트 실행 (1회만 반영되도록 멱등성 보장)
-        rollbackScript = new DefaultRedisScript<>();
-        rollbackScript.setScriptSource(
-                new ResourceScriptSource(new ClassPathResource("scripts/rollback_coupon.lua")));
-        rollbackScript.setResultType(Long.class);
+        rollbackScript = LuaScriptLoader.load("scripts/rollback_coupon.lua", Long.class);
     }
 
     /**

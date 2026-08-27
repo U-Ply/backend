@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.CacheAutoRecoveryTrigger;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyOwnershipMetrics;
 import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.controller.CouponController;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
@@ -58,6 +59,7 @@ class GlobalExceptionHandlerTest {
                                         mock(CouponStateTransitionService.class),
                                         mock(CouponQueryService.class),
                                         mock(IdempotencyChecker.class),
+                                        mock(IdempotencyOwnershipMetrics.class),
                                         new ObjectMapper().findAndRegisterModules()))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(

@@ -15,6 +15,9 @@ import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CampaignStockCacheMissException;
+import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -107,6 +110,30 @@ class CampaignQueryServiceTest {
                 .isInstanceOf(CampaignNotFoundException.class);
     }
 
+    // 재고 키가 Redis에 없으면(캐시 미스) CouponIssueException(CAMPAIGN_NOT_CACHED)으로 변환되고,
+    // campaignId가 정확히 실려 있는지 검증한다(자동 복구 트리거가 이 값으로 캠페인을 특정한다).
+    @Test
+    void getCampaign_stockCacheMiss_throwsCouponIssueExceptionWithCampaignId() {
+        given(campaignRepository.findById(1L)).willReturn(Optional.of(campaign));
+        given(campaignRepository.currentDatabaseTime()).willReturn(NOW);
+
+        given(stock.getId()).willReturn(10L);
+        given(campaignStockRepository.findAllByCampaignIdOrderByRouteIdAscFareClassAsc(1L))
+                .willReturn(List.of(stock));
+        given(campaignCacheRepository.getRemainingStock(10L))
+                .willThrow(new CampaignStockCacheMissException(10L));
+
+        assertThatThrownBy(() -> campaignQueryService.getCampaign(1L))
+                .isInstanceOf(CouponIssueException.class)
+                .satisfies(
+                        exception -> {
+                            CouponIssueException issueException = (CouponIssueException) exception;
+                            assertThat(issueException.getReason())
+                                    .isEqualTo(IssueFailReason.CAMPAIGN_NOT_CACHED);
+                            assertThat(issueException.getCampaignId()).isEqualTo(1L);
+                        });
+    }
+
     // 발급 현황 조회가 totalStock은 MySQL, remainingStock은 Redis 값을 그대로 사용하는지 검증한다.
     @Test
     void getCampaignStatus_returnsRemainingStockFromRedis() {
@@ -122,6 +149,27 @@ class CampaignQueryServiceTest {
         assertThat(response.campaignId()).isEqualTo(1L);
         assertThat(response.totalStock()).isEqualTo(8000);
         assertThat(response.remainingStock()).isEqualTo(1548);
+    }
+
+    // 재고 키가 Redis에 없으면(캐시 미스) CouponIssueException(CAMPAIGN_NOT_CACHED)으로 변환되고,
+    // campaignId가 정확히 실려 있는지 검증한다.
+    @Test
+    void getCampaignStatus_stockCacheMiss_throwsCouponIssueExceptionWithCampaignId() {
+        given(campaignStockRepository.findByCampaignIdAndRouteIdAndFareClass(1L, "JEJU", "ECONOMY"))
+                .willReturn(Optional.of(stock));
+        given(stock.getId()).willReturn(10L);
+        given(campaignCacheRepository.getRemainingStock(10L))
+                .willThrow(new CampaignStockCacheMissException(10L));
+
+        assertThatThrownBy(() -> campaignQueryService.getCampaignStatus(1L, "JEJU", "ECONOMY"))
+                .isInstanceOf(CouponIssueException.class)
+                .satisfies(
+                        exception -> {
+                            CouponIssueException issueException = (CouponIssueException) exception;
+                            assertThat(issueException.getReason())
+                                    .isEqualTo(IssueFailReason.CAMPAIGN_NOT_CACHED);
+                            assertThat(issueException.getCampaignId()).isEqualTo(1L);
+                        });
     }
 
     // 존재하지 않는 노선·좌석등급 조합이면 CampaignNotFoundException을 던지는지 검증한다.
