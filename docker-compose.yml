@@ -4,7 +4,7 @@ services:
     container_name: coupon-mysql
     command: --default-time-zone=+00:00
     environment:
-      TZ: UTC	
+      TZ: UTC
       MYSQL_ROOT_PASSWORD: root1234
       MYSQL_DATABASE: coupon_db
       MYSQL_USER: coupon
@@ -29,11 +29,14 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
       # 로컬은 localhost, AWS 분리 배치는 데이터·관측 EC2의 사설 IP를 전달한다.
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_ADVERTISED_HOST:-localhost}:9092
+      # INTERNAL은 같은 Compose 네트워크 안에서만 쓰는 주소다. PLAINTEXT가 광고하는 주소는
+      # 컨테이너 밖을 가리켜서, kafka-exporter가 그 주소로 붙으면 자기 자신을 찾아간다.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${KAFKA_ADVERTISED_HOST:-localhost}:9092,INTERNAL://coupon-kafka:19092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@coupon-kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -58,6 +61,65 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin1234
+      # 관리자 화면에 패널을 iframe으로 끼워 넣기 위한 설정이다. 익명 조회를 허용하므로
+      # 부하 테스트 환경 전용이며, 공개망에 그대로 노출하면 안 된다.
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      # 데이터소스와 대시보드를 기동 시 자동 등록한다. 손으로 만들지 않는다.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  # ---------------------------------------------------------------------------
+  # exporter — docs/load-test-environment.md 118~123행이 공식 회차 조건으로 요구하는
+  # 관측 항목(cAdvisor, MySQL, Redis, Kafka)을 채운다. Prometheus와 같은 네트워크에
+  # 있으므로 호스트 포트 노출과 무관하게 컨테이너 이름으로 scrape된다.
+  # ---------------------------------------------------------------------------
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: coupon-mysqld-exporter
+    environment:
+      # mysqld_exporter는 CLI 플래그가 아니라 DATA_SOURCE_NAME 환경변수로 접속 정보를 받는다.
+      # coupon 계정에는 PROCESS·REPLICATION CLIENT 권한이 없어 root를 쓴다. 테스트 환경 전용.
+      DATA_SOURCE_NAME: "root:root1234@(coupon-mysql:3306)/"
+    ports:
+      - "9104:9104"
+    depends_on:
+      - mysql
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: coupon-redis-exporter
+    command: ["--redis.addr=redis://coupon-redis:6379"]
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: coupon-kafka-exporter
+    command: ["--kafka.server=coupon-kafka:19092"]
+    ports:
+      - "9308:9308"
+    depends_on:
+      - kafka
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: coupon-cadvisor
+    # 컨테이너 안에서는 8080을 그대로 쓰고, 호스트에는 앱 포트와 겹치지 않게 8085로 낸다.
+    ports:
+      - "8085:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
 
 volumes:
   mysql_data:

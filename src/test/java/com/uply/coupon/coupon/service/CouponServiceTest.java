@@ -16,6 +16,7 @@ import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
@@ -35,6 +36,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class CouponServiceTest {
+
+    // 발급 성공 카운터. 목이라 아무 일도 하지 않지만, 주입되지 않으면 발급 성공 경로에서
+    // NPE가 난다.
+    @Mock private CouponIssueMetrics couponIssueMetrics;
 
     @InjectMocks private CouponServiceImpl couponService;
 
