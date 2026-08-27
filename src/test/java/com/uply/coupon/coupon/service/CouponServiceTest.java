@@ -283,8 +283,8 @@ class CouponServiceTest {
         }
 
         @Test
-        @DisplayName("발급 성공 후 응답 캐싱이 실패하면 PROCESSING 키를 지우지 않는다")
-        void issue_afterIssuance_cacheFailure_keepsProgress() throws Exception {
+        @DisplayName("발급 성공 후 응답 캐싱이 실패해도 발급 성공 응답을 그대로 반환하고 PROCESSING 키를 지우지 않는다")
+        void issue_afterIssuance_cacheFailure_returnsSuccessAndKeepsProgress() throws Exception {
             // given
             CouponIssueRequest request = createRequest();
             IssueResult successResult =
@@ -304,13 +304,18 @@ class CouponServiceTest {
             given(objectMapper.writeValueAsString(any(CouponIssueResponse.class)))
                     .willThrow(new JsonProcessingException("직렬화 실패") {});
 
-            // when & then
-            assertThatThrownBy(() -> couponService.issue(IDEMPOTENCY_KEY, request))
-                    .isInstanceOf(IllegalStateException.class);
+            // when
+            CouponIssueResponse response = couponService.issue(IDEMPOTENCY_KEY, request);
+
+            // then: 발급은 이미 성립했으므로 캐싱 실패와 무관하게 성공 응답을 그대로 반환한다
+            assertThat(response.couponId()).isEqualTo(String.valueOf(COUPON_ID));
+            assertThat(response.status()).isEqualTo(CouponStatus.ISSUED);
 
             // 쿠폰은 이미 발급됐다. 여기서 키를 지우면 같은 요청이 발급 로직을 다시 실행해
             // 중복 발급이 난다.
             verify(idempotencyChecker, never()).release(anyString(), any());
+            verify(idempotencyChecker, never()).complete(any(), any(), any(), any(), anyInt());
+            verify(idempotencyOwnershipMetrics).recordCompleteRejected(IDEMPOTENCY_KEY);
         }
 
         @Test
