@@ -2,6 +2,7 @@ package com.uply.coupon.campaign.infrastructure;
 
 import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CampaignStockCacheMissException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.time.Instant;
@@ -39,9 +40,10 @@ public class RedisCampaignCacheRepository implements CampaignCacheRepository {
         String valueStr = redisTemplate.opsForValue().get(key);
 
         // 재고 조회 실패를 0장으로 간주하면 "재고 소진"과 "캐시 미준비"를 구분할 수 없다.
-        // 캐시가 비어 있는 상태는 서버 오류로 처리해 클라이언트가 잘못된 소진 정보를 보지 않게 한다.
+        // 키가 아예 없는 경우는 캐시 미스 전용 예외로 구분해, 잘못된 값이 든 경우(시스템 오류)와
+        // 다르게 취급한다 — 잘못된 값을 캐시 미스로 보고 자동 웜업하면 데이터 오염을 덮어버릴 수 있다.
         if (valueStr == null) {
-            throw new IllegalStateException("Remaining stock cache not ready: stockId=" + stockId);
+            throw new CampaignStockCacheMissException(stockId);
         }
 
         try {

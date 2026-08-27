@@ -12,6 +12,7 @@ import com.uply.coupon.campaign.service.CampaignCacheWarmupService;
 import com.uply.coupon.common.exception.CacheRecoveryNotSettledException;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,7 +37,9 @@ class CampaignCacheAdminControllerTest {
                                 new CampaignCacheAdminController(campaignCacheWarmupService))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 

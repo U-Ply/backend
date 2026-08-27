@@ -10,6 +10,9 @@ import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
+import com.uply.coupon.common.exception.CampaignStockCacheMissException;
+import com.uply.coupon.common.exception.CouponIssueException;
+import com.uply.coupon.coupon.strategy.IssueFailReason;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -44,7 +47,7 @@ public class CampaignQueryService {
                 campaignStockRepository
                         .findAllByCampaignIdOrderByRouteIdAscFareClassAsc(campaignId)
                         .stream()
-                        .map(this::toStockSummary)
+                        .map(stock -> toStockSummary(campaignId, stock))
                         .toList();
 
         return CampaignDetailResponse.of(campaign, now, stocks);
@@ -60,7 +63,7 @@ public class CampaignQueryService {
                                         new CampaignNotFoundException(
                                                 campaignId, routeId, fareClass));
 
-        Integer remainingStock = campaignCacheRepository.getRemainingStock(stock.getId());
+        Integer remainingStock = getRemainingStockOrThrow(campaignId, stock.getId());
         return new CampaignStatusResponse(
                 campaignId,
                 stock.getRouteId(),
@@ -69,9 +72,19 @@ public class CampaignQueryService {
                 remainingStock);
     }
 
-    private CampaignStockSummaryResponse toStockSummary(CampaignStock stock) {
-        Integer remainingStock = campaignCacheRepository.getRemainingStock(stock.getId());
+    private CampaignStockSummaryResponse toStockSummary(Long campaignId, CampaignStock stock) {
+        Integer remainingStock = getRemainingStockOrThrow(campaignId, stock.getId());
         return new CampaignStockSummaryResponse(
                 stock.getRouteId(), stock.getFareClass(), stock.getTotalStock(), remainingStock);
+    }
+
+    // Repository는 stockId만 알고 있어 campaignId를 붙일 수 없다. 자동 복구 트리거와 HTTP
+    // 정책(503 CAMPAIGN_NOT_CACHED)이 campaignId 단위로 동작하므로 여기서 붙여준다.
+    private Integer getRemainingStockOrThrow(Long campaignId, Long stockId) {
+        try {
+            return campaignCacheRepository.getRemainingStock(stockId);
+        } catch (CampaignStockCacheMissException exception) {
+            throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, campaignId);
+        }
     }
 }

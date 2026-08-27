@@ -6,7 +6,9 @@ import com.uply.coupon.common.exception.CouponNotFoundException;
 import com.uply.coupon.common.exception.CouponNotReadyException;
 import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyClaim;
 import com.uply.coupon.common.idempotency.IdempotencyKeyValidator;
+import com.uply.coupon.common.idempotency.IdempotencyOwnershipMetrics;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
 import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.Coupon;
@@ -19,13 +21,14 @@ import com.uply.coupon.coupon.service.CouponQueryService;
 import com.uply.coupon.coupon.service.CouponService;
 import com.uply.coupon.coupon.service.CouponStateTransitionService;
 import jakarta.validation.Valid;
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+@Slf4j
 @RestController
 @RequestMapping(CouponApiPaths.COUPONS)
 @RequiredArgsConstructor
@@ -35,6 +38,7 @@ public class CouponController {
     private final CouponStateTransitionService couponStateTransitionService;
     private final CouponQueryService couponQueryService;
     private final IdempotencyChecker idempotencyChecker;
+    private final IdempotencyOwnershipMetrics idempotencyOwnershipMetrics;
     private final ObjectMapper objectMapper;
 
     @PostMapping(CouponApiPaths.ISSUE)
@@ -91,11 +95,11 @@ public class CouponController {
         IdempotencyKeyValidator.validateUuidV4(idempotencyKey);
         String requestHash = createRequestHash(couponId, actionPath);
 
-        Optional<String> cachedBody =
-                idempotencyChecker.getCachedResponse(idempotencyKey, requestHash);
-        if (cachedBody.isPresent()) {
-            return ResponseEntity.ok(parseCachedResponse(cachedBody.get(), responseType));
+        IdempotencyClaim claim = idempotencyChecker.acquire(idempotencyKey, requestHash);
+        if (claim.hasCachedResponse()) {
+            return ResponseEntity.ok(parseCachedResponse(claim.cachedResponse(), responseType));
         }
+        String ownerToken = claim.ownerToken();
 
         Coupon coupon;
         try {
@@ -103,12 +107,31 @@ public class CouponController {
         } catch (CouponNotReadyException
                 | CouponNotFoundException
                 | InvalidStateTransitionException exception) {
-            idempotencyChecker.clearProgress(idempotencyKey);
+            if (!idempotencyChecker.release(idempotencyKey, ownerToken)) {
+                idempotencyOwnershipMetrics.recordReleaseRejected(idempotencyKey);
+            }
             throw exception;
         }
 
         T response = responseFactory.apply(coupon);
-        idempotencyChecker.cacheResponse(idempotencyKey, requestHash, toJson(response), 200);
+
+        // 상태 전이(transition.get())는 이미 성공해 커밋됐다. 이 아래 응답 캐싱 단계(직렬화 포함)가
+        // 실패해도 예외를 전파하면 안 된다 - 이미 성공한 요청이 클라이언트에게 500으로 보이고,
+        // 클라이언트가 실패로 오인해 재시도할 수 있다. CampaignCouponAdminController.revokeCoupons()와
+        // 같은 원칙이다.
+        try {
+            if (!idempotencyChecker.complete(
+                    idempotencyKey, ownerToken, requestHash, toJson(response), 200)) {
+                idempotencyOwnershipMetrics.recordCompleteRejected(idempotencyKey);
+            }
+        } catch (RuntimeException exception) {
+            log.error(
+                    "[응답 캐싱 실패] 상태 전이는 이미 성립했다. couponId: {}, key: {}",
+                    couponId,
+                    idempotencyKey,
+                    exception);
+            idempotencyOwnershipMetrics.recordCompleteRejected(idempotencyKey);
+        }
         return ResponseEntity.ok(response);
     }
 

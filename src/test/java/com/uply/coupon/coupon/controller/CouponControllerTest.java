@@ -1,6 +1,7 @@
 package com.uply.coupon.coupon.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
@@ -22,7 +23,10 @@ import com.uply.coupon.common.exception.IdempotencyKeyReusedException;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
+import com.uply.coupon.common.idempotency.IdempotencyClaim;
+import com.uply.coupon.common.idempotency.IdempotencyOwnershipMetrics;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
@@ -37,7 +41,6 @@ import com.uply.coupon.coupon.strategy.IssueFailReason;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -49,6 +52,7 @@ import org.springframework.transaction.TransactionSystemException;
 class CouponControllerTest {
 
     private static final String IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000001";
+    private static final String OWNER_TOKEN = "owner-token-1";
     private static final Long COUPON_ID = 1001L;
     private static final LocalDateTime USED_AT = LocalDateTime.of(2026, 8, 18, 10, 0);
     private static final LocalDateTime ISSUED_AT = USED_AT.minusDays(1);
@@ -60,6 +64,7 @@ class CouponControllerTest {
     private CouponStateTransitionService couponStateTransitionService;
     private CouponQueryService couponQueryService;
     private IdempotencyChecker idempotencyChecker;
+    private IdempotencyOwnershipMetrics idempotencyOwnershipMetrics;
     private ObjectMapper objectMapper;
 
     @BeforeEach
@@ -68,7 +73,12 @@ class CouponControllerTest {
         couponStateTransitionService = mock(CouponStateTransitionService.class);
         couponQueryService = mock(CouponQueryService.class);
         idempotencyChecker = mock(IdempotencyChecker.class);
+        idempotencyOwnershipMetrics = mock(IdempotencyOwnershipMetrics.class);
         objectMapper = new ObjectMapper().findAndRegisterModules();
+        // 최초 요청(캐시 미스)이 기본값이다. 캐시 Hit/처리 중/재사용 시나리오는 각 테스트에서
+        // acquire() 스텁을 덮어쓴다.
+        given(idempotencyChecker.acquire(anyString(), anyString()))
+                .willReturn(IdempotencyClaim.acquired(OWNER_TOKEN));
         mockMvc =
                 MockMvcBuilders.standaloneSetup(
                                 new CouponController(
@@ -76,10 +86,13 @@ class CouponControllerTest {
                                         couponStateTransitionService,
                                         couponQueryService,
                                         idempotencyChecker,
+                                        idempotencyOwnershipMetrics,
                                         objectMapper))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 
@@ -183,8 +196,12 @@ class CouponControllerTest {
 
         verify(couponQueryService).awaitCouponPersistence(COUPON_ID);
         verify(idempotencyChecker)
-                .cacheResponse(
-                        eq(IDEMPOTENCY_KEY), eq(requestHash("/use")), any(String.class), eq(200));
+                .complete(
+                        eq(IDEMPOTENCY_KEY),
+                        eq(OWNER_TOKEN),
+                        eq(requestHash("/use")),
+                        any(String.class),
+                        eq(200));
     }
 
     // 사용된 쿠폰의 정상 예약 취소 요청이 200 응답과 취소 시각을 반환하는지 검증한다.
@@ -205,8 +222,9 @@ class CouponControllerTest {
 
         verify(couponQueryService).awaitCouponPersistence(COUPON_ID);
         verify(idempotencyChecker)
-                .cacheResponse(
+                .complete(
                         eq(IDEMPOTENCY_KEY),
+                        eq(OWNER_TOKEN),
                         eq(requestHash("/cancel")),
                         any(String.class),
                         eq(200));
@@ -238,8 +256,8 @@ class CouponControllerTest {
     void completedUseRequestReturnsCachedResponseWithoutStateChange() throws Exception {
         String cachedResponse =
                 objectMapper.writeValueAsString(CouponUseResponse.of(COUPON_ID, USED_AT));
-        given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, requestHash("/use")))
-                .willReturn(Optional.of(cachedResponse));
+        given(idempotencyChecker.acquire(IDEMPOTENCY_KEY, requestHash("/use")))
+                .willReturn(IdempotencyClaim.completed(cachedResponse));
 
         mockMvc.perform(
                         post("/api/coupons/{couponId}/use", COUPON_ID)
@@ -255,7 +273,7 @@ class CouponControllerTest {
     // 같은 멱등성 키를 다른 요청에 재사용하면 409 IDEMPOTENCY_KEY_REUSED를 반환하는지 검증한다.
     @Test
     void reusedIdempotencyKeyReturns409() throws Exception {
-        given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, requestHash("/use")))
+        given(idempotencyChecker.acquire(IDEMPOTENCY_KEY, requestHash("/use")))
                 .willThrow(new IdempotencyKeyReusedException());
 
         mockMvc.perform(
@@ -270,7 +288,7 @@ class CouponControllerTest {
     // 동일한 요청이 처리 중이면 409 IDEMPOTENCY_REQUEST_IN_PROGRESS를 반환하는지 검증한다.
     @Test
     void processingIdempotencyRequestReturns409() throws Exception {
-        given(idempotencyChecker.getCachedResponse(IDEMPOTENCY_KEY, requestHash("/use")))
+        given(idempotencyChecker.acquire(IDEMPOTENCY_KEY, requestHash("/use")))
                 .willThrow(new IdempotencyRequestInProgressException());
 
         mockMvc.perform(
@@ -296,27 +314,35 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_READY"));
 
         verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
-        verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
+        verify(idempotencyChecker).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
     }
 
-    // 상태 변경 완료 후 응답 캐싱이 실패해도 멱등성 진행 상태를 삭제하지 않는지 검증한다.
+    // 상태 변경 완료 후 응답 캐싱이 실패해도 이미 성립한 상태 전이는 200으로 반환되고,
+    // 멱등성 진행 상태도 삭제하지 않는지 검증한다.
     @Test
-    void completedStateChangeDoesNotClearProgressWhenResponseCacheFails() throws Exception {
+    void completedStateChangeReturns200WhenResponseCacheFails() throws Exception {
         Coupon coupon = Coupon.issue(COUPON_ID, 1L, 1L, 1L, ISSUED_AT, EXPIRE_AT);
         coupon.use(USED_AT);
         given(couponStateTransitionService.use(COUPON_ID, IDEMPOTENCY_KEY)).willReturn(coupon);
         doThrow(new IllegalStateException("Redis response cache failure"))
                 .when(idempotencyChecker)
-                .cacheResponse(
-                        eq(IDEMPOTENCY_KEY), eq(requestHash("/use")), any(String.class), eq(200));
+                .complete(
+                        eq(IDEMPOTENCY_KEY),
+                        eq(OWNER_TOKEN),
+                        eq(requestHash("/use")),
+                        any(String.class),
+                        eq(200));
 
         mockMvc.perform(
                         post("/api/coupons/{couponId}/use", COUPON_ID)
                                 .header("Idempotency-Key", IDEMPOTENCY_KEY))
-                .andExpect(status().isInternalServerError());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.couponId").value(String.valueOf(COUPON_ID)))
+                .andExpect(jsonPath("$.status").value("USED"));
 
         verify(couponStateTransitionService).use(COUPON_ID, IDEMPOTENCY_KEY);
-        verify(idempotencyChecker, never()).clearProgress(IDEMPOTENCY_KEY);
+        verify(idempotencyChecker, never()).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
+        verify(idempotencyOwnershipMetrics).recordCompleteRejected(IDEMPOTENCY_KEY);
     }
 
     // 존재하지 않는 쿠폰의 상태 변경 요청이 404 COUPON_NOT_FOUND를 반환하는지 검증한다.
@@ -333,7 +359,7 @@ class CouponControllerTest {
                 .andExpect(jsonPath("$.errorCode").value("COUPON_NOT_FOUND"));
 
         verify(couponStateTransitionService, never()).use(any(Long.class), any(String.class));
-        verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
+        verify(idempotencyChecker).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
     }
 
     // 허용되지 않은 쿠폰 취소 전이가 409 INVALID_STATE_TRANSITION을 반환하는지 검증한다.
@@ -350,7 +376,7 @@ class CouponControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_STATE_TRANSITION"));
 
-        verify(idempotencyChecker).clearProgress(IDEMPOTENCY_KEY);
+        verify(idempotencyChecker).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
     }
 
     // DB 커밋 결과를 확정할 수 없는 예외가 발생하면 멱등성 진행 상태를 유지하는지 검증한다.
@@ -365,7 +391,7 @@ class CouponControllerTest {
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.errorCode").value("INTERNAL_SERVER_ERROR"));
 
-        verify(idempotencyChecker, never()).clearProgress(IDEMPOTENCY_KEY);
+        verify(idempotencyChecker, never()).release(IDEMPOTENCY_KEY, OWNER_TOKEN);
     }
 
     // 멱등성 키 없이 쿠폰 단건 조회가 가능하고 개인정보를 포함하지 않는지 검증한다.

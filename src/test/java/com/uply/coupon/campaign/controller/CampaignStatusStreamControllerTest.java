@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.uply.coupon.campaign.service.CampaignStatusStreamService;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,7 +38,9 @@ class CampaignStatusStreamControllerTest {
                                 new CampaignStatusStreamController(campaignStatusStreamService))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 

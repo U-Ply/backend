@@ -248,6 +248,7 @@ select:focus-visible {
 
 .page-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
   gap: 24px;
@@ -1282,6 +1283,248 @@ select:focus-visible {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+/* ---------------------------------------------------------------------
+   시스템 모니터링 — 실시간 차트
+   --------------------------------------------------------------------- */
+
+.monitor-control {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 280px;
+}
+
+.monitor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.monitor-field label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.monitor-field select,
+.monitor-field input {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  font-size: 13px;
+}
+
+.metric-grid.five {
+  grid-template-columns: repeat(5, 1fr);
+  margin-bottom: 16px;
+}
+
+.stat-tile strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.stat-tile small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.stat-tile.alert strong {
+  color: var(--danger);
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.chart-card {
+  margin: 0;
+  padding: 22px 22px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: white;
+  box-shadow: var(--shadow-soft);
+}
+
+.chart-card figcaption h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.chart-card figcaption p {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.chart-note {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-empty {
+  padding: 40px 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 4px;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.chart-plot {
+  position: relative;
+  width: 100%;
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+}
+
+.chart-cursor {
+  position: absolute;
+  top: 16px;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+
+.chart-tip {
+  position: absolute;
+  top: 8px;
+  z-index: 2;
+  min-width: 150px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.chart-tip-time {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.chart-tip-row strong {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bar-row .bar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+
+.bar-row .bar-name {
+  font-weight: 700;
+}
+
+.bar-row .bar-kind {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.bar-row.system .bar-kind {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.bar-row .bar-head strong {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--canvas);
+  overflow: hidden;
+}
+
+.bar-row.system .bar-track span {
+  background: var(--danger);
+}
+
+.bar-track span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--info);
+}
+
+@media (max-width: 1100px) {
+  .metric-grid.five,
+  .chart-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .page-loading {
