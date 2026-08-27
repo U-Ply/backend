@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.operation.verification.report.VerificationReportRenderer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
@@ -43,7 +44,9 @@ class AdminBatchControllerTest {
                 MockMvcBuilders.standaloneSetup(controller)
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 

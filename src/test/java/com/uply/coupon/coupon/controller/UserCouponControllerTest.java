@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import com.uply.coupon.common.exception.UserNotFoundException;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.domain.CouponStatus;
 import com.uply.coupon.coupon.dto.response.UserCouponListResponse;
 import com.uply.coupon.coupon.dto.response.UserCouponSummaryResponse;
@@ -35,7 +36,9 @@ class UserCouponControllerTest {
                 MockMvcBuilders.standaloneSetup(new UserCouponController(couponQueryService))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 

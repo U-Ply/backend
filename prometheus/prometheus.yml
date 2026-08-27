@@ -1,10 +1,39 @@
 global:
   scrape_interval: 5s
+  evaluation_interval: 5s
 
 scrape_configs:
+  # 애플리케이션은 EC2 호스트에서 JAR로 뜨므로 도커 네트워크 밖이다.
+  # Level 3의 앱 2대를 각각 개별 scrape한다.
   - job_name: 'coupon-app'
     metrics_path: '/actuator/prometheus'
     static_configs:
       - targets: ['host.docker.internal:8081', 'host.docker.internal:8082']
+        labels:
+          service: 'coupon-service'
+
+  # 아래 exporter는 Prometheus와 같은 Compose 네트워크에 있으므로 컨테이너 이름으로 붙는다.
+  # 호스트 포트 노출 여부와 무관하게 동작한다.
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['coupon-mysqld-exporter:9104']
+        labels:
+          service: 'coupon-service'
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['coupon-redis-exporter:9121']
+        labels:
+          service: 'coupon-service'
+
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['coupon-kafka-exporter:9308']
+        labels:
+          service: 'coupon-service'
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['coupon-cadvisor:8080']
         labels:
           service: 'coupon-service'

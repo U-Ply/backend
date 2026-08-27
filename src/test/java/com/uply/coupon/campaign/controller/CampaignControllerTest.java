@@ -16,6 +16,7 @@ import com.uply.coupon.campaign.service.CampaignQueryService;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CouponIssueException;
 import com.uply.coupon.common.exception.GlobalExceptionHandler;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.strategy.IssueFailReason;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
@@ -38,7 +39,9 @@ class CampaignControllerTest {
                 MockMvcBuilders.standaloneSetup(new CampaignController(campaignQueryService))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 

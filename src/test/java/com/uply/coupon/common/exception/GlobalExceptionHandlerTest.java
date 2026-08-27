@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uply.coupon.campaign.service.CacheAutoRecoveryTrigger;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyOwnershipMetrics;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.controller.CouponController;
 import com.uply.coupon.coupon.dto.request.CouponIssueRequest;
 import com.uply.coupon.coupon.service.CouponQueryService;
@@ -62,7 +63,9 @@ class GlobalExceptionHandlerTest {
                                         new ObjectMapper().findAndRegisterModules()))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        meterRegistry, cacheAutoRecoveryTriggerProvider))
+                                        meterRegistry,
+                                        new CouponIssueMetrics(meterRegistry),
+                                        cacheAutoRecoveryTriggerProvider))
                         .build();
     }
 
@@ -84,8 +87,11 @@ class GlobalExceptionHandlerTest {
     }
 
     // DB 커넥션 획득 실패를 503 CONNECTION_UNAVAILABLE로 변환하는지 검증한다.
+    // 이 경로는 @Transactional 프록시 단계에서 터진 CannotCreateTransactionException을
+    // handleConnectionUnavailable()이 직접 받는다 — handleCouponIssue()는 아예 호출되지
+    // 않으므로(예외 타입이 다르다) connection_unavailable 카운터는 정확히 1만 늘어야 한다.
     @Test
-    @DisplayName("커넥션 획득 실패는 503 CONNECTION_UNAVAILABLE로 응답한다")
+    @DisplayName("커넥션 획득 실패는 503 CONNECTION_UNAVAILABLE로 응답하고 카운터를 정확히 1 증가시킨다")
     void connectionUnavailableReturns503() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
                 .willThrow(
@@ -100,10 +106,16 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.errorCode").value("CONNECTION_UNAVAILABLE"))
                 .andExpect(jsonPath("$.timestamp").exists());
+
+        assertThat(failureCount("connection_unavailable")).isEqualTo(1.0);
     }
 
+    // 이 경로는 V2/V3 전략이 CannotCreateTransactionException을 이미 CouponIssueException으로
+    // 감싸 던진 경우다 — handleCouponIssue()만 호출되고 handleConnectionUnavailable()은 호출되지
+    // 않는다(예외 타입이 CouponIssueException이라 매칭되지 않는다). 마찬가지로 정확히 1이어야 한다.
     @Test
-    @DisplayName("V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답한다")
+    @DisplayName(
+            "V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답하고 카운터를 정확히 1 증가시킨다")
     void connectionUnavailableReasonReturns503() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
                 .willThrow(
@@ -120,6 +132,8 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.errorCode").value("CONNECTION_UNAVAILABLE"))
                 .andExpect(jsonPath("$.timestamp").exists());
+
+        assertThat(failureCount("connection_unavailable")).isEqualTo(1.0);
     }
 
     // CAMPAIGN_NOT_CACHED는 openAt/expireAt/stock 키 중 하나가 Redis에 없을 때 발생한다.
@@ -191,6 +205,30 @@ class GlobalExceptionHandlerTest {
                         .count();
         assertThat(count).isEqualTo(0.0);
         verifyNoInteractions(cacheAutoRecoveryTrigger);
+    }
+
+    // 15.3절이 요구하는 "재고 소진 / 중복 발급" 집계. 두 사유 모두 409로 나가므로 HTTP
+    // 상태 코드만으로는 구분되지 않는다 — reason 태그가 유일한 구분 수단이다.
+    @Test
+    @DisplayName("재고 소진과 중복 발급은 각각의 reason 태그로 따로 집계된다")
+    void businessConflictsAreCountedByReasonTag() throws Exception {
+        given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
+                .willThrow(new CouponIssueException(IssueFailReason.OUT_OF_STOCK));
+
+        mockMvc.perform(
+                        post("/api/coupons/issue")
+                                .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(validRequest()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_STOCK"));
+
+        assertThat(failureCount("out_of_stock")).isEqualTo(1.0);
+        assertThat(failureCount("already_issued")).isZero();
+    }
+
+    private double failureCount(String reasonTag) {
+        return meterRegistry.get("coupon.issue.failure").tag("reason", reasonTag).counter().count();
     }
 
     private String validRequest() {

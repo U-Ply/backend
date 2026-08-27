@@ -83,7 +83,11 @@
     execution: null,
     verificationRun: null,
     pollTimer: null,
+    stockStream: null,
     batchPollTimer: null,
+    monitorTimer: null,
+    monitorStream: null,
+    monitorStockTimer: null,
     idempotencyKeys: Object.create(null),
     renderToken: 0,
   };
@@ -195,6 +199,37 @@
     }[status] || status;
   }
 
+  function batchStatusLabel(status) {
+    return {
+      STARTING: "시작 중",
+      STARTED: "진행 중",
+      COMPLETED: "완료",
+      FAILED: "실패",
+      STOPPED: "중단",
+      ABANDONED: "종료",
+    }[status] || status || "-";
+  }
+
+  function ruleStatusLabel(status) {
+    return {
+      CHECKED: "검사 완료",
+      NOT_APPLICABLE: "검사 대상 아님",
+      SKIPPED: "검사 보류",
+      FAILED: "위반 발견",
+    }[status] || status || "-";
+  }
+
+  function verdictLabel(verdict) {
+    return {
+      PASSED: "정상",
+      FAILED: "위반 발견",
+      MISMATCH: "재고 불일치",
+      INVALID: "판정 불가",
+      INCOMPLETE: "검사 미완료",
+      BASELINE: "기준 측정",
+    }[verdict] || verdict || "-";
+  }
+
   function routeLabel(routeId) {
     const flight = flights.find((item) => item.destination === routeId);
     return flight ? `${flight.originName} → ${flight.destinationName}` : routeId;
@@ -232,8 +267,16 @@
   function clearPoller() {
     if (state.pollTimer) window.clearInterval(state.pollTimer);
     state.pollTimer = null;
+    if (state.stockStream) state.stockStream.close();
+    state.stockStream = null;
     if (state.batchPollTimer) window.clearInterval(state.batchPollTimer);
     state.batchPollTimer = null;
+    if (state.monitorTimer) window.clearInterval(state.monitorTimer);
+    state.monitorTimer = null;
+    if (state.monitorStockTimer) window.clearInterval(state.monitorStockTimer);
+    state.monitorStockTimer = null;
+    if (state.monitorStream) state.monitorStream.close();
+    state.monitorStream = null;
   }
 
   function setActiveNav(route) {
@@ -255,7 +298,26 @@
   }
 
   function errorMessage(error) {
-    if (error instanceof ApiError) return `[${error.errorCode}] ${error.message}`;
+    if (error instanceof ApiError) {
+      const friendly = {
+        NETWORK_ERROR: "서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        USER_NOT_FOUND: "선택한 회원 정보를 찾을 수 없습니다.",
+        CAMPAIGN_NOT_FOUND: "선택한 특가 이벤트를 찾을 수 없습니다.",
+        CAMPAIGN_NOT_OPEN: "아직 쿠폰 발급이 시작되지 않았습니다.",
+        CAMPAIGN_EXPIRED: "종료된 특가 이벤트입니다.",
+        CAMPAIGN_NOT_CACHED: "특가 정보를 준비하고 있습니다. 잠시 후 다시 시도해 주세요.",
+        OUT_OF_STOCK: "준비된 쿠폰이 모두 소진되었습니다.",
+        ALREADY_ISSUED: "이미 이 이벤트의 쿠폰을 발급받았습니다.",
+        COUPON_NOT_FOUND: "쿠폰 정보를 찾을 수 없습니다.",
+        COUPON_NOT_READY: "쿠폰 정보를 저장하고 있습니다. 잠시 후 다시 확인해 주세요.",
+        INVALID_STATE_TRANSITION: "현재 상태에서는 요청한 작업을 진행할 수 없습니다.",
+        IDEMPOTENCY_KEY_REUSED: "이전 요청 정보를 확인할 수 없습니다. 다시 시도해 주세요.",
+        IDEMPOTENCY_REQUEST_IN_PROGRESS: "같은 요청을 처리하고 있습니다. 잠시만 기다려 주세요.",
+        CONNECTION_UNAVAILABLE: "요청이 많아 처리가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+        SAVE_RESULT_UNKNOWN: "처리 결과를 확인하고 있습니다. 잠시 후 다시 확인해 주세요.",
+      }[error.errorCode];
+      return friendly || error.message || "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+    }
     return error?.message || "알 수 없는 오류가 발생했습니다.";
   }
 
@@ -346,7 +408,7 @@
     try {
       campaigns = await getCampaigns();
     } catch (error) {
-      apiNotice = `<div class="notice">캠페인 API에 연결하지 못했습니다. 서버와 시드 데이터를 확인해 주세요. ${escapeHtml(errorMessage(error))}</div>`;
+      apiNotice = `<div class="notice">${escapeHtml(errorMessage(error))}</div>`;
     }
     if (token !== state.renderToken) return;
 
@@ -393,7 +455,6 @@
         </form>
       </section>
       <section class="home-events">
-        ${previewMode ? '<div class="notice info">현재 화면은 <strong>preview=1</strong> 미리보기 데이터로 표시 중입니다. 실제 발급은 실행되지 않습니다.</div>' : ""}
         ${apiNotice}
         <div class="section-heading">
           <h2>진행 중인 얼리버드 특가</h2>
@@ -416,8 +477,7 @@
           <header class="page-header">
             <div><p class="page-kicker">Earlybird coupon</p><h1 class="page-title">특가 캠페인</h1><p class="page-description">얼리버드 쿠폰을 발급받아 특가 항공권을 예약하세요.</p></div>
           </header>
-          ${previewMode ? '<div class="notice info">프론트엔드 미리보기용 캠페인 데이터입니다.</div>' : ""}
-          ${campaigns.length ? `<div class="campaign-list">${campaigns.map((campaign) => campaignCard(campaign)).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">✈</div><h2>등록된 캠페인이 없습니다</h2><p>캠페인 시드 데이터를 확인해 주세요.</p></div>'}
+          ${campaigns.length ? `<div class="campaign-list">${campaigns.map((campaign) => campaignCard(campaign)).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">✈</div><h2>현재 진행 중인 특가가 없습니다</h2><p>새로운 여행 혜택으로 다시 찾아뵙겠습니다.</p></div>'}
         </section>`;
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = errorView("캠페인을 불러오지 못했습니다", error, "campaigns");
@@ -431,9 +491,7 @@
       state.campaign = campaign;
       state.selectedStock = campaign.stocks?.[0] || null;
       drawCampaignDetail(campaign);
-      if (campaign.status === "OPEN" && state.selectedStock) {
-        state.pollTimer = window.setInterval(() => refreshStock(campaign.campaignId), 1000);
-      }
+      if (campaign.status === "OPEN" && state.selectedStock) startStockUpdates(campaign.campaignId);
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = errorView("캠페인 정보를 불러오지 못했습니다", error, "campaigns");
     }
@@ -470,7 +528,7 @@
             ${
               active
                 ? `<div class="stock-board">
-                    <div class="stock-board-head"><span>발급 현황</span><span class="live-dot">1초 폴링 중</span></div>
+                    <div class="stock-board-head"><span>발급 현황</span><span class="live-dot" id="stock-live-label">실시간 갱신 중</span></div>
                     <div class="stock-numbers">
                       <div><span>총 쿠폰</span><strong>${active.totalStock.toLocaleString()}<small> 장</small></strong></div>
                       <div><span>남은 쿠폰</span><strong class="remaining" id="remaining-stock">${active.remainingStock.toLocaleString()}<small> 장</small></strong></div>
@@ -488,26 +546,85 @@
       </section>`;
   }
 
+  function updateStockView(status) {
+    state.selectedStock = { ...state.selectedStock, ...status };
+    // state.campaign.stocks는 renderCampaignDetail 진입 시 받은 스냅샷이라, 여기서 같이
+    // 갱신하지 않으면 최신값은 state.selectedStock에만 남는다. 그 상태에서 다른 좌석
+    // 등급/노선으로 탭을 옮기면 select-fare/campaign-route 핸들러가 state.campaign.stocks에서
+    // 새 stock을 다시 읽어와 state.selectedStock을 덮어쓰므로, 원래 보고 있던 등급으로
+    // 돌아왔을 때 방금 받은 실시간 값이 아니라 최초 진입 시 스냅샷으로 되돌아가 보인다.
+    const stocks = state.campaign?.stocks;
+    if (stocks) {
+      const index = stocks.findIndex(
+        (item) => item.routeId === status.routeId && item.fareClass === status.fareClass,
+      );
+      if (index !== -1) stocks[index] = { ...stocks[index], ...status };
+    }
+    const remaining = document.querySelector("#remaining-stock");
+    const progress = document.querySelector("#stock-progress");
+    const caption = document.querySelector("#stock-caption");
+    const issueButton = document.querySelector('[data-action="issue-coupon"]');
+    if (!remaining || !progress || !caption) return;
+
+    const rate = status.totalStock
+      ? Math.round(((status.totalStock - status.remainingStock) / status.totalStock) * 100)
+      : 0;
+    remaining.innerHTML = `${Number(status.remainingStock).toLocaleString()}<small> 장</small>`;
+    progress.style.width = `${rate}%`;
+    caption.textContent = `${rate}% 발급 완료`;
+    if (issueButton) {
+      const soldOut = Number(status.remainingStock) <= 0;
+      issueButton.disabled = soldOut || state.campaign?.status !== "OPEN";
+      issueButton.textContent = soldOut ? "쿠폰 소진" : "얼리버드 쿠폰 받기";
+    }
+  }
+
+  function startStockUpdates(campaignId) {
+    if (state.pollTimer) window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
+    if (state.stockStream) state.stockStream.close();
+    state.stockStream = null;
+    if (!state.selectedStock || previewMode) return;
+
+    const params = new URLSearchParams({
+      routeId: state.selectedStock.routeId,
+      fareClass: state.selectedStock.fareClass,
+    });
+    const stream = new EventSource(`/api/campaigns/${campaignId}/status/stream?${params}`);
+    state.stockStream = stream;
+
+    stream.addEventListener("stock-update", (event) => {
+      try {
+        const status = JSON.parse(event.data);
+        if (currentRoute() === `campaign/${campaignId}`) updateStockView(status);
+      } catch (_error) {
+        // 다음 이벤트에서 다시 갱신한다.
+      }
+    });
+
+    stream.addEventListener("open", () => {
+      const label = document.querySelector("#stock-live-label");
+      if (label) label.textContent = "실시간 갱신 중";
+    });
+
+    stream.addEventListener("error", () => {
+      if (state.stockStream !== stream) return;
+      stream.close();
+      state.stockStream = null;
+      const label = document.querySelector("#stock-live-label");
+      if (label) label.textContent = "자동 갱신 중";
+      if (!state.pollTimer) {
+        state.pollTimer = window.setInterval(() => refreshStock(campaignId), 1000);
+      }
+    });
+  }
+
   async function refreshStock(campaignId) {
     const route = currentRoute();
     if (route !== `campaign/${campaignId}` || !state.selectedStock) return clearPoller();
     try {
       const status = await getCampaignStatus(campaignId, state.selectedStock);
-      state.selectedStock = { ...state.selectedStock, ...status };
-      const remaining = document.querySelector("#remaining-stock");
-      const progress = document.querySelector("#stock-progress");
-      const caption = document.querySelector("#stock-caption");
-      const issueButton = document.querySelector('[data-action="issue-coupon"]');
-      if (!remaining || !progress || !caption) return;
-      const rate = Math.round(((status.totalStock - status.remainingStock) / status.totalStock) * 100);
-      remaining.innerHTML = `${status.remainingStock.toLocaleString()}<small> 장</small>`;
-      progress.style.width = `${rate}%`;
-      caption.textContent = `${rate}% 발급 완료`;
-      if (issueButton) {
-        const soldOut = status.remainingStock <= 0;
-        issueButton.disabled = soldOut || state.campaign?.status !== "OPEN";
-        issueButton.textContent = soldOut ? "쿠폰 소진" : "얼리버드 쿠폰 받기";
-      }
+      updateStockView(status);
     } catch (error) {
       clearPoller();
       toast("재고 갱신 중단", errorMessage(error), "error");
@@ -517,12 +634,12 @@
   async function issueCoupon() {
     if (!state.campaign || !state.selectedStock) return;
     if (previewMode) {
-      toast("미리보기 모드", "실제 발급은 서버 실행 후 이용해 주세요.", "error");
+      toast("현재 이용할 수 없습니다", "잠시 후 다시 시도해 주세요.", "error");
       return;
     }
     const confirmed = await openConfirm({
       title: "얼리버드 쿠폰을 발급할까요?",
-      message: `${routeLabel(state.selectedStock.routeId)} · ${fareLabel(state.selectedStock.fareClass)} 쿠폰을 사용자 ${state.userId}에게 발급합니다.`,
+      message: `${routeLabel(state.selectedStock.routeId)} · ${fareLabel(state.selectedStock.fareClass)} 쿠폰을 발급합니다.`,
       confirmText: "쿠폰 발급",
     });
     if (!confirmed) return;
@@ -622,7 +739,7 @@
         <div class="summary-layout">
           <div>
             <article class="card"><h2 class="card-title">선택 항공편</h2>${flightSummary(flight)}</article>
-            <article class="card"><h2 class="card-title">탑승객 정보</h2><div class="detail-grid"><div class="detail-item"><span>시연 사용자</span><strong>USER ${state.userId}</strong></div><div class="detail-item"><span>탑승객 유형</span><strong>성인 1명</strong></div></div></article>
+            <article class="card"><h2 class="card-title">탑승객 정보</h2><div class="detail-grid"><div class="detail-item"><span>회원 번호</span><strong>${state.userId}</strong></div><div class="detail-item"><span>탑승객 유형</span><strong>성인 1명</strong></div></div></article>
           </div>
           <aside class="card sticky-card"><h2 class="card-title">예약 요약</h2><dl class="summary-list"><div><dt>항공 운임</dt><dd>${currency(flight.prices[state.search.fareClass])}</dd></div><div><dt>세금 및 유류할증료</dt><dd>포함</dd></div><div class="total"><dt>예상 결제 금액</dt><dd>${currency(flight.prices[state.search.fareClass])}</dd></div></dl><button class="primary-button" style="width:100%;margin-top:22px" type="button" data-route="payment">결제 단계로 이동 →</button></aside>
         </div>
@@ -666,16 +783,16 @@
     app.innerHTML = `
       <section class="page-shell">
         <button class="back-button" type="button" data-route="booking-info">← 예약 정보</button>
-        <header class="page-header"><div><p class="page-kicker">Payment</p><h1 class="page-title">결제 및 쿠폰 선택</h1><p class="page-description">예약을 확정할 때 선택한 쿠폰이 USED 상태로 변경됩니다.</p></div></header>
+        <header class="page-header"><div><p class="page-kicker">Payment</p><h1 class="page-title">결제 및 쿠폰 선택</h1><p class="page-description">예약이 확정되면 선택한 쿠폰의 사용이 완료됩니다.</p></div></header>
         <div class="summary-layout">
           <div>
             <article class="card"><h2 class="card-title">할인 쿠폰</h2>
               ${couponError ? `<div class="notice">쿠폰을 불러오지 못했습니다. ${escapeHtml(couponError)}</div>` : ""}
               <label class="coupon-option"><input type="radio" name="coupon" value="" checked /><span><strong>쿠폰을 사용하지 않음</strong><span>일반 운임으로 예약합니다.</span></span></label>
               ${coupons.map((coupon) => `<label class="coupon-option"><input type="radio" name="coupon" value="${escapeHtml(coupon.couponId)}" /><span><strong>얼리버드 쿠폰 · ${routeLabel(coupon.routeId)}</strong><span>${fareLabel(coupon.fareClass)} · ${formatDate(coupon.expireAt)}까지</span></span></label>`).join("")}
-              ${!coupons.length ? '<div class="notice info" style="margin-top:14px">현재 항공편에 사용할 수 있는 ISSUED 쿠폰이 없습니다. 쿠폰 없이도 Mock 예약은 진행할 수 있습니다.</div>' : ""}
+              ${!coupons.length ? '<div class="notice info" style="margin-top:14px">현재 항공편에 사용할 수 있는 쿠폰이 없습니다. 쿠폰 없이 예약을 진행할 수 있습니다.</div>' : ""}
             </article>
-            <article class="card"><h2 class="card-title">결제 수단</h2><div class="notice info">결제와 외부 PG 연동은 Mock 처리됩니다. 실제 결제는 발생하지 않습니다.</div><label class="coupon-option"><input type="radio" checked /><span><strong>U-Ply 테스트 카드</strong><span>•••• •••• •••• 0829</span></span></label></article>
+            <article class="card"><h2 class="card-title">결제 수단</h2><label class="coupon-option"><input type="radio" checked /><span><strong>U-Ply 간편결제</strong><span>•••• •••• •••• 0829</span></span></label></article>
           </div>
           <aside class="card sticky-card"><h2 class="card-title">최종 결제 금액</h2><dl class="summary-list"><div><dt>항공 운임</dt><dd>${currency(basePrice)}</dd></div><div class="discount"><dt>얼리버드 할인</dt><dd id="discount-price">0원</dd></div><div class="total"><dt>총 결제 금액</dt><dd id="final-price">${currency(basePrice)}</dd></div></dl><button class="primary-button" style="width:100%;margin-top:22px" type="button" data-action="confirm-booking">예약 확정</button></aside>
         </div>
@@ -695,7 +812,7 @@
       title: "예약을 확정할까요?",
       message: state.selectedCouponId
         ? "예약 확정과 동시에 선택한 쿠폰이 사용 완료 처리됩니다."
-        : "쿠폰 없이 Mock 항공권 예약을 확정합니다.",
+        : "쿠폰 없이 항공권 예약을 확정합니다.",
       confirmText: "예약 확정",
     });
     if (!confirmed) return;
@@ -772,7 +889,7 @@
   function renderBookingDetail(bookingId) {
     const booking = getBookings().find((item) => item.bookingId === bookingId);
     if (!booking) {
-      app.innerHTML = errorView("예약을 찾을 수 없습니다", new Error("브라우저에 저장된 Mock 예약 정보가 없습니다."), "bookings");
+      app.innerHTML = errorView("예약을 찾을 수 없습니다", new Error("예약 정보를 확인할 수 없습니다."), "bookings");
       return;
     }
     app.innerHTML = `
@@ -786,8 +903,8 @@
     const confirmed = await openConfirm({
       title: "항공편 예약을 취소할까요?",
       message: booking.couponId
-        ? "예약에 사용한 쿠폰은 CANCELLED 상태가 되며 재고와 쿠폰은 복구되지 않습니다."
-        : "Mock 예약을 취소합니다. 실제 결제 취소는 발생하지 않습니다.",
+        ? "예약에 사용한 쿠폰은 다시 사용할 수 없으며 발급 수량도 복구되지 않습니다."
+        : "선택한 항공편 예약을 취소합니다.",
       confirmText: "예약 취소",
       danger: true,
     });
@@ -804,7 +921,7 @@
       booking.cancelledAt = new Date().toISOString();
       saveBookings(bookings);
       if (action) finishIdempotentAction(action);
-      toast("예약 취소 완료", "쿠폰과 예약이 취소됐습니다. 재고는 복구되지 않습니다.");
+      toast("예약 취소 완료", "예약과 사용한 쿠폰의 취소가 완료됐습니다.");
       renderBookingDetail(bookingId);
     } catch (error) {
       if (action) releaseIdempotencyKeyAfterFailure(action, error);
@@ -814,16 +931,22 @@
 
   async function renderCoupons(token) {
     if (previewMode) {
-      app.innerHTML = `<section class="page-shell"><header class="page-header"><div><p class="page-kicker">My coupons</p><h1 class="page-title">내 쿠폰</h1></div></header><div class="empty-state"><div class="empty-icon">%</div><h2>미리보기 모드입니다</h2><p>실제 쿠폰 목록은 Spring Boot API 실행 후 확인할 수 있습니다.</p></div></section>`;
+      app.innerHTML = `<section class="page-shell"><header class="page-header"><div><p class="page-kicker">My coupons</p><h1 class="page-title">내 쿠폰</h1></div></header><div class="empty-state"><div class="empty-icon">%</div><h2>보유한 쿠폰이 없습니다</h2><p>진행 중인 얼리버드 이벤트를 확인해 보세요.</p><button class="primary-button" type="button" data-route="campaigns">특가 이벤트 보기</button></div></section>`;
       return;
     }
     try {
-      const response = await request(`/api/users/${state.userId}/coupons`);
+      const [response, campaigns] = await Promise.all([
+        request(`/api/users/${state.userId}/coupons`),
+        getCampaigns().catch(() => []),
+      ]);
       if (token !== state.renderToken) return;
       const coupons = response.coupons || [];
+      const campaignNames = new Map(
+        campaigns.map((campaign) => [Number(campaign.campaignId), campaign.name]),
+      );
       app.innerHTML = `
         <section class="page-shell"><header class="page-header"><div><p class="page-kicker">My coupons</p><h1 class="page-title">내 쿠폰</h1><p class="page-description">쿠폰 사용은 항공권 결제 단계에서만 가능합니다.</p></div></header>
-          ${coupons.length ? `<div class="coupon-list">${coupons.map((coupon) => `<article class="coupon-row"><div><h3 class="row-title">얼리버드 쿠폰</h3><span class="row-muted">쿠폰 ${escapeHtml(coupon.couponId)} · 캠페인 ${escapeHtml(coupon.campaignId)} · ${formatDate(coupon.issuedAt)} 발급</span></div><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span></div><button class="ghost-button" type="button" data-route="coupon/${escapeHtml(coupon.couponId)}">상세 보기</button></article>`).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">%</div><h2>보유한 쿠폰이 없습니다</h2><p>진행 중인 얼리버드 이벤트를 확인해 보세요.</p><button class="primary-button" type="button" data-route="campaigns">특가 이벤트 보기</button></div>'}
+          ${coupons.length ? `<div class="coupon-list">${coupons.map((coupon) => `<article class="coupon-row"><div><h3 class="row-title">${escapeHtml(campaignNames.get(Number(coupon.campaignId)) || "얼리버드 할인 쿠폰")}</h3><span class="row-muted">쿠폰 ${escapeHtml(coupon.couponId)} · ${formatDate(coupon.issuedAt)} 발급</span></div><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span></div><button class="ghost-button" type="button" data-route="coupon/${escapeHtml(coupon.couponId)}">상세 보기</button></article>`).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">%</div><h2>보유한 쿠폰이 없습니다</h2><p>진행 중인 얼리버드 이벤트를 확인해 보세요.</p><button class="primary-button" type="button" data-route="campaigns">특가 이벤트 보기</button></div>'}
         </section>`;
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = errorView("쿠폰 목록을 불러오지 못했습니다", error, "coupons");
@@ -836,7 +959,7 @@
       if (token !== state.renderToken) return;
       state.currentCoupon = coupon;
       app.innerHTML = `
-        <section class="page-shell narrow"><button class="back-button" type="button" data-route="coupons">← 내 쿠폰</button><article class="card"><div class="page-header"><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span><h1 class="page-title" style="margin-top:12px">얼리버드 할인 쿠폰</h1><p class="page-description">${routeLabel(coupon.routeId)} · ${fareLabel(coupon.fareClass)}</p></div></div><div class="detail-grid"><div class="detail-item"><span>쿠폰 번호</span><strong>${escapeHtml(coupon.couponId)}</strong></div><div class="detail-item"><span>사용자</span><strong>USER ${escapeHtml(coupon.userId)}</strong></div><div class="detail-item"><span>발급 시각</span><strong>${formatDate(coupon.issuedAt)}</strong></div><div class="detail-item"><span>유효기간</span><strong>${formatDate(coupon.expireAt)}</strong></div><div class="detail-item"><span>사용 시각</span><strong>${formatDate(coupon.usedAt)}</strong></div><div class="detail-item"><span>취소 시각</span><strong>${formatDate(coupon.cancelledAt)}</strong></div></div><div class="button-row end" style="margin-top:28px">${coupon.status === "ISSUED" ? '<button class="primary-button" type="button" data-action="search-with-coupon">항공편 검색하기 →</button>' : ""}${coupon.status === "USED" ? '<button class="primary-button" type="button" data-route="bookings">내 예약 보기 →</button>' : ""}</div></article></section>`;
+        <section class="page-shell narrow"><button class="back-button" type="button" data-route="coupons">← 내 쿠폰</button><article class="card"><div class="page-header"><div><span class="badge ${escapeHtml(coupon.status)}">${escapeHtml(couponStatusLabel(coupon.status))}</span><h1 class="page-title" style="margin-top:12px">얼리버드 할인 쿠폰</h1><p class="page-description">${routeLabel(coupon.routeId)} · ${fareLabel(coupon.fareClass)}</p></div></div><div class="detail-grid"><div class="detail-item"><span>쿠폰 번호</span><strong>${escapeHtml(coupon.couponId)}</strong></div><div class="detail-item"><span>회원 번호</span><strong>${escapeHtml(coupon.userId)}</strong></div><div class="detail-item"><span>발급 시각</span><strong>${formatDate(coupon.issuedAt)}</strong></div><div class="detail-item"><span>유효기간</span><strong>${formatDate(coupon.expireAt)}</strong></div><div class="detail-item"><span>사용 시각</span><strong>${formatDate(coupon.usedAt)}</strong></div><div class="detail-item"><span>취소 시각</span><strong>${formatDate(coupon.cancelledAt)}</strong></div><div class="detail-item"><span>만료 처리 시각</span><strong>${formatDate(coupon.expiredAt)}</strong></div></div><div class="button-row end" style="margin-top:28px">${coupon.status === "ISSUED" ? '<button class="primary-button" type="button" data-action="search-with-coupon">항공편 검색하기 →</button>' : ""}${coupon.status === "USED" ? '<button class="primary-button" type="button" data-route="bookings">내 예약 보기 →</button>' : ""}</div></article></section>`;
     } catch (error) {
       if (error.errorCode === "COUPON_NOT_READY" && attempt < 3) {
         const delays = [500, 1000, 2000];
@@ -849,7 +972,7 @@
   }
 
   function adminLayout(active, content) {
-    return `<section class="admin-shell"><aside class="admin-sidebar"><h2>U-Ply Admin</h2><p>운영·정합성 관리</p><nav class="admin-menu"><button class="${active === "dashboard" ? "active" : ""}" data-route="admin">대시보드</button><button class="${active === "stocks" ? "active" : ""}" data-route="admin/stocks">캠페인·재고</button><button class="${active === "revoke" ? "active" : ""}" data-route="admin/revoke">미사용 쿠폰 회수</button><button class="${active === "batches" ? "active" : ""}" data-route="admin/batches">배치 실행·상태</button><button class="${active === "verification" ? "active" : ""}" data-route="admin/verification">검증 결과</button><button class="${active === "monitoring" ? "active" : ""}" data-route="admin/monitoring">시스템 모니터링</button></nav></aside><div class="admin-content">${content}</div></section>`;
+    return `<section class="admin-shell"><aside class="admin-sidebar"><h2>U-Ply Admin</h2><p>서비스 운영 관리</p><nav class="admin-menu"><button class="${active === "dashboard" ? "active" : ""}" data-route="admin">대시보드</button><button class="${active === "stocks" ? "active" : ""}" data-route="admin/stocks">캠페인·재고</button><button class="${active === "cache" ? "active" : ""}" data-route="admin/cache">캠페인 데이터 준비</button><button class="${active === "revoke" ? "active" : ""}" data-route="admin/revoke">미사용 쿠폰 회수</button><button class="${active === "batches" ? "active" : ""}" data-route="admin/batches">일괄 작업 실행</button><button class="${active === "verification" ? "active" : ""}" data-route="admin/verification">데이터 검증 결과</button><button class="${active === "monitoring" ? "active" : ""}" data-route="admin/monitoring">시스템 모니터링</button></nav></aside><div class="admin-content">${content}</div></section>`;
   }
 
   async function renderAdmin(route, token) {
@@ -857,11 +980,12 @@
     try {
       if (page === "dashboard") return await renderAdminDashboard(token);
       if (page === "stocks") return await renderAdminStocks(token);
+      if (page === "cache") return await renderAdminCache(token);
       if (page === "revoke") return await renderAdminRevoke(token);
       if (page === "batches") return await renderAdminBatches();
       if (page === "verification") return await renderAdminVerification(token);
       if (page === "verification-run") return await renderVerificationRun(route.split("/")[2], token);
-      if (page === "monitoring") return await renderMonitoring();
+      if (page === "monitoring") return await renderMonitoring(token);
       setRoute("admin");
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = adminLayout(page, errorView("관리자 데이터를 불러오지 못했습니다", error, route));
@@ -879,8 +1003,9 @@
     }
     if (token !== state.renderToken) return;
     const open = campaigns.filter((campaign) => campaign.status === "OPEN").length;
-    const failed = runs.filter((run) => Number(run.total_violations) > 0).length;
-    app.innerHTML = adminLayout("dashboard", `<header class="page-header"><div><p class="page-kicker">Operations</p><h1 class="page-title">관리자 대시보드</h1><p class="page-description">캠페인 운영과 데이터 정합성을 한곳에서 확인합니다.</p></div></header><div class="metric-grid"><article class="metric-card"><span>전체 캠페인</span><strong>${campaigns.length}</strong></article><article class="metric-card"><span>진행 중 캠페인</span><strong>${open}</strong></article><article class="metric-card"><span>최근 위반 회차</span><strong>${failed}</strong></article><article class="metric-card"><span>발급 전략</span><strong style="font-size:18px">환경 설정값</strong></article><article class="metric-card"><span>Kafka 상태</span><strong style="font-size:18px">모니터링</strong></article><article class="metric-card"><span>Redis–DB 대사</span><strong style="font-size:18px">수동 실행</strong></article></div><div class="admin-action-grid"><button class="admin-action-card" data-route="admin/stocks"><strong>캠페인·재고 현황</strong><span>노선·좌석 등급별 Redis 잔여 재고를 확인합니다.</span></button><button class="admin-action-card" data-route="admin/revoke"><strong>미사용 쿠폰 일괄 회수</strong><span>특정 캠페인의 ISSUED 쿠폰만 회수합니다.</span></button><button class="admin-action-card" data-route="admin/batches"><strong>배치 실행</strong><span>만료·검증·Redis–DB 대사 배치를 실행합니다.</span></button><button class="admin-action-card" data-route="admin/verification"><strong>검증 결과</strong><span>INV·REC 규칙의 위반 건수와 샘플을 확인합니다.</span></button></div>`);
+    const attention = runs.filter((run) => !["PASSED", "BASELINE"].includes(run.verdict)).length;
+    const latestVerdict = runs[0]?.verdict || "-";
+    app.innerHTML = adminLayout("dashboard", `<header class="page-header"><div><p class="page-kicker">Operations</p><h1 class="page-title">관리자 대시보드</h1><p class="page-description">캠페인 운영과 데이터 검증 현황을 한곳에서 확인합니다.</p></div></header><div class="metric-grid"><article class="metric-card"><span>전체 캠페인</span><strong>${campaigns.length}</strong></article><article class="metric-card"><span>진행 중 캠페인</span><strong>${open}</strong></article><article class="metric-card"><span>확인 필요 회차</span><strong>${attention}</strong></article><article class="metric-card"><span>최근 검증 결과</span><strong style="font-size:18px">${escapeHtml(verdictLabel(latestVerdict))}</strong></article></div><div class="admin-action-grid"><button class="admin-action-card" data-route="admin/stocks"><strong>캠페인·재고 현황</strong><span>노선과 좌석 등급별 남은 쿠폰 수량을 확인합니다.</span></button><button class="admin-action-card" data-route="admin/cache"><strong>캠페인 데이터 준비</strong><span>이벤트 오픈 전 데이터를 준비하거나 누락된 정보를 복구합니다.</span></button><button class="admin-action-card" data-route="admin/revoke"><strong>미사용 쿠폰 일괄 회수</strong><span>특정 캠페인에서 아직 사용하지 않은 쿠폰을 회수합니다.</span></button><button class="admin-action-card" data-route="admin/batches"><strong>일괄 작업 실행</strong><span>쿠폰 만료, 데이터 검증, 재고 일치 확인을 실행합니다.</span></button><button class="admin-action-card" data-route="admin/verification"><strong>데이터 검증 결과</strong><span>회차별 검사 결과와 문제가 발견된 데이터를 확인합니다.</span></button><button class="admin-action-card" data-route="admin/monitoring"><strong>시스템 모니터링</strong><span>응답 속도와 서버 상태를 대시보드에서 확인합니다.</span></button></div>`);
   }
 
   async function renderAdminStocks(token) {
@@ -888,34 +1013,80 @@
     const details = await Promise.all(campaigns.map((campaign) => getCampaign(campaign.campaignId).catch(() => ({ ...campaign, stocks: [] }))));
     if (token !== state.renderToken) return;
     const rows = details.flatMap((campaign) => (campaign.stocks || []).map((stock) => ({ campaign, stock })));
-    app.innerHTML = adminLayout("stocks", `<header class="page-header"><div><p class="page-kicker">Campaign stock</p><h1 class="page-title">캠페인·재고 현황</h1><p class="page-description">관리자 전체 현황은 화면 진입 시 조회합니다. 실시간 관측은 Grafana를 사용합니다.</p></div><button class="ghost-button" data-route="admin/stocks">새로고침</button></header><div class="table-wrap"><table class="data-table"><thead><tr><th>캠페인</th><th>상태</th><th>노선</th><th>등급</th><th>총재고</th><th>잔여재고</th><th>발급률</th></tr></thead><tbody>${rows.map(({ campaign, stock }) => { const rate = stock.totalStock ? Math.round(((stock.totalStock - stock.remainingStock) / stock.totalStock) * 100) : 0; return `<tr><td>${escapeHtml(campaign.name)}</td><td><span class="badge ${escapeHtml(campaign.status)}">${campaignStatusLabel(campaign.status)}</span></td><td>${escapeHtml(routeLabel(stock.routeId))}</td><td>${fareLabel(stock.fareClass)}</td><td>${stock.totalStock.toLocaleString()}</td><td>${stock.remainingStock.toLocaleString()}</td><td>${rate}%</td></tr>`; }).join("") || '<tr><td colspan="7">표시할 재고가 없습니다.</td></tr>'}</tbody></table></div>`);
+    app.innerHTML = adminLayout("stocks", `<header class="page-header"><div><p class="page-kicker">Campaign stock</p><h1 class="page-title">캠페인·재고 현황</h1><p class="page-description">노선과 좌석 등급별 쿠폰 발급 현황입니다.</p></div><button class="ghost-button" data-route="admin/stocks">새로고침</button></header><div class="table-wrap"><table class="data-table"><thead><tr><th>캠페인</th><th>상태</th><th>노선</th><th>등급</th><th>전체 수량</th><th>남은 수량</th><th>발급률</th></tr></thead><tbody>${rows.map(({ campaign, stock }) => { const rate = stock.totalStock ? Math.round(((stock.totalStock - stock.remainingStock) / stock.totalStock) * 100) : 0; return `<tr><td>${escapeHtml(campaign.name)}</td><td><span class="badge ${escapeHtml(campaign.status)}">${campaignStatusLabel(campaign.status)}</span></td><td>${escapeHtml(routeLabel(stock.routeId))}</td><td>${fareLabel(stock.fareClass)}</td><td>${stock.totalStock.toLocaleString()}</td><td>${stock.remainingStock.toLocaleString()}</td><td>${rate}%</td></tr>`; }).join("") || '<tr><td colspan="7">표시할 재고가 없습니다.</td></tr>'}</tbody></table></div>`);
+  }
+
+  async function renderAdminCache(token) {
+    const campaigns = await getCampaigns(true);
+    if (token !== state.renderToken) return;
+    app.innerHTML = adminLayout(
+      "cache",
+      `<header class="page-header"><div><p class="page-kicker">Campaign readiness</p><h1 class="page-title">캠페인 데이터 준비</h1><p class="page-description">특가 오픈 전 데이터를 준비하거나 운영 중 누락된 정보만 복구합니다.</p></div></header>
+      <article class="card">
+        <div class="field"><label for="cache-campaign">대상 캠페인</label><select id="cache-campaign">${campaigns.map((campaign) => `<option value="${campaign.campaignId}">${escapeHtml(campaign.name)} · ${campaignStatusLabel(campaign.status)}</option>`).join("")}</select></div>
+        <div class="admin-action-grid compact-actions">
+          <button class="admin-action-card" data-action="recover-cache" ${previewMode || !campaigns.length ? "disabled" : ""}><strong>누락 정보 복구</strong><span>운영 중인 캠페인의 기존 수량은 유지하고, 사라진 정보만 다시 채웁니다.</span></button>
+          <button class="admin-action-card danger-outline" data-action="warmup-cache" ${previewMode || !campaigns.length ? "disabled" : ""}><strong>오픈 전 전체 준비</strong><span>현재 저장된 정보를 캠페인 원본 데이터로 다시 구성합니다. 발급이 시작된 뒤에는 실행하지 마세요.</span></button>
+        </div>
+        <div id="cache-operation-result"></div>
+      </article>`,
+    );
+  }
+
+  async function runCacheOperation(mode) {
+    const campaignId = Number(document.querySelector("#cache-campaign")?.value);
+    if (!campaignId) return;
+    const warmup = mode === "warmup";
+    const confirmed = await openConfirm({
+      title: warmup ? "캠페인 데이터를 전체 준비할까요?" : "누락된 캠페인 정보를 복구할까요?",
+      message: warmup
+        ? "쿠폰 발급이 시작되지 않았거나 발급 요청이 완전히 중단된 상태에서만 실행해 주세요."
+        : "현재 발급 수량은 변경하지 않고 누락된 정보만 복구합니다.",
+      confirmText: warmup ? "전체 준비" : "누락 정보 복구",
+      danger: warmup,
+    });
+    if (!confirmed) return;
+
+    try {
+      const result = await request(
+        `/api/admin/campaigns/${campaignId}/cache/${warmup ? "warmup" : "recover"}`,
+        { method: "POST" },
+      );
+      const hasMismatch = (result.mismatches || []).length > 0;
+      const target = document.querySelector("#cache-operation-result");
+      if (target) {
+        target.innerHTML = `<div class="notice ${hasMismatch ? "" : "info"}" style="margin-top:20px"><strong>${warmup ? "캠페인 데이터 준비 완료" : "누락 정보 복구 완료"}</strong>${hasMismatch ? `<br />추가 확인이 필요한 항목: ${escapeHtml(result.mismatches.join(", "))}` : "<br />확인 필요한 불일치가 없습니다."}</div>`;
+      }
+      toast("작업 완료", warmup ? "캠페인 데이터 준비를 마쳤습니다." : "누락된 정보 복구를 마쳤습니다.");
+    } catch (error) {
+      toast("작업 실패", errorMessage(error), "error");
+    }
   }
 
   async function renderAdminRevoke(token) {
     const campaigns = await getCampaigns(true);
     if (token !== state.renderToken) return;
-    app.innerHTML = adminLayout("revoke", `<header class="page-header"><div><p class="page-kicker">Airline revoke</p><h1 class="page-title">미사용 쿠폰 일괄 회수</h1><p class="page-description">ISSUED 쿠폰만 CANCELLED로 변경하며 재고는 복구하지 않습니다.</p></div></header><article class="card"><div class="notice">이 작업은 사용자 예약 취소와 다릅니다. 이미 사용한 USED 쿠폰은 변경하지 않습니다.</div><form id="revoke-form"><div class="field"><label for="revoke-campaign">대상 캠페인</label><select id="revoke-campaign" name="campaignId">${campaigns.map((campaign) => `<option value="${campaign.campaignId}">${escapeHtml(campaign.name)} · ${campaignStatusLabel(campaign.status)}</option>`).join("")}</select></div><div class="button-row end" style="margin-top:22px"><button class="danger-button" type="submit" ${previewMode ? "disabled" : ""}>미사용 쿠폰 회수</button></div></form><div id="revoke-result"></div></article>`);
+    app.innerHTML = adminLayout("revoke", `<header class="page-header"><div><p class="page-kicker">Airline revoke</p><h1 class="page-title">미사용 쿠폰 일괄 회수</h1><p class="page-description">선택한 캠페인에서 아직 사용하지 않은 쿠폰만 회수합니다.</p></div></header><article class="card"><div class="notice">이미 사용했거나 취소·만료된 쿠폰은 변경되지 않습니다. 회수 후 발급 가능 수량은 늘어나지 않습니다.</div><form id="revoke-form"><div class="field"><label for="revoke-campaign">대상 캠페인</label><select id="revoke-campaign" name="campaignId">${campaigns.map((campaign) => `<option value="${campaign.campaignId}">${escapeHtml(campaign.name)} · ${campaignStatusLabel(campaign.status)}</option>`).join("")}</select></div><div class="button-row end" style="margin-top:22px"><button class="danger-button" type="submit" ${previewMode ? "disabled" : ""}>미사용 쿠폰 회수</button></div></form><div id="revoke-result"></div></article>`);
   }
 
   function renderAdminBatches() {
     const execution = state.execution;
-    app.innerHTML = adminLayout("batches", `<header class="page-header"><div><p class="page-kicker">Batch operations</p><h1 class="page-title">배치 실행·상태</h1><p class="page-description">배치는 202 Accepted 후 executionId로 진행 상태를 조회합니다.</p></div></header><div class="admin-action-grid"><button class="admin-action-card" data-action="run-batch" data-job="expiration" ${previewMode ? "disabled" : ""}><strong>쿠폰 만료 배치</strong><span>기한이 지난 ISSUED 쿠폰을 EXPIRED로 변경합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="verification" ${previewMode ? "disabled" : ""}><strong>데이터 정합성 검증</strong><span>INV 규칙을 실행하고 회차별 검증 결과를 저장합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="reconcile" ${previewMode ? "disabled" : ""}><strong>Redis–DB 재고 대사</strong><span>불일치를 탐지·기록하며 자동 교정하지 않습니다.</span></button></div>${execution ? `<article class="card" style="margin-top:18px"><div class="job-status"><div><span class="badge ${escapeHtml(execution.status)}" id="execution-status">${escapeHtml(execution.status)}</span><h2 class="card-title" style="margin:12px 0 4px">${escapeHtml(execution.job || execution.jobName)}</h2><p class="row-muted">executionId ${escapeHtml(execution.jobExecutionId)} · runId ${escapeHtml(execution.runId)}</p></div><button class="ghost-button" data-action="refresh-execution">상태 새로고침</button></div><div id="execution-detail"></div></article>` : ""}`);
+    app.innerHTML = adminLayout("batches", `<header class="page-header"><div><p class="page-kicker">Batch operations</p><h1 class="page-title">일괄 작업 실행</h1><p class="page-description">작업을 접수하면 완료될 때까지 진행 상태를 자동으로 확인합니다.</p></div></header><article class="card batch-control"><div class="field"><label for="verification-round">검증 대상 발급 방식</label><select id="verification-round"><option value="V3">Redis + Kafka</option><option value="V2">Redis + MySQL</option><option value="V1">MySQL 비관적 락</option><option value="V0">락 없는 기준 측정</option></select></div></article><div class="admin-action-grid"><button class="admin-action-card" data-action="run-batch" data-job="expiration" ${previewMode ? "disabled" : ""}><strong>기간 만료 쿠폰 정리</strong><span>유효기간이 지난 미사용 쿠폰을 만료 처리합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="verification" ${previewMode ? "disabled" : ""}><strong>데이터 검증</strong><span>쿠폰, 상태 변경 이력, 재고 수량이 서로 맞는지 검사합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="reconcile" ${previewMode ? "disabled" : ""}><strong>재고 일치 확인</strong><span>실시간 발급 수량과 저장된 재고 수량의 차이를 확인합니다.</span></button></div>${execution ? `<article class="card" style="margin-top:18px"><div class="job-status"><div><span class="badge ${escapeHtml(execution.status)}" id="execution-status">${escapeHtml(batchStatusLabel(execution.status))}</span><h2 class="card-title" style="margin:12px 0 4px">${escapeHtml(execution.job || execution.jobName)}</h2><p class="row-muted">작업 번호 ${escapeHtml(execution.jobExecutionId)} · 실행 ID ${escapeHtml(execution.runId)}</p></div><button class="ghost-button" data-action="refresh-execution">상태 새로고침</button></div><div id="execution-detail"></div></article>` : ""}`);
   }
 
   async function runBatch(job) {
     let query = "";
     if (job === "verification") {
-      const round = window.prompt("검증 회차를 입력해 주세요. (V0, V1, V2, V3)", "V3");
-      if (!round) return;
+      const round = document.querySelector("#verification-round")?.value || "V3";
       query = `?round=${encodeURIComponent(round.toUpperCase())}&failOnViolation=false`;
     }
     try {
       state.execution = await request(`/api/admin/batch/${job}${query}`, { method: "POST" });
       renderAdminBatches();
-      toast("배치 접수 완료", `executionId ${state.execution.jobExecutionId}`);
+      toast("작업 접수 완료", `작업 번호 ${state.execution.jobExecutionId}`);
       watchExecution();
     } catch (error) {
-      toast("배치 실행 실패", errorMessage(error), "error");
+      toast("작업 실행 실패", errorMessage(error), "error");
     }
   }
 
@@ -928,9 +1099,9 @@
       const target = document.querySelector("#execution-detail");
       if (status) {
         status.className = `badge ${detail.status}`;
-        status.textContent = detail.status;
+        status.textContent = batchStatusLabel(detail.status);
       }
-      if (target) target.innerHTML = `<div class="detail-grid" style="margin-top:22px"><div class="detail-item"><span>시작</span><strong>${escapeHtml(detail.startTime)}</strong></div><div class="detail-item"><span>종료</span><strong>${escapeHtml(detail.endTime)}</strong></div><div class="detail-item"><span>Exit Code</span><strong>${escapeHtml(detail.exitCode)}</strong></div><div class="detail-item"><span>실패 원인</span><strong>${escapeHtml((detail.failures || []).join(", ") || "없음")}</strong></div></div>`;
+      if (target) target.innerHTML = `<div class="detail-grid" style="margin-top:22px"><div class="detail-item"><span>시작 시각</span><strong>${formatDate(detail.startTime)}</strong></div><div class="detail-item"><span>종료 시각</span><strong>${formatDate(detail.endTime)}</strong></div><div class="detail-item"><span>처리 결과</span><strong>${escapeHtml(batchStatusLabel(detail.status))}</strong></div><div class="detail-item"><span>실패 원인</span><strong>${escapeHtml((detail.failures || []).join(", ") || "없음")}</strong></div></div>${(detail.steps || []).length ? `<div class="table-wrap compact-table"><table class="data-table"><thead><tr><th>처리 단계</th><th>읽음</th><th>저장</th><th>반영</th></tr></thead><tbody>${detail.steps.map((step) => `<tr><td>${escapeHtml(step.name)}</td><td>${Number(step.readCount || 0).toLocaleString()}</td><td>${Number(step.writeCount || 0).toLocaleString()}</td><td>${Number(step.commitCount || 0).toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
       return detail.status;
     } catch (error) {
       toast("상태 조회 실패", errorMessage(error), "error");
@@ -945,7 +1116,7 @@
       if (["COMPLETED", "FAILED", "STOPPED", "ABANDONED"].includes(status)) {
         window.clearInterval(timer);
         if (state.batchPollTimer === timer) state.batchPollTimer = null;
-        toast("배치 실행 종료", `최종 상태: ${status}`, status === "COMPLETED" ? "success" : "error");
+        toast("작업 종료", `최종 결과: ${batchStatusLabel(status)}`, status === "COMPLETED" ? "success" : "error");
       }
     }, 1200);
     state.batchPollTimer = timer;
@@ -957,23 +1128,903 @@
 
   async function renderAdminVerification(token) {
     if (previewMode) {
-      app.innerHTML = adminLayout("verification", '<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">검증 결과</h1></div></header><div class="empty-state"><h2>미리보기 모드</h2><p>실제 검증 결과는 백엔드 실행 후 표시됩니다.</p></div>');
+      app.innerHTML = adminLayout("verification", '<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">데이터 검증 결과</h1></div></header><div class="empty-state"><h2>아직 검증 결과가 없습니다</h2><p>일괄 작업 메뉴에서 데이터 검증을 실행해 주세요.</p></div>');
       return;
     }
     const runs = await request("/api/admin/batch/verification/runs?limit=20");
     if (token !== state.renderToken) return;
-    app.innerHTML = adminLayout("verification", `<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">검증 결과</h1><p class="page-description">회차를 선택하면 규칙별 결과와 위반 샘플을 확인할 수 있습니다.</p></div></header><div class="table-wrap"><table class="data-table"><thead><tr><th>runId</th><th>회차</th><th>기준 시각</th><th>전체 위반</th><th>실패 규칙</th><th>판정</th></tr></thead><tbody>${runs.map((run) => { const verdict = run.verdict || (Number(run.total_violations) > 0 ? "FAILED" : "PASSED"); return `<tr class="clickable" data-route="admin/verification-run/${encodeURIComponent(run.run_id)}"><td>${escapeHtml(run.run_id)}</td><td>${escapeHtml(run.round || "-")}</td><td>${formatDate(run.snapshot_at)}</td><td>${Number(run.total_violations || 0).toLocaleString()}</td><td>${Number(run.failed_rules || 0).toLocaleString()}</td><td><span class="badge ${escapeHtml(verdict)}">${escapeHtml(verdict)}</span></td></tr>`; }).join("") || '<tr><td colspan="6">검증 회차가 없습니다.</td></tr>'}</tbody></table></div>`);
+    app.innerHTML = adminLayout("verification", `<header class="page-header"><div><p class="page-kicker">Verification</p><h1 class="page-title">데이터 검증 결과</h1><p class="page-description">실행 ID를 선택하면 검사 항목별 결과와 문제가 발견된 데이터를 확인할 수 있습니다.</p></div><button class="ghost-button" data-route="admin/verification">새로고침</button></header><div class="table-wrap"><table class="data-table"><thead><tr><th>실행 ID</th><th>발급 방식</th><th>기준 시각</th><th>전체 위반</th><th>문제 항목</th><th>최종 결과</th></tr></thead><tbody>${runs.map((run) => { const verdict = run.verdict || (Number(run.total_violations) > 0 ? "FAILED" : "PASSED"); return `<tr class="clickable" data-route="admin/verification-run/${encodeURIComponent(run.run_id)}"><td>${escapeHtml(run.run_id)}</td><td>${escapeHtml(run.round || "-")}</td><td>${formatDate(run.snapshot_at)}</td><td>${Number(run.total_violations || 0).toLocaleString()}</td><td>${Number(run.failed_rules || 0).toLocaleString()}</td><td><span class="badge ${escapeHtml(verdict)}">${escapeHtml(verdictLabel(verdict))}</span></td></tr>`; }).join("") || '<tr><td colspan="6">아직 검증 결과가 없습니다.</td></tr>'}</tbody></table></div>`);
   }
 
   async function renderVerificationRun(runId, token) {
     const decoded = decodeURIComponent(runId);
     const [rules, violations] = await Promise.all([request(`/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}`), request(`/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}/violations?limit=100`)]);
     if (token !== state.renderToken) return;
-    app.innerHTML = adminLayout("verification", `<button class="back-button" data-route="admin/verification">← 검증 회차 목록</button><header class="page-header"><div><p class="page-kicker">Verification detail</p><h1 class="page-title">${escapeHtml(decoded)}</h1><p class="page-description">규칙별 판정과 위반 샘플입니다.</p></div></header><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>이름</th><th>상태</th><th>검사 행</th><th>위반</th><th>소요</th></tr></thead><tbody>${rules.map((rule) => { const status = rule.status || (Boolean(rule.passed) ? "CHECKED" : "FAILED"); return `<tr><td>${escapeHtml(rule.rule_code)}</td><td>${escapeHtml(rule.rule_name)}</td><td><span class="badge ${escapeHtml(status)}">${escapeHtml(status)}</span></td><td>${rule.checked_rows == null ? "-" : Number(rule.checked_rows).toLocaleString()}</td><td>${Number(rule.violation_count || 0).toLocaleString()}</td><td>${Number(rule.elapsed_ms || 0).toLocaleString()} ms</td></tr>`; }).join("")}</tbody></table></div><h2 class="card-title" style="margin-top:30px">위반 샘플</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>테이블</th><th>대상 ID</th><th>상세</th></tr></thead><tbody>${violations.map((item) => `<tr><td>${escapeHtml(item.rule_code)}</td><td>${escapeHtml(item.target_table)}</td><td>${escapeHtml(item.target_id)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join("") || '<tr><td colspan="4">위반 없음</td></tr>'}</tbody></table></div>`);
+    app.innerHTML = adminLayout("verification", `<button class="back-button" data-route="admin/verification">← 검증 결과 목록</button><header class="page-header"><div><p class="page-kicker">Verification detail</p><h1 class="page-title">${escapeHtml(decoded)}</h1><p class="page-description">검사 항목별 처리 범위와 발견된 문제입니다.</p></div><a class="secondary-button" href="/api/admin/batch/verification/runs/${encodeURIComponent(decoded)}/report" target="_blank" rel="noopener">결과 보고서 열기 ↗</a></header><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>검사 항목</th><th>상태</th><th>검사 행</th><th>위반</th><th>소요 시간</th></tr></thead><tbody>${rules.map((rule) => { const status = rule.status || (Boolean(rule.passed) ? "CHECKED" : "FAILED"); return `<tr><td>${escapeHtml(rule.rule_code)}</td><td>${escapeHtml(rule.rule_name)}</td><td><span class="badge ${escapeHtml(status)}">${escapeHtml(ruleStatusLabel(status))}</span></td><td>${rule.checked_rows == null ? "-" : Number(rule.checked_rows).toLocaleString()}</td><td>${Number(rule.violation_count || 0).toLocaleString()}</td><td>${Number(rule.elapsed_ms || 0).toLocaleString()} ms</td></tr>`; }).join("")}</tbody></table></div><h2 class="card-title" style="margin-top:30px">발견된 문제</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>규칙</th><th>데이터 구분</th><th>대상 ID</th><th>상세 내용</th></tr></thead><tbody>${violations.map((item) => `<tr><td>${escapeHtml(item.rule_code)}</td><td>${escapeHtml(item.target_table)}</td><td>${escapeHtml(item.target_id)}</td><td>${escapeHtml(item.detail)}</td></tr>`).join("") || '<tr><td colspan="4">발견된 문제가 없습니다.</td></tr>'}</tbody></table></div>`);
   }
 
-  function renderMonitoring() {
-    app.innerHTML = adminLayout("monitoring", `<header class="page-header"><div><p class="page-kicker">Observability</p><h1 class="page-title">시스템 모니터링</h1><p class="page-description">운영 지표는 전용 관측 도구에서 확인합니다.</p></div></header><div class="monitor-grid"><article class="monitor-card"><h3>Grafana Dashboard</h3><p>API 지연, JVM, HikariCP, Redis, Kafka, MySQL 및 컨테이너 자원을 한눈에 확인합니다.</p><a class="primary-button" href="http://localhost:3000" target="_blank" rel="noopener">Grafana 열기 ↗</a></article><article class="monitor-card"><h3>Prometheus</h3><p>Micrometer와 인프라 Exporter가 수집한 원시 시계열을 조회합니다.</p><a class="secondary-button" href="http://localhost:9090" target="_blank" rel="noopener">Prometheus 열기 ↗</a></article><article class="monitor-card"><h3>Spring Actuator</h3><p>애플리케이션 헬스와 Prometheus 노출 지표를 확인합니다.</p><a class="ghost-button" href="/actuator/health" target="_blank" rel="noopener">Health 확인 ↗</a></article><article class="monitor-card"><h3>Kafka Consumer Lag</h3><p>V3 부하 테스트 종료 판정은 lag 0과 DLT 0을 함께 확인합니다.</p><button class="ghost-button" data-route="admin/batches">대사 배치로 이동</button></article></div>`);
+  // ---------------------------------------------------------------------------
+  // 시스템 모니터링 화면
+  //
+  // 데이터는 두 갈래에서 온다.
+  //   1) Prometheus HTTP API — 모든 앱 인스턴스의 지표를 합산한다. 연결할 수 없을 때만
+  //      /actuator/prometheus로 내려가 현재 앱 한 대의 지표임을 화면에 명시한다. 누적
+  //      카운터는 직전 표본과 차분해 초당 처리량으로 바꾼다.
+  //   2) SSE(/api/campaigns/{id}/status/stream) — 선택한 재고풀의 잔여 재고.
+  //      SSE는 재고풀 하나당 연결 하나다. 브라우저의 오리진당 동시 연결 한도(HTTP/1.1에서 6)
+  //      에 걸리면 화면의 다른 요청까지 굶으므로, 한 번에 한 재고풀만 구독한다.
+  // ---------------------------------------------------------------------------
+
+  const MONITOR = {
+    pollMs: 2000,
+    windowSize: 90, // 2초 × 90 = 최근 3분
+    issueUri: "/api/coupons/issue",
+    // 색각 이상(적/녹/청) 시뮬레이션 검증을 통과한 두 색이다. 시리즈를 늘려야 하면
+    // 색을 추가하지 말고 차트를 나누거나, 막대 + 직접 라벨 형태로 바꾼다.
+    primary: "#356ad8",
+    accent: "#e6007e",
+    ink: "#171321",
+    muted: "#716b7b",
+    grid: "#e8e5ec",
+  };
+  const PROMETHEUS_URL_KEY = "uply.prometheus.url";
+
+  const REASON_LABELS = {
+    out_of_stock: "재고 소진",
+    already_issued: "중복 발급",
+    campaign_not_open: "오픈 전 요청",
+    campaign_expired: "종료된 캠페인",
+    duplicate_request: "동일 요청 재진입",
+    lock_timeout: "락 대기 초과",
+    concurrency_conflict: "DB 경합",
+    connection_unavailable: "DB 커넥션 부족",
+    db_save_failed: "DB 저장 실패",
+    kafka_publish_failed: "Kafka 발행 실패",
+    save_result_unknown: "저장 결과 불명확",
+    campaign_not_cached: "캐시 미준비",
+    system_error: "시스템 오류",
+  };
+
+  // 정상적인 비즈니스 거절과 시스템 실패를 가른다. 색이 아니라 글자로 구분해야
+  // 색각 이상이 있어도, 흑백으로 인쇄해도 읽힌다.
+  const BUSINESS_REASONS = new Set([
+    "out_of_stock",
+    "already_issued",
+    "campaign_not_open",
+    "campaign_expired",
+    "duplicate_request",
+  ]);
+
+  const monitor = {
+    prev: null,
+    history: { successTps: [], failTps: [], p95: [], p99: [] },
+    totals: { success: 0, compensation: 0 },
+    reasons: new Map(),
+    gauges: {},
+    pools: [],
+    pool: null,
+    stock: { total: 0, remaining: null, series: [], live: false },
+    metricsError: null,
+    stockError: null,
+    source: null,
+    prometheusUrl: null,
+  };
+
+  const chartState = Object.create(null);
+
+  function resetMonitorState() {
+    monitor.prev = null;
+    monitor.history = { successTps: [], failTps: [], p95: [], p99: [] };
+    monitor.totals = { success: 0, compensation: 0 };
+    monitor.reasons = new Map();
+    monitor.gauges = {};
+    monitor.stock = { total: 0, remaining: null, series: [], live: false };
+    monitor.metricsError = null;
+    monitor.stockError = null;
+    monitor.source = null;
+  }
+
+  // --- Prometheus 텍스트 파싱 ------------------------------------------------
+
+  function parseLabels(text) {
+    const labels = Object.create(null);
+    const pattern = /([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"/g;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      labels[match[1]] = match[2].replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\\\/g, "\\");
+    }
+    return labels;
+  }
+
+  function parsePrometheusText(text) {
+    const series = new Map();
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.charCodeAt(0) === 35) continue; // '#' 주석
+      const brace = line.indexOf("{");
+      let name;
+      let labelPart = "";
+      let rest;
+      if (brace === -1) {
+        const space = line.indexOf(" ");
+        if (space === -1) continue;
+        name = line.slice(0, space);
+        rest = line.slice(space + 1);
+      } else {
+        const close = line.lastIndexOf("}");
+        if (close < brace) continue;
+        name = line.slice(0, brace);
+        labelPart = line.slice(brace + 1, close);
+        rest = line.slice(close + 1);
+      }
+      const value = Number.parseFloat(rest.trim().split(" ")[0]);
+      if (!Number.isFinite(value)) continue;
+      if (!series.has(name)) series.set(name, []);
+      series.get(name).push({ labels: parseLabels(labelPart), value });
+    }
+    return series;
+  }
+
+  function sumMetric(parsed, name, filter) {
+    const rows = parsed.get(name);
+    if (!rows) return 0;
+    let total = 0;
+    for (const row of rows) {
+      if (!filter || filter(row.labels)) total += row.value;
+    }
+    return total;
+  }
+
+  function maxMetric(parsed, name, filter) {
+    let max = null;
+    for (const row of parsed.get(name) || []) {
+      if (filter && !filter(row.labels)) continue;
+      if (max == null || row.value > max) max = row.value;
+    }
+    return max;
+  }
+
+  function groupMetric(parsed, name, labelKey) {
+    const grouped = new Map();
+    for (const row of parsed.get(name) || []) {
+      const key = row.labels[labelKey];
+      if (key === undefined) continue;
+      grouped.set(key, (grouped.get(key) || 0) + row.value);
+    }
+    return grouped;
+  }
+
+  function pushPoint(list, at, value) {
+    list.push({ at, value });
+    if (list.length > MONITOR.windowSize) list.shift();
+  }
+
+  // 카운터는 누적값이다. 앱이 재기동하면 0으로 돌아가는데, 그때 차분이 음수가 되므로
+  // 그 구간은 버린다(가짜 스파이크를 만드는 대신 한 표본을 잃는 쪽을 택한다).
+  function perSecond(current, previous, seconds) {
+    if (previous == null || seconds <= 0) return null;
+    const delta = current - previous;
+    if (delta < 0) return null;
+    return delta / seconds;
+  }
+
+  // --- 값 표기 ---------------------------------------------------------------
+
+  function compactNumber(value) {
+    if (!Number.isFinite(value)) return "-";
+    return Math.round(value).toLocaleString();
+  }
+
+  function rateText(value) {
+    if (value == null || !Number.isFinite(value)) return "-";
+    if (value >= 100) return `${Math.round(value).toLocaleString()}/s`;
+    return `${value.toFixed(1)}/s`;
+  }
+
+  function secondsToMsText(value) {
+    if (value == null || !Number.isFinite(value)) return "-";
+    return `${Math.round(value * 1000).toLocaleString()} ms`;
+  }
+
+  function clockText(at) {
+    return new Date(at).toLocaleTimeString("ko-KR", { hour12: false });
+  }
+
+  // --- 선형 차트 -------------------------------------------------------------
+  //
+  // 컨테이너 실제 폭을 재서 픽셀 좌표로 그린다. viewBox를 늘려 쓰면 축 글자와 선 굵기가
+  // 같이 늘어나므로 쓰지 않는다. 2초마다 다시 그리므로 창 크기를 바꿔도 곧 맞춰진다.
+
+  function chartPath(points, geo) {
+    let path = "";
+    let open = false;
+    points.forEach((point, index) => {
+      if (point.value == null) {
+        open = false;
+        return;
+      }
+      const x = geo.left + index * geo.stepX;
+      const y = geo.bottom - (point.value - geo.min) * geo.scaleY;
+      path += `${open ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+      open = true;
+    });
+    return path;
+  }
+
+  function drawLineChart(chartId, config) {
+    const plot = document.querySelector(`[data-chart="${chartId}"] .chart-plot`);
+    if (!plot) return;
+
+    const svg = plot.querySelector("svg");
+    const width = Math.max(plot.clientWidth || 0, 320);
+    const height = config.height || 200;
+    const padding = { top: 16, right: 62, bottom: 26, left: 8 };
+
+    const lengths = config.series.map((entry) => entry.points.length);
+    const count = Math.max(...lengths, 0);
+    if (count < 2) {
+      svg.setAttribute("width", width);
+      svg.setAttribute("height", height);
+      svg.innerHTML = `<text x="${width / 2}" y="${height / 2}" text-anchor="middle" fill="${MONITOR.muted}" font-size="13">표본을 모으는 중입니다…</text>`;
+      return;
+    }
+
+    let max = 0;
+    let min = 0;
+    for (const entry of config.series) {
+      for (const point of entry.points) {
+        if (point.value == null) continue;
+        if (point.value > max) max = point.value;
+        if (point.value < min) min = point.value;
+      }
+    }
+    if (config.forceMax != null) max = Math.max(max, config.forceMax);
+    if (max === min) max = min + 1;
+    const headroom = (max - min) * 0.12;
+    max += headroom;
+
+    const geo = {
+      left: padding.left,
+      bottom: height - padding.bottom,
+      stepX: (width - padding.left - padding.right) / (count - 1),
+      scaleY: (height - padding.top - padding.bottom) / (max - min),
+      min,
+      max,
+      count,
+      width,
+      height,
+    };
+    // 시리즈 길이가 서로 다를 수 있으므로 시간축은 가장 긴 시리즈를 기준으로 잡는다.
+    const axisPoints = config.series.reduce(
+      (longest, entry) => (entry.points.length > longest.length ? entry.points : longest),
+      [],
+    );
+    chartState[chartId] = { geo, config, axisPoints };
+
+    const format = config.format || compactNumber;
+    let markup = "";
+
+    // 눈금선은 배경으로 물러나 있어야 데이터가 앞으로 나온다.
+    for (let step = 0; step <= 2; step += 1) {
+      const value = min + ((max - min) / 2) * step;
+      const y = geo.bottom - (value - min) * geo.scaleY;
+      markup += `<line x1="${geo.left}" y1="${y.toFixed(1)}" x2="${width - padding.right}" y2="${y.toFixed(1)}" stroke="${MONITOR.grid}" stroke-width="1" />`;
+      markup += `<text x="${width - padding.right + 8}" y="${(y + 4).toFixed(1)}" fill="${MONITOR.muted}" font-size="11">${escapeHtml(format(value))}</text>`;
+    }
+
+    config.series.forEach((entry) => {
+      const path = chartPath(entry.points, geo);
+      if (!path) return;
+      if (config.series.length === 1) {
+        const area = `${path}L${(geo.left + (count - 1) * geo.stepX).toFixed(1)} ${geo.bottom}L${geo.left} ${geo.bottom}Z`;
+        markup += `<path d="${area}" fill="${entry.color}" fill-opacity="0.10" stroke="none" />`;
+      }
+      markup += `<path d="${path}" fill="none" stroke="${entry.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`;
+
+      // 마지막 점만 직접 라벨을 단다. 모든 점에 숫자를 붙이면 선이 읽히지 않는다.
+      const last = [...entry.points].reverse().find((point) => point.value != null);
+      if (last) {
+        const lastIndex = entry.points.lastIndexOf(last);
+        const x = geo.left + lastIndex * geo.stepX;
+        const y = geo.bottom - (last.value - min) * geo.scaleY;
+        markup += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${entry.color}" stroke="#ffffff" stroke-width="2" />`;
+      }
+    });
+
+    if (axisPoints.length) {
+      markup += `<text x="${geo.left}" y="${height - 6}" fill="${MONITOR.muted}" font-size="11">${escapeHtml(clockText(axisPoints[0].at))}</text>`;
+      markup += `<text x="${(width - padding.right).toFixed(1)}" y="${height - 6}" text-anchor="end" fill="${MONITOR.muted}" font-size="11">${escapeHtml(clockText(axisPoints[axisPoints.length - 1].at))}</text>`;
+    }
+
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
+    svg.innerHTML = markup;
+
+    const hovered = plot.dataset.hoverIndex;
+    if (hovered !== undefined && hovered !== "") showChartHover(chartId, Number(hovered));
+  }
+
+  function showChartHover(chartId, rawIndex) {
+    const entry = chartState[chartId];
+    const plot = document.querySelector(`[data-chart="${chartId}"] .chart-plot`);
+    if (!entry || !plot) return;
+    const index = Math.max(0, Math.min(entry.geo.count - 1, rawIndex));
+    const cursor = plot.querySelector(".chart-cursor");
+    const tip = plot.querySelector(".chart-tip");
+    if (!cursor || !tip) return;
+
+    const x = entry.geo.left + index * entry.geo.stepX;
+    cursor.style.left = `${x}px`;
+    cursor.style.height = `${entry.geo.bottom - 10}px`;
+    cursor.hidden = false;
+
+    const format = entry.config.format || compactNumber;
+    const stamp = (entry.axisPoints || [])[index];
+    const rows = entry.config.series
+      .map((series) => {
+        const point = series.points[index];
+        const text = point && point.value != null ? format(point.value) : "-";
+        return `<div class="chart-tip-row"><span class="chart-dot" style="background:${series.color}"></span>${escapeHtml(series.name)}<strong>${escapeHtml(text)}</strong></div>`;
+      })
+      .join("");
+    tip.innerHTML = `<div class="chart-tip-time">${escapeHtml(stamp ? clockText(stamp.at) : "")}</div>${rows}`;
+    tip.hidden = false;
+    const flip = x > entry.geo.width * 0.6;
+    tip.style.left = `${flip ? x - tip.offsetWidth - 12 : x + 12}px`;
+    plot.dataset.hoverIndex = String(index);
+  }
+
+  function hideChartHover(plot) {
+    const cursor = plot.querySelector(".chart-cursor");
+    const tip = plot.querySelector(".chart-tip");
+    if (cursor) cursor.hidden = true;
+    if (tip) tip.hidden = true;
+    delete plot.dataset.hoverIndex;
+  }
+
+  function bindChartHover() {
+    document.querySelectorAll("[data-chart] .chart-plot").forEach((plot) => {
+      const chartId = plot.closest("[data-chart]").dataset.chart;
+      plot.addEventListener("mousemove", (event) => {
+        const entry = chartState[chartId];
+        if (!entry) return;
+        const bounds = plot.getBoundingClientRect();
+        const offset = event.clientX - bounds.left - entry.geo.left;
+        showChartHover(chartId, Math.round(offset / entry.geo.stepX));
+      });
+      plot.addEventListener("mouseleave", () => hideChartHover(plot));
+    });
+  }
+
+  function chartCard(chartId, title, description, legend) {
+    return `<figure class="chart-card" data-chart="${chartId}">
+      <figcaption>
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(description)}</p>
+      </figcaption>
+      ${legend || ""}
+      <div class="chart-plot"><svg role="img" aria-label="${escapeHtml(title)}"></svg><div class="chart-cursor" hidden></div><div class="chart-tip" hidden></div></div>
+    </figure>`;
+  }
+
+  function chartLegend(items) {
+    return `<div class="chart-legend">${items
+      .map((item) => `<span><i style="background:${item.color}"></i>${escapeHtml(item.name)}</span>`)
+      .join("")}</div>`;
+  }
+
+  // --- 실패 사유 막대 --------------------------------------------------------
+  //
+  // 사유가 열 개를 넘을 수 있어 색으로 구분하지 않는다. 이름이 바로 옆에 붙는 가로 막대라
+  // 정체는 라벨이, 크기는 막대 길이가 나른다. 색은 한 가지만 쓴다.
+
+  function failureBars() {
+    const rows = [...monitor.reasons.entries()]
+      .filter(([, value]) => value > 0)
+      .sort((left, right) => right[1] - left[1]);
+
+    if (!rows.length) {
+      return '<p class="chart-empty">아직 실패로 집계된 요청이 없습니다.</p>';
+    }
+
+    const max = rows[0][1];
+    return `<ul class="bar-list">${rows
+      .map(([reason, value]) => {
+        const label = REASON_LABELS[reason] || reason;
+        const kind = BUSINESS_REASONS.has(reason) ? "정상 거절" : "시스템 실패";
+        const width = Math.max(2, (value / max) * 100);
+        return `<li class="bar-row${BUSINESS_REASONS.has(reason) ? "" : " system"}">
+          <div class="bar-head"><span class="bar-name">${escapeHtml(label)}</span><span class="bar-kind">${kind}</span><strong>${compactNumber(value)}</strong></div>
+          <div class="bar-track"><span style="width:${width.toFixed(1)}%"></span></div>
+        </li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  function statTile(label, value, note, tone) {
+    return `<article class="metric-card stat-tile${tone ? ` ${tone}` : ""}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(note || "")}</small>
+    </article>`;
+  }
+
+  // --- 화면 갱신 -------------------------------------------------------------
+
+  function updateMonitoringView() {
+    if (currentRoute() !== "admin/monitoring") return;
+
+    const notice = document.querySelector("#monitor-notice");
+    if (notice) {
+      const messages = [monitor.metricsError, monitor.stockError].filter(Boolean);
+      notice.hidden = messages.length === 0;
+      notice.textContent = messages.join(" ");
+    }
+
+    const tiles = document.querySelector("#monitor-tiles");
+    if (tiles) {
+      const tps = monitor.history.successTps.at(-1);
+      const pending = monitor.gauges.hikariPending;
+      const mismatch = monitor.gauges.reconcileMismatch;
+      tiles.innerHTML = [
+        statTile(
+          "발급 성공 누계",
+          compactNumber(monitor.totals.success),
+          monitor.source || "지표 수집 준비 중",
+        ),
+        statTile("초당 발급", rateText(tps ? tps.value : null), "최근 2초 구간"),
+        statTile(
+          "커넥션 대기",
+          pending == null ? "-" : compactNumber(pending),
+          "HikariCP pending — 0을 벗어나면 풀 포화",
+          pending > 0 ? "alert" : "",
+        ),
+        statTile(
+          "Redis 보상 발생",
+          compactNumber(monitor.totals.compensation),
+          "DB 저장 실패 후 재고 되돌림",
+          monitor.totals.compensation > 0 ? "alert" : "",
+        ),
+        statTile(
+          "재고 불일치 (REC-01)",
+          mismatch == null ? "-" : compactNumber(mismatch),
+          "0이 아니면 회차를 자료로 쓸 수 없음",
+          mismatch > 0 ? "alert" : "",
+        ),
+      ].join("");
+    }
+
+    const bars = document.querySelector("#monitor-failures");
+    if (bars) bars.innerHTML = failureBars();
+
+    const stockNote = document.querySelector("#monitor-stock-note");
+    if (stockNote) {
+      const { total, remaining, live } = monitor.stock;
+      if (remaining == null) {
+        stockNote.textContent = "재고풀을 선택하면 실시간으로 표시됩니다.";
+      } else {
+        const used = total ? Math.round(((total - remaining) / total) * 100) : 0;
+        stockNote.textContent = `${remaining.toLocaleString()} / ${total.toLocaleString()}장 남음 · ${used}% 소진 · ${live ? "실시간 수신 중" : "자동 갱신 중"}`;
+      }
+    }
+
+    drawLineChart("stock", {
+      height: 200,
+      format: compactNumber,
+      forceMax: monitor.stock.total || null,
+      series: [{ name: "잔여 재고", color: MONITOR.accent, points: monitor.stock.series }],
+    });
+
+    drawLineChart("throughput", {
+      height: 200,
+      format: rateText,
+      series: [{ name: "발급 성공", color: MONITOR.primary, points: monitor.history.successTps }],
+    });
+
+    drawLineChart("latency", {
+      height: 200,
+      format: secondsToMsText,
+      series: [
+        { name: "p95", color: MONITOR.primary, points: monitor.history.p95 },
+        { name: "p99", color: MONITOR.accent, points: monitor.history.p99 },
+      ],
+    });
+  }
+
+  // --- 지표 수집 -------------------------------------------------------------
+
+  function prometheusBaseUrl() {
+    const configured = String(
+      monitor.prometheusUrl ||
+        window.UPLY_PROMETHEUS_URL ||
+        window.localStorage.getItem(PROMETHEUS_URL_KEY) ||
+        "",
+    )
+      .trim()
+      .replace(/\/$/, "");
+    if (configured) return configured;
+    return `${window.location.protocol}//${window.location.hostname || "localhost"}:9090`;
+  }
+
+  async function prometheusQuery(query) {
+    const url = `${prometheusBaseUrl()}/api/v1/query?query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`Prometheus ${response.status}`);
+    const payload = await response.json();
+    if (payload.status !== "success") throw new Error(payload.error || "Prometheus query failed");
+    return payload.data?.result || [];
+  }
+
+  function prometheusScalar(rows) {
+    const value = Number.parseFloat(rows?.[0]?.value?.[1]);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  async function samplePrometheusMetrics() {
+    const issueFilter = 'uri="/api/coupons/issue"';
+    const [up, success, failures, compensation, pending, mismatch, p95, p99] = await Promise.all([
+      prometheusQuery('up{job="coupon-app"}'),
+      prometheusQuery("sum(coupon_issue_success_total)"),
+      prometheusQuery("sum by (reason) (coupon_issue_failure_total)"),
+      prometheusQuery("sum(coupon_redis_compensation_total)"),
+      prometheusQuery("sum(hikaricp_connections_pending)"),
+      prometheusQuery("max(coupon_reconciliation_mismatch_count)"),
+      prometheusQuery(
+        `histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{${issueFilter}}[1m])))`,
+      ),
+      prometheusQuery(
+        `histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{${issueFilter}}[1m])))`,
+      ),
+    ]);
+
+    // Prometheus가 응답하기만 하면 나머지 쿼리는 전부 "성공"이다 — coupon-app 타깃이
+    // 전부 DOWN이어도 각 쿼리는 그냥 빈 배열을 돌려주고, prometheusScalar가 그걸 0으로
+    // 읽는다. 그러면 "발급 0건 · 실패 0건"이 되어 조용한 회차와 구분이 안 된다. up을
+    // 직접 확인해서 전부 DOWN이면 여기서 던져 로컬 actuator 폴백으로 넘긴다.
+    const upCount = up.filter((row) => Number.parseFloat(row.value?.[1]) === 1).length;
+    if (upCount === 0) {
+      throw new Error("coupon-app targets are all down in Prometheus");
+    }
+
+    return {
+      success: prometheusScalar(success),
+      failure: failures.reduce((sum, row) => sum + prometheusScalar([row]), 0),
+      reasons: new Map(
+        failures.map((row) => [row.metric?.reason || "unknown", prometheusScalar([row])]),
+      ),
+      compensation: prometheusScalar(compensation),
+      pending: prometheusScalar(pending),
+      mismatch: mismatch.length ? prometheusScalar(mismatch) : null,
+      p95: p95.length ? prometheusScalar(p95) : null,
+      p99: p99.length ? prometheusScalar(p99) : null,
+      source: `Prometheus · 앱 인스턴스 ${upCount}대`,
+    };
+  }
+
+  async function sampleLocalMetrics() {
+    const response = await fetch("/actuator/prometheus", { headers: { Accept: "text/plain" } });
+    if (!response.ok) throw new Error(String(response.status));
+    const parsed = parsePrometheusText(await response.text());
+    if (!parsed.has("coupon_issue_success_total")) {
+      throw new Error("coupon_issue_success_total missing");
+    }
+    const isIssue = (labels) => labels.uri === MONITOR.issueUri;
+    const quantile = (value) =>
+      maxMetric(
+        parsed,
+        "http_server_requests_seconds",
+        (labels) => isIssue(labels) && labels.quantile === value,
+      );
+    return {
+      success: sumMetric(parsed, "coupon_issue_success_total"),
+      failure: sumMetric(parsed, "coupon_issue_failure_total"),
+      reasons: groupMetric(parsed, "coupon_issue_failure_total", "reason"),
+      compensation: sumMetric(parsed, "coupon_redis_compensation_total"),
+      pending: sumMetric(parsed, "hikaricp_connections_pending"),
+      mismatch: parsed.has("coupon_reconciliation_mismatch_count")
+        ? sumMetric(parsed, "coupon_reconciliation_mismatch_count")
+        : null,
+      p95: quantile("0.95"),
+      p99: quantile("0.99"),
+      source: "현재 앱 인스턴스",
+    };
+  }
+
+  async function sampleMetrics() {
+    if (currentRoute() !== "admin/monitoring") return;
+
+    let sample;
+    try {
+      sample = await samplePrometheusMetrics();
+      monitor.metricsError = null;
+    } catch (_prometheusError) {
+      try {
+        sample = await sampleLocalMetrics();
+        monitor.metricsError =
+          "Prometheus에 연결하지 못해 현재 앱 인스턴스의 지표만 표시합니다. 전체 비교 결과는 Grafana에서 확인해 주세요.";
+      } catch (_localError) {
+        monitor.metricsError =
+          "실시간 지표를 읽지 못했습니다. Prometheus와 애플리케이션 Actuator 상태를 확인해 주세요.";
+        updateMonitoringView();
+        return;
+      }
+    }
+
+    const at = Date.now();
+    monitor.source = sample.source;
+    monitor.totals.success = sample.success;
+    monitor.totals.compensation = sample.compensation;
+    monitor.reasons = sample.reasons;
+    monitor.gauges.hikariPending = sample.pending;
+    monitor.gauges.reconcileMismatch = sample.mismatch;
+
+    if (monitor.prev) {
+      const seconds = (at - monitor.prev.at) / 1000;
+      const successTps = perSecond(sample.success, monitor.prev.success, seconds);
+      const failTps = perSecond(sample.failure, monitor.prev.failure, seconds);
+      pushPoint(monitor.history.successTps, at, successTps);
+      pushPoint(monitor.history.failTps, at, failTps);
+      pushPoint(monitor.history.p95, at, sample.p95);
+      pushPoint(monitor.history.p99, at, sample.p99);
+    }
+
+    monitor.prev = { at, success: sample.success, failure: sample.failure };
+    updateMonitoringView();
+  }
+
+  // --- 재고 스트림 -----------------------------------------------------------
+
+  function stopMonitorStock() {
+    if (state.monitorStream) state.monitorStream.close();
+    state.monitorStream = null;
+    if (state.monitorStockTimer) window.clearInterval(state.monitorStockTimer);
+    state.monitorStockTimer = null;
+  }
+
+  function applyStockSample(status) {
+    monitor.stock.total = status.totalStock ?? monitor.stock.total;
+    monitor.stock.remaining = status.remainingStock;
+    pushPoint(monitor.stock.series, Date.now(), status.remainingStock);
+    updateMonitoringView();
+  }
+
+  function startMonitorStock() {
+    stopMonitorStock();
+    monitor.stock = { total: 0, remaining: null, series: [], live: false };
+    const pool = monitor.pool;
+    if (!pool || previewMode) return;
+
+    const params = new URLSearchParams({ routeId: pool.routeId, fareClass: pool.fareClass });
+    const stream = new EventSource(`/api/campaigns/${pool.campaignId}/status/stream?${params}`);
+    state.monitorStream = stream;
+
+    stream.addEventListener("open", () => {
+      monitor.stock.live = true;
+      monitor.stockError = null;
+      updateMonitoringView();
+    });
+
+    stream.addEventListener("stock-update", (event) => {
+      if (state.monitorStream !== stream) return;
+      try {
+        applyStockSample(JSON.parse(event.data));
+      } catch (_error) {
+        // 다음 이벤트에서 다시 받는다.
+      }
+    });
+
+    let polling = false;
+    // SSE가 정상일 때는 시간 축을 흐르게 하고, 연결이 끊긴 뒤에는 실제 상태 API를
+    // 호출한다. 마지막 값을 복사하는 것만으로는 끊긴 연결을 정상처럼 보이게 만들 수 있다.
+    state.monitorStockTimer = window.setInterval(async () => {
+      if (currentRoute() !== "admin/monitoring") return stopMonitorStock();
+      if (monitor.stock.live && monitor.stock.remaining != null) {
+        pushPoint(monitor.stock.series, Date.now(), monitor.stock.remaining);
+        updateMonitoringView();
+      } else if (!polling) {
+        polling = true;
+        try {
+          applyStockSample(await getCampaignStatus(pool.campaignId, pool));
+          monitor.stockError = null;
+        } catch (_error) {
+          monitor.stockError = "실시간 재고를 갱신하지 못했습니다. 잠시 후 다시 시도합니다.";
+          updateMonitoringView();
+        } finally {
+          polling = false;
+        }
+      }
+    }, MONITOR.pollMs);
+
+    stream.addEventListener("error", () => {
+      if (state.monitorStream !== stream) return;
+      // 연결이 끊기면 폴링으로 내려앉는다. 화면이 조용히 멈춰 있는 것이 가장 나쁘다.
+      stream.close();
+      state.monitorStream = null;
+      monitor.stock.live = false;
+      monitor.stockError = "실시간 연결이 끊겨 재고 조회 방식으로 자동 전환했습니다.";
+      updateMonitoringView();
+    });
+
+    getCampaignStatus(pool.campaignId, pool).then(applyStockSample).catch(() => {});
+  }
+
+  // --- 화면 조립 -------------------------------------------------------------
+
+  function poolOptions() {
+    return monitor.pools
+      .map((pool) => {
+        const value = `${pool.campaignId}|${pool.routeId}|${pool.fareClass}`;
+        const selected = monitor.pool && value === monitor.pool.key ? " selected" : "";
+        return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(pool.campaignName)} · ${escapeHtml(routeLabel(pool.routeId))} · ${fareLabel(pool.fareClass)}</option>`;
+      })
+      .join("");
+  }
+
+  async function loadMonitorPools() {
+    monitor.pools = [];
+    let campaigns = [];
+    try {
+      campaigns = await getCampaigns(true);
+    } catch (_error) {
+      return;
+    }
+    const details = await Promise.all(
+      campaigns.map((campaign) =>
+        getCampaign(campaign.campaignId).catch(() => ({ ...campaign, stocks: [] })),
+      ),
+    );
+    details.forEach((campaign) => {
+      (campaign.stocks || []).forEach((stock) => {
+        monitor.pools.push({
+          key: `${campaign.campaignId}|${stock.routeId}|${stock.fareClass}`,
+          campaignId: campaign.campaignId,
+          campaignName: campaign.name,
+          campaignStatus: campaign.status,
+          routeId: stock.routeId,
+          fareClass: stock.fareClass,
+        });
+      });
+    });
+    // 진행 중인 캠페인의 재고풀을 먼저 고른다. 모니터링 화면을 여는 이유가 대개 그것이다.
+    monitor.pool =
+      monitor.pools.find((pool) => pool.campaignStatus === "OPEN") || monitor.pools[0] || null;
+  }
+
+  async function renderMonitoring(token) {
+    resetMonitorState();
+    monitor.prometheusUrl = prometheusBaseUrl();
+    await loadMonitorPools();
+    // 같은 페이지를 다시 열었을 때(예: 새로고침 클릭) 이전 호출이 이 시점에 막 await를 끝내고
+    // 돌아와 방금 시작한 새 렌더를 덮어쓰는 경합을 막는다. 다른 admin 하위 페이지들과 같은 패턴이다.
+    if (token !== state.renderToken) return;
+
+    const prometheusUrl = prometheusBaseUrl();
+    let grafanaUrl = `http://${window.location.hostname || "localhost"}:3000`;
+    try {
+      const parsedPrometheusUrl = new URL(prometheusUrl);
+      grafanaUrl = `${parsedPrometheusUrl.protocol}//${parsedPrometheusUrl.hostname}:3000`;
+    } catch (_error) {
+      // 입력값 검증은 변경 이벤트에서 수행한다. 여기서는 기본 링크를 유지한다.
+    }
+    const legendLatency = chartLegend([
+      { name: "p95", color: MONITOR.primary },
+      { name: "p99", color: MONITOR.accent },
+    ]);
+
+    app.innerHTML = adminLayout(
+      "monitoring",
+      `<header class="page-header">
+        <div>
+          <p class="page-kicker">Observability</p>
+          <h1 class="page-title">시스템 모니터링</h1>
+          <p class="page-description">발급이 지금 어떤 속도로 나가고 있는지, 무엇 때문에 막히는지를 2초마다 갱신해 보여줍니다.</p>
+        </div>
+        <div class="monitor-control">
+          <div class="monitor-field">
+            <label for="monitor-pool">실시간 재고풀</label>
+            <select id="monitor-pool">${poolOptions() || '<option value="">재고풀 없음</option>'}</select>
+          </div>
+          <div class="monitor-field">
+            <label for="monitor-prometheus-url">Prometheus 주소</label>
+            <input id="monitor-prometheus-url" type="url" value="${escapeHtml(prometheusUrl)}" placeholder="http://localhost:9090" />
+          </div>
+        </div>
+      </header>
+
+      <p class="notice" id="monitor-notice" hidden></p>
+
+      <div class="metric-grid five" id="monitor-tiles"></div>
+
+      <div class="chart-grid">
+        ${chartCard("stock", "재고 소진 곡선", "선택한 재고풀의 잔여 재고입니다. 선이 가파를수록 빠르게 나가고 있습니다.", `<p class="chart-note" id="monitor-stock-note">재고풀을 선택하면 실시간으로 표시됩니다.</p>`)}
+        ${chartCard("throughput", "발급 처리량", "초당 실제 발급 성립 건수입니다. 누적값이 아니라 구간 속도입니다.")}
+      </div>
+
+      <div class="chart-grid">
+        ${chartCard("latency", "발급 API 응답 지연", "p95와 p99입니다. 두 선이 벌어지면 일부 요청만 오래 걸리고 있다는 뜻입니다.", legendLatency)}
+        <figure class="chart-card">
+          <figcaption>
+            <h3>실패 사유별 누계</h3>
+            <p>재고 소진과 중복 발급은 정상 거절입니다. '시스템 실패'로 표시된 항목만 조치가 필요합니다.</p>
+          </figcaption>
+          <div id="monitor-failures"></div>
+        </figure>
+      </div>
+
+      <div class="monitor-grid">
+        <article class="monitor-card">
+          <h3>통합 모니터링 대시보드</h3>
+          <p>회차 기록용 상세 지표와 인프라 exporter 결과를 확인합니다.</p>
+          <a id="monitor-grafana-link" class="primary-button" href="${escapeHtml(grafanaUrl)}/d/uply-coupon" target="_blank" rel="noopener">Grafana 열기 ↗</a>
+        </article>
+        <article class="monitor-card">
+          <h3>수집 지표 조회</h3>
+          <p>Prometheus가 실제로 무엇을 수집하고 있는지 직접 질의합니다.</p>
+          <a id="monitor-prometheus-link" class="secondary-button" href="${escapeHtml(prometheusUrl)}/targets" target="_blank" rel="noopener">Prometheus 열기 ↗</a>
+        </article>
+        <article class="monitor-card">
+          <h3>서비스 상태 확인</h3>
+          <p>애플리케이션이 정상적으로 요청을 받을 수 있는지 확인합니다.</p>
+          <a class="ghost-button" href="/actuator/health" target="_blank" rel="noopener">상태 확인 ↗</a>
+        </article>
+        <article class="monitor-card">
+          <h3>데이터 반영 확인</h3>
+          <p>메시지 처리 완료 후 재고와 저장 데이터가 일치하는지 확인합니다.</p>
+          <button class="ghost-button" data-route="admin/batches">일괄 작업으로 이동</button>
+        </article>
+      </div>`,
+    );
+
+    const select = document.querySelector("#monitor-pool");
+    if (select) {
+      select.addEventListener("change", (event) => {
+        monitor.pool = monitor.pools.find((pool) => pool.key === event.target.value) || null;
+        startMonitorStock();
+        updateMonitoringView();
+      });
+    }
+
+    const prometheusInput = document.querySelector("#monitor-prometheus-url");
+    if (prometheusInput) {
+      prometheusInput.addEventListener("change", () => {
+        // 미리보기 모드는 실시간 지표를 아예 수집하지 않는다(아래 startMonitorStock/sampleMetrics
+        // 최초 호출도 previewMode에서 건너뛴다). 여기서 걸러주지 않으면 주소만 바꿔도
+        // sampleMetrics()가 실제로 나가서, "미리보기 모드에서는 수집하지 않는다"는 안내가
+        // "지표를 읽지 못했습니다" 에러로 덮어써진다.
+        if (previewMode) return;
+        const value = prometheusInput.value.trim().replace(/\/$/, "");
+        try {
+          const parsed = new URL(value);
+          if (!/^https?:$/.test(parsed.protocol)) throw new Error("unsupported protocol");
+          monitor.prometheusUrl = value;
+          window.localStorage.setItem(PROMETHEUS_URL_KEY, value);
+          monitor.prev = null;
+          monitor.history = { successTps: [], failTps: [], p95: [], p99: [] };
+          monitor.metricsError = null;
+          const prometheusLink = document.querySelector("#monitor-prometheus-link");
+          const grafanaLink = document.querySelector("#monitor-grafana-link");
+          if (prometheusLink) prometheusLink.href = `${value}/targets`;
+          if (grafanaLink) grafanaLink.href = `${parsed.protocol}//${parsed.hostname}:3000/d/uply-coupon`;
+          sampleMetrics();
+        } catch (_error) {
+          monitor.metricsError = "Prometheus 주소는 http:// 또는 https://로 시작해야 합니다.";
+          updateMonitoringView();
+        }
+      });
+    }
+
+    bindChartHover();
+    updateMonitoringView();
+
+    if (previewMode) {
+      monitor.metricsError = "미리보기 모드에서는 실시간 지표를 수집하지 않습니다.";
+      updateMonitoringView();
+      return;
+    }
+
+    startMonitorStock();
+    sampleMetrics();
+    state.monitorTimer = window.setInterval(sampleMetrics, MONITOR.pollMs);
   }
 
   async function renderRoute() {
@@ -1019,6 +2070,7 @@
       if (stock) {
         state.selectedStock = stock;
         drawCampaignDetail(state.campaign);
+        if (state.campaign?.status === "OPEN") startStockUpdates(state.campaign.campaignId);
       }
     }
     if (action === "issue-coupon") await issueCoupon();
@@ -1034,6 +2086,8 @@
     }
     if (action === "run-batch") await runBatch(actionTarget.dataset.job);
     if (action === "refresh-execution") await refreshExecution();
+    if (action === "recover-cache") await runCacheOperation("recover");
+    if (action === "warmup-cache") await runCacheOperation("warmup");
   });
 
   document.addEventListener("submit", async (event) => {
@@ -1053,7 +2107,7 @@
       event.preventDefault();
       const campaignId = Number(new FormData(event.target).get("campaignId"));
       const campaign = state.campaigns?.find((item) => item.campaignId === campaignId);
-      const confirmed = await openConfirm({ title: "미사용 쿠폰을 일괄 회수할까요?", message: `${campaign?.name || `캠페인 ${campaignId}`}의 ISSUED 쿠폰을 모두 CANCELLED로 변경합니다. 재고는 복구되지 않습니다.`, confirmText: "일괄 회수", danger: true });
+      const confirmed = await openConfirm({ title: "미사용 쿠폰을 일괄 회수할까요?", message: `${campaign?.name || `캠페인 ${campaignId}`}에서 아직 사용하지 않은 쿠폰을 회수합니다. 발급 가능 수량은 늘어나지 않습니다.`, confirmText: "일괄 회수", danger: true });
       if (!confirmed) return;
       const action = `revoke:${campaignId}`;
       try {
@@ -1074,12 +2128,13 @@
       state.userId = Number(event.target.value);
       localStorage.setItem("uply.userId", String(state.userId));
       state.selectedCouponId = null;
-      toast("시연 사용자 변경", `사용자 ${state.userId}의 데이터로 전환했습니다.`);
+      toast("회원 변경", `회원 ${state.userId}의 정보로 전환했습니다.`);
       renderRoute();
     }
     if (event.target.id === "campaign-route") {
       state.selectedStock = state.campaign?.stocks.find((stock) => stock.routeId === event.target.value) || null;
       drawCampaignDetail(state.campaign);
+      if (state.campaign?.status === "OPEN") startStockUpdates(state.campaign.campaignId);
     }
     if (event.target.name === "coupon") {
       state.selectedCouponId = event.target.value || null;
