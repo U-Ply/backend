@@ -1071,6 +1071,7 @@
 
   function renderAdminBatches() {
     const execution = state.execution;
+    const selectedRound = state.verificationRound || "V3";
 
     app.innerHTML = adminLayout(
       "batches",
@@ -1086,10 +1087,10 @@
         <div class="field">
           <label for="verification-round">검증 대상 발급 방식</label>
           <select id="verification-round">
-            <option value="V3">Redis + Kafka</option>
-            <option value="V2">Redis + MySQL</option>
-            <option value="V1">MySQL 비관적 락</option>
-            <option value="V0">락 없는 기준 측정</option>
+            <option value="V3" ${selectedRound === "V3" ? "selected" : ""}>Redis + Kafka</option>
+            <option value="V2" ${selectedRound === "V2" ? "selected" : ""}>Redis + MySQL</option>
+            <option value="V1" ${selectedRound === "V1" ? "selected" : ""}>MySQL 비관적 락</option>
+            <option value="V0" ${selectedRound === "V0" ? "selected" : ""}>락 없는 기준 측정</option>
           </select>
         </div>
       </article>
@@ -1131,11 +1132,12 @@
   }
 
   async function runBatch(job) {
+	
     let query = "";
 	if (job === "verification-round") {
 	  const round = document.querySelector("#verification-round")?.value?.trim();
 	  if (!round) throw new Error("검증 회차를 선택해 주세요.");
-
+	  state.verificationRound = round.toUpperCase();
 	  query = `?round=${encodeURIComponent(round.toUpperCase())}`;
 	}
     try {

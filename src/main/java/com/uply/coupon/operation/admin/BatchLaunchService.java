@@ -92,6 +92,15 @@ public class BatchLaunchService {
         // 회차 Job 은 두 Step 이 한 리포트를 만든다. 앞 Step 이 예외를 던지면 뒤 Step 이 돌지 않아
         // 리포트가 불완전해진다 — 하필 REC-01 이 불일치를 잡았을 때 INV 12개가 통째로 사라진다.
         // 판정은 Job 종료 상태가 아니라 리포트가 한다.
+
+        if ("verificationRoundJob".equals(jobName)) {
+            LocalDateTime roundSnapshotAt = LocalDateTime.now();
+            roundSnapshotAt =
+                    roundSnapshotAt.withNano((roundSnapshotAt.getNano() / 1_000_000) * 1_000_000);
+
+            builder.addString("roundSnapshotAt", roundSnapshotAt.toString(), false);
+        }
+
         Boolean effectiveFailOnViolation =
                 "verificationRoundJob".equals(jobName) ? Boolean.FALSE : failOnViolation;
 
