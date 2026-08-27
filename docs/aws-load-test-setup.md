@@ -142,18 +142,24 @@ docker exec coupon-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 --list
 ```
 
-`cAdvisor`, `mysqld_exporter`, `redis_exporter`, `kafka_exporter`는 `docker compose up -d`로 함께 기동된다. 이 서비스에는 Docker healthcheck를 두지 않았으므로 `docker compose ps`의 실행 상태와 각 `/metrics` 응답을 모두 확인한다.
+`cAdvisor`, `mysqld_exporter`, `redis_exporter`, `kafka_exporter`는 `docker compose up -d`로 함께 기동된다. 이 서비스에는 Docker healthcheck를 두지 않았고, exporter는 자기 프로세스가 살아있으면 DB/Redis/Kafka에 못 붙어도 `/metrics`에 200을 준다(자기 자신의 `go_*` 지표는 항상 나간다) — 그래서 `curl --fail .../metrics`만으로는 "떠 있다"만 확인되고 "타깃에 붙었다"는 확인이 안 된다. 아래처럼 각 exporter가 실제로 내보내는 연결 상태 지표 값을 직접 확인한다.
 
 ```bash
 docker compose ps mysqld-exporter redis-exporter kafka-exporter cadvisor prometheus grafana
-curl --fail http://localhost:9104/metrics >/dev/null
-curl --fail http://localhost:9121/metrics >/dev/null
-curl --fail http://localhost:9308/metrics >/dev/null
+
+curl -fsS http://localhost:9104/metrics | grep -qE '^mysql_up 1$' \
+  && echo "mysql_up OK" || { echo "FAIL: mysql_up != 1 (DATA_SOURCE_NAME 확인)"; exit 1; }
+curl -fsS http://localhost:9121/metrics | grep -qE '^redis_up 1$' \
+  && echo "redis_up OK" || { echo "FAIL: redis_up != 1"; exit 1; }
+curl -fsS http://localhost:9308/metrics | grep -qE '^kafka_brokers [1-9]' \
+  && echo "kafka_brokers OK" || { echo "FAIL: kafka_brokers == 0"; exit 1; }
 curl --fail http://localhost:8085/metrics >/dev/null
 curl --fail http://localhost:9090/-/ready
 ```
 
-마지막으로 Prometheus의 `Status > Targets` 또는 API에서 `coupon-app`, `mysql`, `redis`, `kafka`, `cadvisor`가 모두 `UP`인지 확인한다. 하나라도 누락된 회차는 API 결과 확인용 리허설로만 사용한다.
+`mysqld_exporter:v0.15.1`은 `DATA_SOURCE_NAME`이 권장 경로에서 빠져 있다 — 이 값이 무시되면 exporter는 정상 기동하고 `/metrics`도 200을 주지만 `mysql_up`은 0으로 나간다. 위 `mysql_up` 확인이 바로 이 실패를 잡는다.
+
+마지막으로 Prometheus의 `Status > Targets` 또는 API에서 `coupon-app`, `mysql`, `redis`, `kafka`, `cadvisor`가 모두 `UP`인지 확인한다. 다만 이 `UP`은 "Prometheus가 exporter의 `/metrics`를 긁는 데 성공했다"는 뜻이지 "exporter가 실제 타깃에 붙었다"는 뜻이 아니다 — 그 확인은 위 `mysql_up`/`redis_up`/`kafka_brokers` 몫이다. 하나라도 누락된 회차는 API 결과 확인용 리허설로만 사용한다.
 
 관리자 모니터링 화면은 입력된 Prometheus 주소의 HTTP API로 전체 앱 인스턴스 지표를 집계한다. Prometheus를 공개망에 열지 말고, 시연 PC에서 데이터·관측 EC2로 터널을 연 뒤 화면의 `Prometheus 주소`에 `http://localhost:9090`을 입력한다.
 
@@ -162,7 +168,7 @@ ssh -L 9090:localhost:9090 -L 3000:localhost:3000 \
   -i <키파일.pem> ec2-user@<데이터-관측-EC2-공인-IP>
 ```
 
-Prometheus가 일시적으로 응답하지 않으면 화면은 같은 오리진의 Actuator 지표로 자동 전환하며, 이 경우에는 `현재 앱 인스턴스`라고 표시한다. 멀티 인스턴스 공식 결과는 반드시 `Prometheus · 전체 앱 인스턴스` 표시 또는 Grafana 대시보드를 기준으로 기록한다.
+Prometheus가 응답하지 않거나 `coupon-app` 타깃이 전부 DOWN이면 화면은 같은 오리진의 Actuator 지표로 자동 전환하며, 이 경우에는 `현재 앱 인스턴스`라고 표시한다. Prometheus 경로가 정상이면 실제로 `up`인 인스턴스 수를 그대로 보여주는 `Prometheus · 앱 인스턴스 N대`로 표시된다 — Level 3 공식 회차에서는 N이 2로 보이는지 그 자체가 "API 2대가 다 받고 있다"는 증거다. 멀티 인스턴스 공식 결과는 반드시 이 `Prometheus · 앱 인스턴스 N대` 표시(N=2) 또는 Grafana 대시보드를 기준으로 기록한다.
 
 ## 6. 애플리케이션 배포
 

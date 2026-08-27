@@ -1650,7 +1650,8 @@
 
   async function samplePrometheusMetrics() {
     const issueFilter = 'uri="/api/coupons/issue"';
-    const [success, failures, compensation, pending, mismatch, p95, p99] = await Promise.all([
+    const [up, success, failures, compensation, pending, mismatch, p95, p99] = await Promise.all([
+      prometheusQuery('up{job="coupon-app"}'),
       prometheusQuery("sum(coupon_issue_success_total)"),
       prometheusQuery("sum by (reason) (coupon_issue_failure_total)"),
       prometheusQuery("sum(coupon_redis_compensation_total)"),
@@ -1664,6 +1665,15 @@
       ),
     ]);
 
+    // Prometheus가 응답하기만 하면 나머지 쿼리는 전부 "성공"이다 — coupon-app 타깃이
+    // 전부 DOWN이어도 각 쿼리는 그냥 빈 배열을 돌려주고, prometheusScalar가 그걸 0으로
+    // 읽는다. 그러면 "발급 0건 · 실패 0건"이 되어 조용한 회차와 구분이 안 된다. up을
+    // 직접 확인해서 전부 DOWN이면 여기서 던져 로컬 actuator 폴백으로 넘긴다.
+    const upCount = up.filter((row) => Number.parseFloat(row.value?.[1]) === 1).length;
+    if (upCount === 0) {
+      throw new Error("coupon-app targets are all down in Prometheus");
+    }
+
     return {
       success: prometheusScalar(success),
       failure: failures.reduce((sum, row) => sum + prometheusScalar([row]), 0),
@@ -1675,7 +1685,7 @@
       mismatch: mismatch.length ? prometheusScalar(mismatch) : null,
       p95: p95.length ? prometheusScalar(p95) : null,
       p99: p99.length ? prometheusScalar(p99) : null,
-      source: "Prometheus · 전체 앱 인스턴스",
+      source: `Prometheus · 앱 인스턴스 ${upCount}대`,
     };
   }
 

@@ -28,6 +28,85 @@
   "graphTooltip": 1,
   "panels": [
     {
+      "id": 22,
+      "type": "row",
+      "title": "관측 상태",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": [],
+      "collapsed": false
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "수집 안 되는 타깃 수 (up == 0)",
+      "description": "Prometheus가 스크레이프하지 못하는 타깃(coupon-app/mysql/redis/kafka/cadvisor) 수. 0이 아니면 이 구간의 다른 패널 값도 \"정상이라 0\"이 아니라 \"수집이 안 된 것\"일 수 있다 — Status > Targets에서 어느 job이 DOWN인지 먼저 확인한다.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(up == 0) OR vector(0)",
+          "legendFormat": "",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds",
+            "fixedColor": "text"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
       "id": 1,
       "type": "row",
       "title": "발급 현황 — 요구분석서 15.3",
@@ -36,7 +115,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 6
       },
       "panels": []
     },
@@ -53,7 +132,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 1
+        "y": 7
       },
       "targets": [
         {
@@ -115,7 +194,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 1
+        "y": 7
       },
       "targets": [
         {
@@ -177,7 +256,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 1
+        "y": 7
       },
       "targets": [
         {
@@ -239,7 +318,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 1
+        "y": 7
       },
       "targets": [
         {
@@ -305,7 +384,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 12
       },
       "targets": [
         {
@@ -373,7 +452,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 6
+        "y": 12
       },
       "targets": [
         {
@@ -437,7 +516,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 20
       },
       "panels": []
     },
@@ -454,7 +533,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 21
       },
       "targets": [
         {
@@ -522,7 +601,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 21
       },
       "targets": [
         {
@@ -597,7 +676,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 29
       },
       "panels": []
     },
@@ -614,7 +693,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 24
+        "y": 30
       },
       "targets": [
         {
@@ -704,7 +783,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 24
+        "y": 30
       },
       "targets": [
         {
@@ -783,7 +862,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 24
+        "y": 30
       },
       "targets": [
         {
@@ -847,7 +926,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 38
       },
       "panels": []
     },
@@ -864,7 +943,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 33
+        "y": 39
       },
       "targets": [
         {
@@ -932,7 +1011,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 33
+        "y": 39
       },
       "targets": [
         {
@@ -1000,7 +1079,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 33
+        "y": 39
       },
       "targets": [
         {
@@ -1079,7 +1158,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 41
+        "y": 47
       },
       "targets": [
         {
@@ -1158,7 +1237,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 41
+        "y": 47
       },
       "targets": [
         {
@@ -1226,7 +1305,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 41
+        "y": 47
       },
       "targets": [
         {
@@ -1276,6 +1355,74 @@
           ],
           "fields": "",
           "values": false
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "앱 프로세스 CPU (인스턴스별)",
+      "description": "컨테이너 CPU 패널은 도커 컨테이너만 잡아 EC2 호스트 JAR로 뜨는 앱을 못 본다. 부하 테스트에서 가장 먼저 봐야 할 지표라 인스턴스별로 따로 뗐다 — 한 대만 튀면 편중을 의심한다.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "process_cpu_usage{job=\"coupon-app\"}",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     }
