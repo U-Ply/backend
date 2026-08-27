@@ -548,6 +548,18 @@
 
   function updateStockView(status) {
     state.selectedStock = { ...state.selectedStock, ...status };
+    // state.campaign.stocks는 renderCampaignDetail 진입 시 받은 스냅샷이라, 여기서 같이
+    // 갱신하지 않으면 최신값은 state.selectedStock에만 남는다. 그 상태에서 다른 좌석
+    // 등급/노선으로 탭을 옮기면 select-fare/campaign-route 핸들러가 state.campaign.stocks에서
+    // 새 stock을 다시 읽어와 state.selectedStock을 덮어쓰므로, 원래 보고 있던 등급으로
+    // 돌아왔을 때 방금 받은 실시간 값이 아니라 최초 진입 시 스냅샷으로 되돌아가 보인다.
+    const stocks = state.campaign?.stocks;
+    if (stocks) {
+      const index = stocks.findIndex(
+        (item) => item.routeId === status.routeId && item.fareClass === status.fareClass,
+      );
+      if (index !== -1) stocks[index] = { ...stocks[index], ...status };
+    }
     const remaining = document.querySelector("#remaining-stock");
     const progress = document.querySelector("#stock-progress");
     const caption = document.querySelector("#stock-caption");
