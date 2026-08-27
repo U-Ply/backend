@@ -213,4 +213,38 @@ class VerificationJobIntegrationTest extends IntegrationTestContainers {
                                 Integer.class))
                 .isZero();
     }
+
+    @Autowired
+    @Qualifier("verificationRoundJob")
+    Job verificationRoundJob;
+
+    @Test
+    @DisplayName("회차 검증은 REC-01과 INV/CLOCK 결과를 같은 runId에 15개 남긴다")
+    void verificationRoundJob_writesAllRulesWithSameRunId() throws Exception {
+        utils.setJob(verificationRoundJob);
+
+        String runId = "job-round-v2";
+        var execution = utils.launchJob(params(runId, "false", "V2"));
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM verification_report WHERE run_id = ?",
+                                Integer.class,
+                                runId))
+                .isEqualTo(15);
+
+        assertThat(
+                        jdbc.queryForObject(
+                                """
+                        SELECT COUNT(*) FROM verification_report
+                        WHERE run_id = ? AND rule_code = 'REC-01'
+                        """,
+                                Integer.class,
+                                runId))
+                .isEqualTo(1);
+
+        assertThat(renderer.render(runId)).contains("`REC-01`").contains("| 규칙 수 | 15");
+    }
 }

@@ -106,8 +106,8 @@ public class VerificationReportRenderer {
         String verdict;
         if (!clockValid) {
             verdict = "**무효** — 시계가 어긋나 어느 시점을 본 것인지 알 수 없다";
-        } else if (skipped > 0) {
-            verdict = "**불완전** — 규칙 " + skipped + "개가 전제 조건 미충족으로 실행되지 않았다";
+        } else if (skipped > 0 || rules.size() < 15) {
+            verdict = "**불완전** — 일부 규칙이 기록되지 않았거나 실행되지 않았다";
         } else if ("V0".equals(round)) {
             verdict = "**BASELINE** — NoLock 동시성 문제 재현 결과";
         } else if (failedInvariants > 0) {

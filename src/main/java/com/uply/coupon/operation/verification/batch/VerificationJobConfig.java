@@ -23,6 +23,30 @@ public class VerificationJobConfig {
     private final PlatformTransactionManager transactionManager;
     private final VerificationRunner runner;
     private final VerificationResultWriter writer;
+    private final Step stockReconcileStep; // RedisStockReconcileJobConfig 의 빈을 주입받는다
+
+    /**
+     * 회차 검증 = REC-01 + INV 12 + CLOCK 2. 한 runId 로 15개 규칙을 한 리포트에 남긴다.
+     *
+     * <p><b>왜 별도 Job 인가.</b> {@code verificationJob} 과 {@code stockReconcileJob} 을 따로 두면 호출자가 하나만
+     * 돌릴 수 있고, 그러면 리포트에 REC-01 줄이 통째로 빠진다. 그 상태의 "규칙 14개 전부 통과" 는 재고 대사를 <b>한 번도 보지 않았다</b>는 뜻인데,
+     * 판정은 그걸 PASSED 로 읽는다. 판정 사슬의 MISMATCH 분기도 REC-01 이 같은 run_id 에 있어야만 도달한다. 실제로 관리자 화면에서 "데이터
+     * 검증" 만 눌러 14개짜리 리포트가 나온 적이 있다.
+     *
+     * <p><b>왜 대사가 먼저인가.</b> 1초면 끝나므로 여기서 막히면 76초짜리 검증을 시작하기 전에 안다. 그리고 REC-01 은 Redis·DB 를 교차 비교하므로
+     * "트래픽이 멈춘 직후" 에 가까울수록 정확하다. 검증이 먼저면 300만 건 기준 76초 뒤의 상태를 재게 되는데, 리포트의 snapshot_at 은 하나라서 그 간격이
+     * 화면에 드러나지 않는다.
+     *
+     * <p><b>failOnViolation 은 false 로 넘긴다.</b> Job 을 FAILED 로 끝내면 리포트를 렌더링하기 전에 회차가 죽어 무엇이 왜 깨졌는지
+     * 남지 않는다. 위반 여부는 Job 종료 상태가 아니라 리포트의 판정 줄로 읽는다 — RoundReportWriter 가 같은 이유로 같은 선택을 했다.
+     */
+    @Bean
+    public Job verificationRoundJob() {
+        return new JobBuilder("verificationRoundJob", jobRepository)
+                .start(stockReconcileStep)
+                .next(verificationStep())
+                .build();
+    }
 
     @Bean
     public Job verificationJob() {

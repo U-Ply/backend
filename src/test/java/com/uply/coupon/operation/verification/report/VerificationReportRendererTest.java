@@ -226,4 +226,19 @@ class VerificationReportRendererTest {
         row.put("detail", detail);
         return row;
     }
+
+    @Test
+    @DisplayName("규칙 행이 누락된 회차는 SKIPPED가 없어도 불완전이다")
+    void missingRuleMustReadAsIncomplete() {
+        List<Map<String, Object>> rules = allClean("V2");
+        rules.removeIf(rule -> "REC-01".equals(rule.get("rule_code")));
+
+        stub(rules, List.of());
+
+        String md = renderer.render(RUN_ID);
+
+        assertThat(md).contains("불완전");
+        assertThat(md).doesNotContain("| 판정 | **통과** |");
+        assertThat(md).doesNotContain("| 판정 | **실패**");
+    }
 }

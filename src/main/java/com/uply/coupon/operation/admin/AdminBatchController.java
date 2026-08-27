@@ -29,6 +29,7 @@ public class AdminBatchController {
     private static final Map<String, String> JOB_KEYS =
             Map.of(
                     "verification", "verificationJob",
+                    "verification-round", "verificationRoundJob", // 추가
                     "expiration", "expirationJob",
                     "reconcile", "stockReconcileJob");
 
@@ -148,6 +149,7 @@ public class AdminBatchController {
                          WHEN SUM(rule_code LIKE 'CLOCK-%' AND violation_count > 0) > 0
                               THEN 'INVALID'
                          WHEN SUM(status = 'SKIPPED') > 0 THEN 'INCOMPLETE'
+                         WHEN COUNT(*) < 15 THEN 'INCOMPLETE'
                          WHEN MAX(round) = 'V0' THEN 'BASELINE'
                          WHEN SUM(status = 'CHECKED' AND violation_count > 0
                                   AND rule_code NOT LIKE 'REC-%') > 0 THEN 'FAILED'

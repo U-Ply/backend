@@ -26,7 +26,7 @@ public class BatchLaunchService {
 
     /** 노출을 허용한 Job 이름. */
     private static final Set<String> ALLOWED_JOBS =
-            Set.of("verificationJob", "expirationJob", "stockReconcileJob");
+            Set.of("verificationJob", "expirationJob", "stockReconcileJob", "verificationRoundJob");
 
     private static final DateTimeFormatter RUN_ID_FORMAT =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS");
@@ -78,7 +78,8 @@ public class BatchLaunchService {
 
         // 검증 회차는 round 가 필수다. 없으면 CLOCK-02 가 조용히 N/A 로 넘어간다.
         // Tasklet 에서도 parse 하지만, Job 실행이 비동기라 여기서 막아야 400 이 나간다.
-        if ("verificationJob".equals(jobName)) {
+
+        if ("verificationJob".equals(jobName) || "verificationRoundJob".equals(jobName)) {
             requireRoundMatchesRunningStrategy(round);
         }
 
@@ -88,9 +89,14 @@ public class BatchLaunchService {
                         : requestedRunId;
 
         JobParametersBuilder builder = new JobParametersBuilder().addString("runId", runId);
+        // 회차 Job 은 두 Step 이 한 리포트를 만든다. 앞 Step 이 예외를 던지면 뒤 Step 이 돌지 않아
+        // 리포트가 불완전해진다 — 하필 REC-01 이 불일치를 잡았을 때 INV 12개가 통째로 사라진다.
+        // 판정은 Job 종료 상태가 아니라 리포트가 한다.
+        Boolean effectiveFailOnViolation =
+                "verificationRoundJob".equals(jobName) ? Boolean.FALSE : failOnViolation;
 
-        if (failOnViolation != null) {
-            builder.addString("failOnViolation", failOnViolation.toString(), false);
+        if (effectiveFailOnViolation != null) {
+            builder.addString("failOnViolation", effectiveFailOnViolation.toString(), false);
         }
         if (round != null && !round.isBlank()) {
             builder.addString("round", round.trim().toUpperCase(), false);
