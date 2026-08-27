@@ -88,11 +88,11 @@ docker exec -i coupon-mysql mysql -uroot -proot1234 < docs/schema.sql
 `GET /api/campaigns/{campaignId}`와 `GET /api/campaigns/{campaignId}/status`는 잔여 재고(`remainingStock`)를 DB 집계가 아니라 **Redis에서만** 읽습니다. 아래 순서를 지키지 않으면 `stock:{stockId}` 키가 없어 두 API가 500(서버 오류)을 반환합니다 — 재고 0으로 보이는 게 아니라 API 자체가 실패합니다.
 
 1. DB 시드 (캠페인·재고 데이터 적재)
-2. `CampaignCacheWarmupService.warmupCampaign(campaignId)` 실행 — 캠페인의 `openAt`/`expireAt`과 재고 풀별 `remainingStock`을 Redis에 적재
+2. `POST /api/admin/campaigns/{campaignId}/cache/warmup` 호출 — 캠페인의 `openAt`/`expireAt`과 재고 풀별 `remainingStock`을 Redis에 적재(`CampaignCacheWarmupService.warmupCampaign(campaignId)`)
 3. Redis에 `stock:{stockId}` 키가 채워졌는지 확인 (예: `redis-cli GET stock:1`)
 4. 확인 후에만 API·화면 공개
 
-> **주의:** 현재 `warmupCampaign()`을 호출하는 관리자 API나 자동 실행 트리거가 없습니다. IDE에서 직접 호출하거나 테스트 코드를 통해 실행해야 합니다. 시연 전에 관리자 엔드포인트 또는 배치 트리거 추가 여부를 팀에서 확정해야 합니다.
+> **주의:** 운영 중 캐시 키 일부만 유실됐다면 `warmup` 대신 `POST /api/admin/campaigns/{campaignId}/cache/recover`(부분 복구, 살아있는 키는 덮어쓰지 않음)를 사용하세요. 두 엔드포인트 차이와 사용 기준은 [`docs/redis-cache-miss-response.md`](docs/redis-cache-miss-response.md) 5장을 참고하세요.
 
 **V0(NoLock)·V1(비관적 락) 회차에서는 웜업을 해도 얼마 못 갑니다.** `docs/test-plan.md`의 V0~V3 비교표대로 V0·V1은 발급 판정과 재고 차감을 MySQL(`campaign_stocks.remaining_stock`)로만 처리하고 Redis는 전혀 건드리지 않습니다(`NoLockIssueStrategy`/`PessimisticLockIssueStrategy` 어디에도 Redis 호출이 없음). 반면 이 API들의 `remainingStock`은 스펙상 Redis 값을 그대로 반환하므로, 웜업 직후에는 맞다가 V0·V1 발급이 몇 건만 들어가도 **Redis 값이 실제 MySQL 재고보다 계속 커진 채로 고정**됩니다. 500 오류가 나는 게 아니라 **잘못된 숫자를 정상 응답으로 돌려주는** 문제라 더 위험합니다. Redis-DB 대사 배치(REC-01)도 "Redis Lua(V2·V3) 전략 회차에만 적용, 비관적 락 회차는 N/A"로 문서화돼 있어 자동으로 잡아주지 않습니다.
 
