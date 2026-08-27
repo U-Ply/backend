@@ -109,7 +109,8 @@ class GlobalExceptionHandlerTest {
     // 감싸 던진 경우다 — handleCouponIssue()만 호출되고 handleConnectionUnavailable()은 호출되지
     // 않는다(예외 타입이 CouponIssueException이라 매칭되지 않는다). 마찬가지로 정확히 1이어야 한다.
     @Test
-    @DisplayName("V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답하고 카운터를 정확히 1 증가시킨다")
+    @DisplayName(
+            "V2·V3의 CONNECTION_UNAVAILABLE 사유는 503 CONNECTION_UNAVAILABLE로 응답하고 카운터를 정확히 1 증가시킨다")
     void connectionUnavailableReasonReturns503() throws Exception {
         given(couponService.issue(eq(IDEMPOTENCY_KEY), any(CouponIssueRequest.class)))
                 .willThrow(
