@@ -23,6 +23,7 @@ import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.exception.InvalidStateTransitionException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.api.CouponApiPaths;
 import com.uply.coupon.coupon.domain.Coupon;
 import com.uply.coupon.coupon.domain.CouponStatus;
@@ -79,7 +80,9 @@ class CouponControllerTest {
                                         objectMapper))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 

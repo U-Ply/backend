@@ -43,17 +43,18 @@ public class GlobalExceptionHandler {
 
     public GlobalExceptionHandler(
             MeterRegistry meterRegistry,
+            CouponIssueMetrics issueMetrics,
             ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider) {
         this.cacheAutoRecoveryTriggerProvider = cacheAutoRecoveryTriggerProvider;
+        // CouponIssueMetrics는 @Component라 CouponServiceImpl(발급 성공을 세는 쪽)과 같은 빈을
+        // 그대로 주입받는다. 여기서 새로 만들지 않아도 Micrometer가 이름·태그로 미터를 합쳐주므로
+        // 집계는 한 곳에 모인다 — 굳이 별도 인스턴스를 둘 이유가 없다.
+        this.issueMetrics = issueMetrics;
         this.concurrencyConflictCounter =
                 Counter.builder("coupon.issue.failure")
                         .tag("reason", "concurrency_conflict")
                         .description("발급 요청이 DB 수준 경합으로 실패한 횟수")
                         .register(meterRegistry);
-        // 사유별 실패 카운터는 CouponIssueMetrics가 이름과 태그를 소유한다. 생성자를 넓히지
-        // 않고 여기서 직접 만드는 이유는, Micrometer가 이름·태그가 같으면 같은 미터를
-        // 돌려주기 때문이다. 발급 성공을 세는 CouponServiceImpl 쪽 빈과 집계가 한 곳에 모인다.
-        this.issueMetrics = new CouponIssueMetrics(meterRegistry);
     }
 
     @ExceptionHandler(CouponIssueException.class)

@@ -15,6 +15,7 @@ import com.uply.coupon.common.exception.GlobalExceptionHandler;
 import com.uply.coupon.common.exception.IdempotencyRequestInProgressException;
 import com.uply.coupon.common.idempotency.IdempotencyChecker;
 import com.uply.coupon.common.idempotency.IdempotencyRequestHasher;
+import com.uply.coupon.common.metrics.CouponIssueMetrics;
 import com.uply.coupon.coupon.dto.response.CampaignCouponRevokeResponse;
 import com.uply.coupon.coupon.service.CampaignCouponRevokeService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -50,7 +51,9 @@ class CampaignCouponAdminControllerTest {
                                         objectMapper))
                         .setControllerAdvice(
                                 new GlobalExceptionHandler(
-                                        new SimpleMeterRegistry(), mock(ObjectProvider.class)))
+                                        new SimpleMeterRegistry(),
+                                        new CouponIssueMetrics(new SimpleMeterRegistry()),
+                                        mock(ObjectProvider.class)))
                         .build();
     }
 
