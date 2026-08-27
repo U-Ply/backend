@@ -2,7 +2,6 @@ package com.uply.coupon.operation.verification.batch;
 
 import com.uply.coupon.operation.verification.domain.*;
 import java.time.LocalDateTime;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.*;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -11,13 +10,13 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 import org.springframework.transaction.PlatformTransactionManager;
 
 @Slf4j
 @Configuration
-@RequiredArgsConstructor
 public class VerificationJobConfig {
 
     private final JobRepository jobRepository;
@@ -25,6 +24,19 @@ public class VerificationJobConfig {
     private final VerificationRunner runner;
     private final VerificationResultWriter writer;
     private final Step stockReconcileStep;
+
+    public VerificationJobConfig(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            VerificationRunner runner,
+            VerificationResultWriter writer,
+            @Qualifier("stockReconcileStep") Step stockReconcileStep) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.runner = runner;
+        this.writer = writer;
+        this.stockReconcileStep = stockReconcileStep;
+    }
 
     @Bean
     public Job verificationRoundJob() {
