@@ -4,6 +4,7 @@ import com.uply.coupon.operation.reconciliation.domain.ReconciliationStatus;
 import com.uply.coupon.operation.reconciliation.domain.StockReconcileRun;
 import com.uply.coupon.operation.reconciliation.service.RedisStockReconcileRunner;
 import com.uply.coupon.operation.verification.batch.VerificationResultWriter;
+import com.uply.coupon.operation.verification.domain.RoundVersion;
 import com.uply.coupon.operation.verification.domain.VerificationRun;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,7 +24,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 
-/** REC-01 전용 Job. Redis 연결 실패는 이 Job만 실패시키며 INV 검증에는 영향을 주지 않는다. */
+/** REC-01 전용 Job. Redis 연결 실패는 REC-01만 SKIPPED로 남기고 다음 검증 Step이 계속될 수 있게 한다. */
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
@@ -44,7 +45,7 @@ public class RedisStockReconcileJobConfig {
     @Bean
     public Step stockReconcileStep() {
         return new StepBuilder("stockReconcileStep", jobRepository)
-                .tasklet(stockReconcileTasklet(null, null), transactionManager)
+                .tasklet(stockReconcileTasklet(null, null, null), transactionManager)
                 .build();
     }
 
@@ -52,6 +53,7 @@ public class RedisStockReconcileJobConfig {
     @StepScope
     public Tasklet stockReconcileTasklet(
             @Value("#{jobParameters['runId']}") String runId,
+            @Value("#{jobParameters['round']}") String round,
             @Value("#{jobParameters['failOnViolation']}") String failOnViolation) {
         boolean shouldFail = !"false".equalsIgnoreCase(failOnViolation);
 
@@ -63,7 +65,10 @@ public class RedisStockReconcileJobConfig {
             // "해당 없음"과 "아예 안 돌림"을 구분할 수 없게 된다.
             resultWriter.write(
                     new VerificationRun(
-                            runId, null, run.snapshotAt(), java.util.List.of(run.result())));
+                            runId,
+                            RoundVersion.parse(round),
+                            run.snapshotAt(),
+                            java.util.List.of(run.result())));
 
             if (run.status() == ReconciliationStatus.NOT_APPLICABLE
                     || run.status() == ReconciliationStatus.SKIPPED_NOT_SETTLED) {

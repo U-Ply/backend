@@ -1071,15 +1071,73 @@
 
   function renderAdminBatches() {
     const execution = state.execution;
-    app.innerHTML = adminLayout("batches", `<header class="page-header"><div><p class="page-kicker">Batch operations</p><h1 class="page-title">일괄 작업 실행</h1><p class="page-description">작업을 접수하면 완료될 때까지 진행 상태를 자동으로 확인합니다.</p></div></header><article class="card batch-control"><div class="field"><label for="verification-round">검증 대상 발급 방식</label><select id="verification-round"><option value="V3">Redis + Kafka</option><option value="V2">Redis + MySQL</option><option value="V1">MySQL 비관적 락</option><option value="V0">락 없는 기준 측정</option></select></div></article><div class="admin-action-grid"><button class="admin-action-card" data-action="run-batch" data-job="expiration" ${previewMode ? "disabled" : ""}><strong>기간 만료 쿠폰 정리</strong><span>유효기간이 지난 미사용 쿠폰을 만료 처리합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="verification" ${previewMode ? "disabled" : ""}><strong>데이터 검증</strong><span>쿠폰, 상태 변경 이력, 재고 수량이 서로 맞는지 검사합니다.</span></button><button class="admin-action-card" data-action="run-batch" data-job="reconcile" ${previewMode ? "disabled" : ""}><strong>재고 일치 확인</strong><span>실시간 발급 수량과 저장된 재고 수량의 차이를 확인합니다.</span></button></div>${execution ? `<article class="card" style="margin-top:18px"><div class="job-status"><div><span class="badge ${escapeHtml(execution.status)}" id="execution-status">${escapeHtml(batchStatusLabel(execution.status))}</span><h2 class="card-title" style="margin:12px 0 4px">${escapeHtml(execution.job || execution.jobName)}</h2><p class="row-muted">작업 번호 ${escapeHtml(execution.jobExecutionId)} · 실행 ID ${escapeHtml(execution.runId)}</p></div><button class="ghost-button" data-action="refresh-execution">상태 새로고침</button></div><div id="execution-detail"></div></article>` : ""}`);
+
+    app.innerHTML = adminLayout(
+      "batches",
+      `<header class="page-header">
+        <div>
+          <p class="page-kicker">Batch operations</p>
+          <h1 class="page-title">일괄 작업 실행</h1>
+          <p class="page-description">작업을 접수하면 완료될 때까지 진행 상태를 자동으로 확인합니다.</p>
+        </div>
+      </header>
+
+      <article class="card batch-control">
+        <div class="field">
+          <label for="verification-round">검증 대상 발급 방식</label>
+          <select id="verification-round">
+            <option value="V3">Redis + Kafka</option>
+            <option value="V2">Redis + MySQL</option>
+            <option value="V1">MySQL 비관적 락</option>
+            <option value="V0">락 없는 기준 측정</option>
+          </select>
+        </div>
+      </article>
+
+      <div class="admin-action-grid">
+        <button class="admin-action-card" data-action="run-batch" data-job="expiration" ${previewMode ? "disabled" : ""}>
+          <strong>기간 만료 쿠폰 정리</strong>
+          <span>유효기간이 지난 미사용 쿠폰을 만료 처리합니다.</span>
+        </button>
+
+        <button class="admin-action-card" data-action="run-batch" data-job="verification-round" ${previewMode ? "disabled" : ""}>
+          <strong>회차 검증</strong>
+          <span>재고 일치 확인과 데이터 검증을 하나의 회차로 실행합니다.</span>
+        </button>
+      </div>
+
+      ${
+        execution
+          ? `<article class="card" style="margin-top:18px">
+              <div class="job-status">
+                <div>
+                  <span class="badge ${escapeHtml(execution.status)}" id="execution-status">
+                    ${escapeHtml(batchStatusLabel(execution.status))}
+                  </span>
+                  <h2 class="card-title" style="margin:12px 0 4px">
+                    ${escapeHtml(execution.job || execution.jobName)}
+                  </h2>
+                  <p class="row-muted">
+                    작업 번호 ${escapeHtml(execution.jobExecutionId)} · 실행 ID ${escapeHtml(execution.runId)}
+                  </p>
+                </div>
+                <button class="ghost-button" data-action="refresh-execution">상태 새로고침</button>
+              </div>
+              <div id="execution-detail"></div>
+            </article>`
+          : ""
+      }`
+    );
   }
 
   async function runBatch(job) {
     let query = "";
-    if (job === "verification") {
-      const round = document.querySelector("#verification-round")?.value || "V3";
-      query = `?round=${encodeURIComponent(round.toUpperCase())}&failOnViolation=false`;
-    }
+	if (job === "verification-round") {
+	  const round = document.querySelector("#verification-round")?.value?.trim();
+	  if (!round) throw new Error("검증 회차를 선택해 주세요.");
+
+	  query = `?round=${encodeURIComponent(round.toUpperCase())}`;
+	}
     try {
       state.execution = await request(`/api/admin/batch/${job}${query}`, { method: "POST" });
       renderAdminBatches();
