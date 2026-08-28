@@ -35,10 +35,11 @@ sequenceDiagram
 ## 각 단계
 
 1. **Redis Lua 판정**(`issue_coupon.lua`) — 오픈·만료·중복·재고를 한 번의 원자 연산으로
-   판정하고 차감까지 끝낸다. 여기서 성공하면 그 유저의 재고는 확정된 것이고, 이후 무슨
-   일이 있어도 원칙적으로 되돌리지 않는다.
-2. **pending 키 기록** — Kafka 발행 전에 `coupon:pending:{couponId}`를 먼저 남긴다.
-   발행 결과가 어떻든 "DB 반영 대기 중"이라는 사실을 추적하기 위해서다.
+   판정하고 차감까지 끝낸다. 여기서 성공하면 그 유저의 재고는 일단 선점된다.
+2. **pending 키 기록** — Kafka 발행 전에 `coupon:pending:{couponId}`를 먼저 남긴다. 이후
+   저장·발행이 **확실히 실패**하고 보상까지 성공하면 Redis 재고와 발급 Set을 원복하고
+   pending 키도 지운다. 반대로 발행 결과가 **불확실**하면(타임아웃 등) 초과 발급을 막기
+   위해 원복하지 않고 pending 키를 유지한다 — 갈라지는 조건은 아래 표를 참고.
 3. **Kafka 발행**(`CouponIssuedProducer`) — `couponId`를 파티션 키로 최대 3초 동기
    발행한다. 성공하면 클라이언트에 즉시 200을 응답한다.
 4. **Consumer 소비**(`CouponIssuedEventProcessor`) — 메시지를 받으면 먼저 중복인지

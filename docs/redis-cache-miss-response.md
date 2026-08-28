@@ -11,10 +11,15 @@ Kafka 쪽 장애([`kafka-dlt-manual-response.md`](kafka-dlt-manual-response.md),
 **자동 복구 옵션을 갖고 있다.** 기본은 비활성화이며, 켜도 로그·지표 기반 판단으로
 동작하는 조건부 자동화다. 완전 자동은 아니다.
 
-범위: 이 문서는 **발급 요청 경로**(`LuaScriptIssueStrategy`, `RedisStockIdLookup`)에서
-발생하는 `CAMPAIGN_NOT_CACHED`(503)만 다룬다. `GET /api/campaigns/{campaignId}` 등 캠페인
-조회 API가 캐시 누락 시 반환하는 500 오류는 README "6. 캠페인 조회 API 사용 전 준비"에
-별도로 문서화되어 있으며 이 문서의 범위가 아니다.
+범위: 이 문서는 `CAMPAIGN_NOT_CACHED`(503)가 발생하는 두 경로를 모두 다룬다.
+
+- **발급 요청 경로** — `LuaScriptIssueStrategy`, `RedisStockIdLookup`
+- **캠페인 조회 경로** — `GET /api/campaigns/{campaignId}`, `GET /api/campaigns/{campaignId}/status`
+  (`CampaignQueryService.getRemainingStockOrThrow`)
+
+두 경로 모두 같은 `CouponIssueException(CAMPAIGN_NOT_CACHED)`를 던지고 같은
+`GlobalExceptionHandler` 분기를 타므로, 3~5장에서 설명하는 자동 복구·수동 대응 절차는
+두 경로에 동일하게 적용된다.
 
 ## 2. 발생 조건
 
@@ -34,6 +39,12 @@ stockId 조회 단계(`RedisStockIdLookup.lookupStockId`)에서도 `stockId:{cam
 바뀐다(`LuaScriptIssueStrategy.java:86-91`, `RedisStockIdLookup.java:35-40`). "캠페인이
 아예 없는 것"과 "웜업만 누락된 것"을 이렇게 구분한다.
 
+**캠페인 조회 API도 같은 규칙을 따른다.** `getCampaign()`(상세)과 `getCampaignStatus()`(발급
+현황)은 재고 조회를 `getRemainingStockOrThrow()` 하나로 공유하는데, 이 메서드는 `stock:{stockId}`
+캐시 미스 시 `CouponIssueException(CAMPAIGN_NOT_CACHED, campaignId)`를 던진다
+(`CampaignQueryService.java:83-89`). 발급 경로와 동일한 예외·동일한 `GlobalExceptionHandler`
+분기이므로, 조회 API의 캐시 미스도 3장의 자동 복구 트리거 대상이다.
+
 ```mermaid
 flowchart TD
     A[발급 요청] --> B{stockId 매핑\nRedis에 있는가?}
@@ -47,6 +58,10 @@ flowchart TD
     D1 -- 있음 --> C1
     D -- 모두 있음 --> E[정상 판정: 오픈/만료/중복/재고 검사]
 ```
+
+> 위 다이어그램은 발급 요청 기준이다. 캠페인 조회 API(`GET /api/campaigns/{campaignId}`,
+> `.../status`)는 Lua 판정 없이 `stock:{stockId}` 캐시만 직접 조회하지만, 미스 시 동일하게
+> DB 존재 여부로 404/503을 가른다.
 
 ## 3. 감지 시 자동 대응 흐름
 
