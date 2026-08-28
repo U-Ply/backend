@@ -1,5 +1,109 @@
 # k6 부하 테스트
 
+## 시나리오 파일
+
+| 파일 | 목적 | 기본 부하 |
+| --- | --- | --- |
+| `issue-level2.js` | V0~V3 발급 전략 공정 비교 | 500 VU, 총 20,000건 즉시 경쟁 |
+| `issue-level3-final.js` | V3 멀티 인스턴스 최종 인수 | 20,000건을 60초 동안 유입 |
+| `issue-hotkey.js` | 노선별 90:7:3 트래픽 불균형 | 제주 18,000, 후쿠오카 1,400, 방콕 600 |
+| `issue-multi-stock.js` | 좌석 등급별 독립 재고 경합 | 이코노미 16,000, 비즈니스 4,000 |
+| `issue-idempotency.js` | 같은 키·같은 요청의 최초 응답 재현 | 100명 × 동일 요청 5회 |
+
+`common/issue.js`는 요청, 응답 분류, 공통 카운터와 UUID 생성을 공유한다. 시나리오별 결과는 반드시 별도 runId와 결과 파일에 저장한다. Level 2 외 시나리오도 실행 전 DB·Redis·Kafka를 초기화하고 실행 후 DB 쿠폰 수, 재고, 중복, Kafka lag·DLT와 검증 배치를 별도로 확인한다.
+
+## Level 3 최종 인수
+
+두 앱 인스턴스를 같은 V3 설정으로 실행하고 `BASE_URL`에는 ALB 주소를 전달한다. `rate=20000`, `timeUnit=60s`, `duration=60s`이므로 20,000건을 60초 동안 일정한 도착률로 예약한다. `dropped_iterations`가 생기면 실제 요청 수가 20,000건보다 적으므로 실패한다.
+
+```bash
+k6 run \
+  -e BASE_URL=http://<ALB-DNS> \
+  -e TOTAL_REQUESTS=20000 \
+  -e INITIAL_STOCK=10000 \
+  -e ARRIVAL_WINDOW=60s \
+  -e PRE_ALLOCATED_VUS=500 \
+  -e MAX_VUS=5000 \
+  --summary-export load-tests/results/L3-V3-01.json \
+  load-tests/k6/issue-level3-final.js
+```
+
+자동 판정은 성공 10,000건, `OUT_OF_STOCK` 10,000건, 중복·5xx·네트워크 오류·dropped iteration 0건이다. k6 통과 후에도 DB 쿠폰 10,000건, DB·Redis 재고 0, issued Set 10,000명, lag·DLT·pending 0과 INV·REC 결과를 확인해야 최종 통과다.
+
+## 핫키 90:7:3
+
+같은 캠페인의 이코노미 재고 풀 세 개를 아래 상태로 먼저 구성한다.
+
+| 노선 | 요청 | 기본 재고 |
+| --- | ---: | ---: |
+| JEJU | 18,000 | 500 |
+| FUKUOKA | 1,400 | 300 |
+| BANGKOK | 600 | 1,000 |
+
+MySQL 재고 풀과 Redis의 `stock:{stockId}`, `stockId:{campaignId}:{routeId}:ECONOMY`가 모두 같은 값을 가리켜야 한다. `issued:{campaignId}`는 비어 있어야 한다.
+
+기존 Level 2 시드를 먼저 적재한 뒤 앱을 중지하고 핫키 재고로 전환한다.
+
+```bash
+SCENARIO_CONFIG_CONFIRM=CONFIGURE ./scripts/load-test/configure-scenario-stocks.sh hotkey
+```
+
+```bash
+k6 run \
+  -e TEST_STRATEGY=V3 \
+  -e BASE_URL=http://<테스트-진입점> \
+  -e TOTAL_REQUESTS=20000 \
+  -e VUS=500 \
+  -e HOT_ROUTE_ID=JEJU -e HOT_STOCK=500 \
+  -e WARM_ROUTE_ID=FUKUOKA -e WARM_STOCK=300 \
+  -e COLD_ROUTE_ID=BANGKOK -e COLD_STOCK=1000 \
+  --summary-export load-tests/results/HOTKEY-V3-01.json \
+  load-tests/k6/issue-hotkey.js
+```
+
+각 노선의 요청·성공·재고 소진 수가 자동 판정된다. 노선별 지연은 `http_req_duration{trafficGroup:JEJU}` 같은 태그로 분리해 비교한다.
+
+## 다중 재고 풀
+
+같은 캠페인과 노선에 `ECONOMY=8,000`, `BUSINESS=2,000` 재고 풀을 만들고 MySQL·Redis를 동일하게 준비한다. 요청은 실행 전 구간에 4:1로 섞여 두 재고 풀에 동시에 들어간다.
+
+기존 Level 2 시드를 먼저 적재한 뒤 앱을 중지하고 다중 재고 풀로 전환한다.
+
+```bash
+SCENARIO_CONFIG_CONFIRM=CONFIGURE ./scripts/load-test/configure-scenario-stocks.sh multi-stock
+```
+
+```bash
+k6 run \
+  -e TEST_STRATEGY=V3 \
+  -e BASE_URL=http://<테스트-진입점> \
+  -e CAMPAIGN_ID=1 -e ROUTE_ID=JEJU \
+  -e ECONOMY_REQUESTS=16000 -e ECONOMY_STOCK=8000 \
+  -e BUSINESS_REQUESTS=4000 -e BUSINESS_STOCK=2000 \
+  -e VUS=500 \
+  --summary-export load-tests/results/MULTI-STOCK-V3-01.json \
+  load-tests/k6/issue-multi-stock.js
+```
+
+자동 판정 기준은 이코노미 성공/소진 8,000/8,000건, 비즈니스 성공/소진 2,000/2,000건이다. 종료 후 재고 풀별 DB 쿠폰 수와 DB·Redis 잔여 재고를 각각 검증한다.
+
+## 멱등성 응답 재현
+
+애플리케이션은 반드시 `COUPON_IDEMPOTENCY_ENABLED=true`로 실행한다. 100명의 서로 다른 사용자가 각자 같은 요청과 같은 키를 5회 호출한다. 첫 응답 이후 네 응답은 HTTP 상태뿐 아니라 JSON 응답 본문도 최초 응답과 완전히 같아야 한다.
+
+```bash
+k6 run \
+  -e BASE_URL=http://<테스트-진입점> \
+  -e IDEMPOTENCY_USERS=100 \
+  -e IDEMPOTENCY_REPEATS=5 \
+  -e USER_ID_START=1 \
+  -e CAMPAIGN_ID=1 -e ROUTE_ID=JEJU -e FARE_CLASS=ECONOMY \
+  --summary-export load-tests/results/IDEMPOTENCY-01.json \
+  load-tests/k6/issue-idempotency.js
+```
+
+총 HTTP 요청은 500건이지만 실제 신규 쿠폰과 `NULL→ISSUED` 이력은 각각 100건이어야 한다. Redis 재고도 100만 감소해야 한다. 이 스크립트는 완료 응답 캐시 재현을 검증하므로 요청을 순차 반복하며, 처리 중 동시 충돌(`IDEMPOTENCY_REQUEST_IN_PROGRESS`)은 허용하지 않는다.
+
 `issue-level2.js`는 V0 NoLock부터 V3 Redis Lua + Kafka까지 네 전략에 공통으로 사용하는 Level 2 발급 스크립트다. 발급 및 저장 전략은 애플리케이션 설정으로 변경하며 k6 스크립트는 변경하지 않는다.
 
 ## 사전 조건
