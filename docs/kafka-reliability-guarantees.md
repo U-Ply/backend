@@ -23,6 +23,10 @@
   구분해서, 후자에서는 절대 Redis 재고를 되돌리지 않는다 — 브로커에 실제로는 들어갔는데
   ACK만 유실됐을 가능성을 배제할 수 없기 때문이다. 재고를 잘못 되돌리면 초과 발급으로
   이어질 수 있으므로, 불확실할 때는 보수적으로 아무것도 하지 않는 쪽을 택했다.
+  **다만 이 "보수적으로 아무것도 하지 않는다"는 잘못된 롤백을 막는 안전장치일 뿐, pending을
+  DB 기록으로 완결시키는 로직이 아니다.** 그 완결은 이 문서의 범위 밖이며 자동화돼 있지도
+  않다 — 실제로 어떻게(그리고 누가) 처리하는지는
+  [`kafka-pending-manual-response.md`](kafka-pending-manual-response.md)를 참고한다.
 - **auto-commit을 끈 것**은 Kafka의 at-least-once 전달을 올바르게 활용하는 표준적인
   방식이다. offset을 먼저 커밋하고 처리하면(auto-commit) 처리 중 크래시 시 그 메시지는
   영영 사라진다. 이 프로젝트는 `ENABLE_AUTO_COMMIT_CONFIG=false`로 이를 끄고, 대신 Spring
