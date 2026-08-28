@@ -12,14 +12,12 @@ SET FOREIGN_KEY_CHECKS = 1;
 
 UPDATE campaign_stocks
 SET remaining_stock = total_stock
-WHERE stock_id = 1
-  AND campaign_id = 1
-  AND route_id = 'JEJU'
-  AND fare_class = 'ECONOMY';
+WHERE campaign_id = 1;
 
 SELECT COUNT(*) AS user_count FROM users;
 SELECT COUNT(*) AS coupon_count FROM coupons;
 SELECT COUNT(*) AS history_count FROM coupon_history;
-SELECT stock_id, total_stock, remaining_stock
+SELECT stock_id, route_id, fare_class, total_stock, remaining_stock
 FROM campaign_stocks
-WHERE stock_id = 1;
+WHERE campaign_id = 1
+ORDER BY stock_id;
