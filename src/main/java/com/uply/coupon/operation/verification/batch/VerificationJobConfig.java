@@ -1,7 +1,7 @@
 package com.uply.coupon.operation.verification.batch;
 
 import com.uply.coupon.operation.verification.domain.*;
-import lombok.RequiredArgsConstructor;
+import java.time.LocalDateTime;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.*;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -10,19 +10,41 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 import org.springframework.transaction.PlatformTransactionManager;
 
 @Slf4j
 @Configuration
-@RequiredArgsConstructor
 public class VerificationJobConfig {
 
     private final JobRepository jobRepository;
     private final PlatformTransactionManager transactionManager;
     private final VerificationRunner runner;
     private final VerificationResultWriter writer;
+    private final Step stockReconcileStep;
+
+    public VerificationJobConfig(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            VerificationRunner runner,
+            VerificationResultWriter writer,
+            @Qualifier("stockReconcileStep") Step stockReconcileStep) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.runner = runner;
+        this.writer = writer;
+        this.stockReconcileStep = stockReconcileStep;
+    }
+
+    @Bean
+    public Job verificationRoundJob() {
+        return new JobBuilder("verificationRoundJob", jobRepository)
+                .start(stockReconcileStep)
+                .next(verificationStep())
+                .build();
+    }
 
     @Bean
     public Job verificationJob() {
@@ -32,7 +54,7 @@ public class VerificationJobConfig {
     @Bean
     public Step verificationStep() {
         return new StepBuilder("verificationStep", jobRepository)
-                .tasklet(verificationTasklet(null, null, null), transactionManager)
+                .tasklet(verificationTasklet(null, null, null, null), transactionManager)
                 .build();
     }
 
@@ -41,18 +63,26 @@ public class VerificationJobConfig {
     public Tasklet verificationTasklet(
             @Value("#{jobParameters['runId']}") String runId,
             @Value("#{jobParameters['failOnViolation']}") String failOnViolation,
-            @Value("#{jobParameters['round']}") String roundParam) {
+            @Value("#{jobParameters['round']}") String roundParam,
+            @Value("#{jobParameters['roundSnapshotAt']}") String roundSnapshotAtParam) {
 
-        // 기본은 실패시킨다. 명시적으로 false 를 넘긴 회차만 기록 전용이 된다.
         boolean shouldFail = !"false".equalsIgnoreCase(failOnViolation);
 
         return (contribution, chunkContext) -> {
-            // 진입 경로가 API/커맨드라인 둘이라 여기서도 막는다.
-            // 빠뜨리면 CLOCK-02 가 N/A 로 조용히 넘어가 검사가 안 된 채 통과한다.
             RoundVersion round = RoundVersion.parse(roundParam);
 
+            // 내부 검증은 VerificationRunner가 확보한 실제 DB 스냅샷으로 수행한다.
             VerificationRun run = runner.runAll(runId, round);
-            writer.write(run);
+
+            // 회차 검증 Job에서는 REC-01과 동일한 회차 기준 시각을 리포트에 기록한다.
+            // 독립 verificationJob 실행은 기존처럼 실제 검증 시각을 기록한다.
+            LocalDateTime reportSnapshotAt =
+                    roundSnapshotAtParam == null
+                            ? run.snapshotAt()
+                            : LocalDateTime.parse(roundSnapshotAtParam);
+
+            writer.write(
+                    new VerificationRun(run.runId(), run.round(), reportSnapshotAt, run.results()));
 
             if (!run.clockValid()) {
                 throw new IllegalStateException(
@@ -65,7 +95,7 @@ public class VerificationJobConfig {
                     .putString("verdict", run.invariantsPassed() ? "PASS" : "FAIL");
 
             if (run.invariantsPassed()) {
-                log.info("검증 통과 — runId={}, snapshotAt={}", run.runId(), run.snapshotAt());
+                log.info("검증 통과 — runId={}, snapshotAt={}", run.runId(), reportSnapshotAt);
                 return RepeatStatus.FINISHED;
             }
 
@@ -76,9 +106,6 @@ public class VerificationJobConfig {
                             .orElse("");
 
             if (!shouldFail) {
-                // NoLock(V0) 회차처럼 정합성 위반이 '의도된 결과' 인 경우.
-                // 테스트 계획 5.4 의 NoLock 예외 규정 — 실패로 처리하지 않고 수치로 기록한다.
-                // 위반 내용은 verification_report / verification_violation 에 그대로 남는다.
                 log.warn(
                         "정합성 위반 {}건의 규칙 — {} (failOnViolation=false 라 기록만 한다)",
                         run.failedInvariants().size(),
@@ -86,8 +113,6 @@ public class VerificationJobConfig {
                 return RepeatStatus.FINISHED;
             }
 
-            // 리포트에만 남기면 스케줄러나 CI 에서 초록불이 뜬다. 알림이 울려야 한다.
-            // 결과는 위에서 이미 커밋됐으므로 리포트는 남는다.
             throw new IllegalStateException("정합성 위반 발견 — " + failed);
         };
     }

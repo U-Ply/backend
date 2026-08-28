@@ -99,10 +99,27 @@ public class RedisStockReconcileRunner {
                                             resultSet.getInt("remaining_stock")));
 
             List<String> keys = dbStocks.stream().map(row -> "stock:" + row.stockId()).toList();
-            List<String> redisValues =
-                    keys.isEmpty() ? List.of() : redisTemplate.opsForValue().multiGet(keys);
+            List<String> redisValues;
+            try {
+                redisValues =
+                        keys.isEmpty() ? List.of() : redisTemplate.opsForValue().multiGet(keys);
+            } catch (RuntimeException exception) {
+                // Redis 장애는 REC-01만 실행 불가로 만들고, verification-round의 다음 Step
+                // (CLOCK/INV)은 계속 실행할 수 있어야 한다. 따라서 여기서는 예외를 전파하지 않고
+                // REC-01 결과를 SKIPPED로 반환한다.
+                log.warn(
+                        "REC-01 Redis 조회 실패 — reconciliation을 SKIPPED로 기록하고 다음 검증을 계속합니다: {}",
+                        exception.getMessage(),
+                        exception);
+                return complete(
+                        StockReconcileRun.skipped(
+                                "Redis 재고 조회 실패: " + safeMessage(exception), snapshotAt));
+            }
+
             if (redisValues == null || redisValues.size() != dbStocks.size()) {
-                throw new IllegalStateException("Redis 재고 일괄 조회 결과의 행 수가 DB 재고 행 수와 다릅니다.");
+                String detail = "Redis 재고 일괄 조회 결과의 행 수가 DB 재고 행 수와 다릅니다.";
+                log.warn("REC-01 Redis 조회 결과가 비정상이라 SKIPPED 처리합니다: {}", detail);
+                return complete(StockReconcileRun.skipped(detail, snapshotAt));
             }
 
             long mismatchCount = 0;
@@ -171,6 +188,13 @@ public class RedisStockReconcileRunner {
                             .increment();
         }
         return run;
+    }
+
+    private String safeMessage(RuntimeException exception) {
+        String message = exception.getMessage();
+        return message == null || message.isBlank()
+                ? exception.getClass().getSimpleName()
+                : message;
     }
 
     private String differenceDetail(String redisValue, int dbRemaining) {
