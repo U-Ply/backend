@@ -23,6 +23,10 @@ const ROUTE_ID = __ENV.ROUTE_ID || 'JEJU';
 const MAX_DURATION = __ENV.MAX_DURATION || '10m';
 const TEST_STRATEGY = strategyEnv('V3');
 
+if (ECONOMY_STOCK > ECONOMY_REQUESTS || BUSINESS_STOCK > BUSINESS_REQUESTS) {
+  throw new Error('Each stock value must be less than or equal to its request count');
+}
+
 const economyIssued = new Counter('multi_stock_economy_issued');
 const economyOutOfStock = new Counter('multi_stock_economy_out_of_stock');
 const businessIssued = new Counter('multi_stock_business_issued');
@@ -49,8 +53,11 @@ export const options = {
 
 export default function () {
   const sequence = exec.scenario.iterationInTest;
-  // 기본 16,000:4,000 비율을 실행 전 구간에 4:1로 섞어 두 재고 풀이 동시에 경합하게 한다.
-  const fareClass = sequence % 5 === 4 ? 'BUSINESS' : 'ECONOMY';
+  // 누적 비율을 비교해 BUSINESS 요청을 전 구간에 고르게 배치한다.
+  // 기본 16,000:4,000은 4:1이지만, 환경변수로 비율을 바꿔도 요청 건수가 정확히 맞는다.
+  const businessBefore = Math.floor((sequence * BUSINESS_REQUESTS) / TOTAL_REQUESTS);
+  const businessThroughCurrent = Math.floor(((sequence + 1) * BUSINESS_REQUESTS) / TOTAL_REQUESTS);
+  const fareClass = businessThroughCurrent > businessBefore ? 'BUSINESS' : 'ECONOMY';
   const response = issueCoupon(
     BASE_URL,
     {
