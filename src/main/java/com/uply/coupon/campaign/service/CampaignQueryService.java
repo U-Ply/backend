@@ -6,7 +6,6 @@ import com.uply.coupon.campaign.dto.response.CampaignDetailResponse;
 import com.uply.coupon.campaign.dto.response.CampaignListResponse;
 import com.uply.coupon.campaign.dto.response.CampaignStatusResponse;
 import com.uply.coupon.campaign.dto.response.CampaignStockSummaryResponse;
-import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
@@ -27,7 +26,7 @@ public class CampaignQueryService {
 
     private final CampaignRepository campaignRepository;
     private final CampaignStockRepository campaignStockRepository;
-    private final CampaignCacheRepository campaignCacheRepository;
+    private final RemainingStockReader remainingStockReader;
 
     public CampaignListResponse getCampaigns() {
         List<Campaign> campaigns =
@@ -78,11 +77,9 @@ public class CampaignQueryService {
                 stock.getRouteId(), stock.getFareClass(), stock.getTotalStock(), remainingStock);
     }
 
-    // Repository는 stockId만 알고 있어 campaignId를 붙일 수 없다. 자동 복구 트리거와 HTTP
-    // 정책(503 CAMPAIGN_NOT_CACHED)이 campaignId 단위로 동작하므로 여기서 붙여준다.
     private Integer getRemainingStockOrThrow(Long campaignId, Long stockId) {
         try {
-            return campaignCacheRepository.getRemainingStock(stockId);
+            return remainingStockReader.read(campaignId, stockId);
         } catch (CampaignStockCacheMissException exception) {
             throw new CouponIssueException(IssueFailReason.CAMPAIGN_NOT_CACHED, campaignId);
         }

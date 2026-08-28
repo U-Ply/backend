@@ -13,7 +13,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import com.uply.coupon.campaign.domain.CampaignStock;
-import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.common.exception.CampaignStockCacheMissException;
@@ -47,7 +46,7 @@ class CampaignStatusStreamServiceTest {
 
     @Mock private CampaignStockRepository campaignStockRepository;
 
-    @Mock private CampaignCacheRepository campaignCacheRepository;
+    @Mock private RemainingStockReader remainingStockReader;
 
     @Mock private ObjectProvider<CacheAutoRecoveryTrigger> cacheAutoRecoveryTriggerProvider;
 
@@ -64,12 +63,13 @@ class CampaignStatusStreamServiceTest {
         service =
                 new CampaignStatusStreamService(
                         campaignStockRepository,
-                        campaignCacheRepository,
+                        remainingStockReader,
                         cacheAutoRecoveryTriggerProvider,
                         meterRegistry);
         ReflectionTestUtils.setField(service, "timeoutMs", 1_800_000L);
         ReflectionTestUtils.setField(service, "heartbeatIntervalMs", 15_000L);
         ReflectionTestUtils.setField(service, "reconnectTimeMs", 3_000L);
+        service.registerMetrics();
     }
 
     private void givenStockExists(
@@ -102,7 +102,7 @@ class CampaignStatusStreamServiceTest {
     @Test
     void subscribe_sendsCurrentStatusImmediately() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             SseEmitter emitter = service.subscribe(1L, "JEJU", "ECONOMY");
@@ -129,7 +129,7 @@ class CampaignStatusStreamServiceTest {
         given(campaignStockRepository.findByCampaignIdAndRouteIdAndFareClass(1L, "JEJU", "ECONOMY"))
                 .willReturn(Optional.of(stock));
         given(stock.getId()).willReturn(10L);
-        given(campaignCacheRepository.getRemainingStock(10L))
+        given(remainingStockReader.read(1L, 10L))
                 .willThrow(new CampaignStockCacheMissException(10L));
 
         assertThatThrownBy(() -> service.subscribe(1L, "JEJU", "ECONOMY"))
@@ -147,7 +147,7 @@ class CampaignStatusStreamServiceTest {
     @Test
     void pollChannel_sameRemainingStock_doesNotSendUpdate() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
@@ -164,7 +164,7 @@ class CampaignStatusStreamServiceTest {
     @Test
     void pollChannel_changedRemainingStock_sendsUpdate() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9, 8);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9, 8);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
@@ -182,7 +182,7 @@ class CampaignStatusStreamServiceTest {
     @Test
     void pollChannel_multipleSubscribers_bothReceiveUpdate() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9, 9, 8);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9, 9, 8);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
@@ -202,17 +202,17 @@ class CampaignStatusStreamServiceTest {
     @Test
     void pollChannel_multipleSubscribers_queriesRedisOnce() {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
             service.subscribe(1L, "JEJU", "ECONOMY");
             StockChannel channel = channelFor(10L);
 
-            clearInvocations(campaignCacheRepository);
+            clearInvocations(remainingStockReader);
             service.pollChannel(channel, channel.getLastHeartbeatAt());
 
-            verify(campaignCacheRepository, times(1)).getRemainingStock(10L);
+            verify(remainingStockReader, times(1)).read(1L, 10L);
         }
     }
 
@@ -220,7 +220,7 @@ class CampaignStatusStreamServiceTest {
     @Test
     void pollChannel_oneEmitterSendFailure_doesNotBlockOthers() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9, 8);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9, 8);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
@@ -245,7 +245,7 @@ class CampaignStatusStreamServiceTest {
     @SuppressWarnings("unchecked")
     void emitterCleanup_removesEmitterAndChannelOnLifecycleEvents() {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY"); // completion
@@ -281,7 +281,7 @@ class CampaignStatusStreamServiceTest {
     @Test
     void pollChannel_sendsHeartbeatAfterIntervalElapses() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
@@ -305,8 +305,8 @@ class CampaignStatusStreamServiceTest {
     void pollStocks_redisFailureOnOneChannelDoesNotStopOthers() throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
         givenStockExists(stockB, 1L, "BUSAN", "ECONOMY", 20L, 5);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
-        given(campaignCacheRepository.getRemainingStock(20L)).willReturn(4);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 20L)).willReturn(4);
 
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
             service.subscribe(1L, "JEJU", "ECONOMY");
@@ -314,9 +314,9 @@ class CampaignStatusStreamServiceTest {
             SseEmitter emitterA = mocked.constructed().get(0);
             SseEmitter emitterB = mocked.constructed().get(1);
 
-            given(campaignCacheRepository.getRemainingStock(10L))
+            given(remainingStockReader.read(1L, 10L))
                     .willThrow(new IllegalStateException("cache not ready"));
-            given(campaignCacheRepository.getRemainingStock(20L)).willReturn(3);
+            given(remainingStockReader.read(1L, 20L)).willReturn(3);
 
             service.pollStocks();
 
@@ -326,13 +326,12 @@ class CampaignStatusStreamServiceTest {
     }
 
     // 폴링 도중 캐시 미스가 나면: 자동 복구를 정확한 campaignId로 트리거하고, 구독자에게 에러
-    // 이벤트를 보낸 뒤 연결을 종료하고, 채널을 polling 대상에서 제거해 같은 오류가 반복되지
-    // 않는지 검증한다.
+    // 이벤트를 보낸 뒤 연결을 종료하고, 채널을 polling 대상에서 제거해 같은 오류가 반복되지 않는지 검증한다.
     @Test
     void pollChannel_cacheMiss_triggersRecoveryAndTerminatesChannelWithoutRepeating()
             throws IOException {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
         CacheAutoRecoveryTrigger trigger = mock(CacheAutoRecoveryTrigger.class);
         given(cacheAutoRecoveryTriggerProvider.getIfAvailable()).willReturn(trigger);
 
@@ -341,7 +340,7 @@ class CampaignStatusStreamServiceTest {
             SseEmitter emitter = mocked.constructed().get(0);
             StockChannel channel = channelFor(10L);
 
-            given(campaignCacheRepository.getRemainingStock(10L))
+            given(remainingStockReader.read(1L, 10L))
                     .willThrow(new CampaignStockCacheMissException(10L));
 
             service.pollChannel(channel, channel.getLastHeartbeatAt());
@@ -351,9 +350,7 @@ class CampaignStatusStreamServiceTest {
             verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
             verify(emitter).complete();
             assertThat(channelsMap()).doesNotContainKey(10L);
-            // 발급 API 경로(GlobalExceptionHandler)와 같은 이름·태그의 카운터를 SSE 폴링
-            // 경로도 증가시키는지 검증한다 - 그러지 않으면 SSE에서 발견한 캐시 미스가
-            // coupon.issue.failure{reason=campaign_not_cached} 지표에서 누락된다.
+
             assertThat(
                             meterRegistry
                                     .get("coupon.issue.failure")
@@ -364,19 +361,18 @@ class CampaignStatusStreamServiceTest {
 
             // 채널이 제거되었으므로 다음 polling에서는 이 재고 풀을 다시 조회하지 않는다
             // (= 같은 캐시 미스가 무한 반복되지 않는다).
-            clearInvocations(campaignCacheRepository, trigger);
+            clearInvocations(remainingStockReader, trigger);
             service.pollStocks();
-            verify(campaignCacheRepository, never()).getRemainingStock(10L);
+            verify(remainingStockReader, never()).read(1L, 10L);
             verify(trigger, never()).onCacheMiss(any());
         }
     }
 
-    // 새 구독과 마지막 emitter의 완료 정리가 동시에 일어나도
-    // 채널이 폴링 대상 Map에서 고아가 되지 않는지 검증한다.
+    // 새 구독과 마지막 emitter의 완료 정리가 동시에 일어나도 채널이 폴링 대상 Map에서 고아가 되지 않는지 검증한다.
     @Test
     void subscribeAndCleanup_concurrentRace_neverOrphansChannel() throws Exception {
         givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(9);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
@@ -416,6 +412,45 @@ class CampaignStatusStreamServiceTest {
             barrier.await(5, TimeUnit.SECONDS);
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private double sseGauge() {
+        return meterRegistry.get("coupon.sse.active_connections").gauge().value();
+    }
+
+    // 열려 있는 SSE 구독 수만큼 coupon.sse.active_connections 게이지가 올라가는지 검증한다.
+    @Test
+    void activeConnectionsGauge_countsOpenSubscriptions() {
+        givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
+        givenStockExists(stockB, 1L, "JEJU", "BUSINESS", 11L, 5);
+        given(remainingStockReader.read(1L, 11L)).willReturn(5);
+
+        try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
+            service.subscribe(1L, "JEJU", "ECONOMY");
+            service.subscribe(1L, "JEJU", "BUSINESS");
+
+            assertThat(sseGauge()).isEqualTo(2.0);
+        }
+    }
+
+    // 구독 정리 콜백이 실행되면 게이지가 내려가고, 마지막 emitter가 빠지면 0이 되는지 검증한다.
+    @Test
+    void activeConnectionsGauge_decrementsWhenEmitterCloses() {
+        givenStockExists(stock, 1L, "JEJU", "ECONOMY", 10L, 10);
+        given(remainingStockReader.read(1L, 10L)).willReturn(9);
+
+        try (MockedConstruction<SseEmitter> mocked = mockConstruction(SseEmitter.class)) {
+            service.subscribe(1L, "JEJU", "ECONOMY");
+            SseEmitter emitter = mocked.constructed().get(0);
+            assertThat(sseGauge()).isEqualTo(1.0);
+
+            ArgumentCaptor<Runnable> cleanup = ArgumentCaptor.forClass(Runnable.class);
+            verify(emitter).onCompletion(cleanup.capture());
+            cleanup.getValue().run();
+
+            assertThat(sseGauge()).isEqualTo(0.0);
         }
     }
 }
