@@ -183,6 +183,8 @@ COUPON_KAFKA_CONSUMER_ENABLED=true \
 
 Redis Lua 전략(V2·V3)을 사용하기 전, 캠페인 오픈 전에 DB 기준 캐시를 전체 구성합니다.
 
+`GET /api/campaigns/{campaignId}`와 `GET /api/campaigns/{campaignId}/status`는 잔여 재고를 Redis에서 읽습니다. `stock:{stockId}` 키가 없으면 재고를 0으로 표시하지 않고 `503 CAMPAIGN_NOT_CACHED`를 반환합니다. 자동 캐시 복구가 활성화된 경우 조회 API의 캐시 미스도 복구 트리거에 포함됩니다.
+
 ```bash
 curl -X POST http://localhost:8081/api/admin/campaigns/1/cache/warmup
 ```
@@ -199,6 +201,8 @@ curl -X POST http://localhost:8081/api/admin/campaigns/1/cache/recover
 - 캐시가 준비되지 않은 발급·재고 조회 요청은 `503 CAMPAIGN_NOT_CACHED`로 응답
 
 V0·V1은 MySQL 재고만 차감하고 Redis를 갱신하지 않습니다. 따라서 전략 비교 회차 중에는 Redis 기반 실시간 재고 화면을 정합성 판정 근거로 사용하지 않습니다.
+
+두 엔드포인트의 차이와 장애 대응 절차는 [Redis 캐시 미스 대응 문서](docs/redis-cache-miss-response.md)를 참고하세요.
 
 ### 8. 접속 주소
 
