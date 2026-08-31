@@ -292,8 +292,11 @@ Redis에는 다음 정보를 저장한다.
 ### FR-07 캠페인 및 재고 조회
 
 - 캠페인 기본 정보와 노선·좌석 등급별 재고를 조회한다.
-- 발급 현황 API의 `remainingStock`은 DB 집계가 아닌 Redis 값을 사용한다.
-- SSE는 서버가 주기적으로 Redis를 조회하는 폴링 방식으로 구현한다.
+- 발급 현황 API의 `remainingStock`은 발급 전략에 맞춰 소스를 고른다(`RemainingStockReader`).
+  발급 판정을 Redis로 하는 전략(`LUA_SCRIPT` = V2·V3)은 `stock:{stockId}` Redis 값을,
+  DB로 하는 전략(`NO_LOCK`·`PESSIMISTIC_LOCK` = V0·V1)은 `campaign_stocks.remaining_stock` DB 값을
+  그대로 반환한다. 두 경우 모두 DB 집계(발급 건수 COUNT)는 하지 않는다.
+- SSE는 서버가 주기적으로 위 소스를 폴링하는 방식으로 구현한다.
 
 ### FR-08 검증 배치
 
@@ -544,7 +547,7 @@ Redis-DB drift는 곧 INV-04(이력 순서)·INV-06(시각 순서)·INV-11(캠�
 | `LOCK_TIMEOUT` | `SELECT ... FOR UPDATE`로 락을 기다리다 한계 초과 |
 | `CONCURRENCY_CONFLICT` | 트랜잭션 커밋 단계의 DB 교착 |
 | `CONNECTION_UNAVAILABLE` | 트랜잭션 시작 단계에서 커넥션 풀 획득 실패 |
-| `CAMPAIGN_NOT_CACHED` | 발급 판정 전, 캠페인 재고가 Redis에 없음 |
+| `CAMPAIGN_NOT_CACHED` | Redis 발급 전략(`LUA_SCRIPT`)에서 캠페인 재고가 Redis에 없음. 발급 판정 전, 그리고 그 전략의 조회/SSE 경로에서 발생한다. DB 발급 전략(`NO_LOCK`·`PESSIMISTIC_LOCK`)의 조회/SSE는 Redis를 보지 않으므로 이 코드 대신 재고 풀 행이 없으면 `CAMPAIGN_NOT_FOUND`(404)를 반환한다 |
 | `SAVE_RESULT_UNKNOWN` | Redis 차감은 성공했으나 Kafka 발행 결과가 불명확 |
 | `CACHE_RECOVERY_NOT_SETTLED` | Kafka lag·DLT가 정착하지 않은 상태의 캐시 복구 요청 |
 

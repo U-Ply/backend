@@ -11,7 +11,6 @@ import com.uply.coupon.campaign.domain.CampaignStock;
 import com.uply.coupon.campaign.dto.response.CampaignDetailResponse;
 import com.uply.coupon.campaign.dto.response.CampaignListResponse;
 import com.uply.coupon.campaign.dto.response.CampaignStatusResponse;
-import com.uply.coupon.campaign.repository.CampaignCacheRepository;
 import com.uply.coupon.campaign.repository.CampaignRepository;
 import com.uply.coupon.campaign.repository.CampaignStockRepository;
 import com.uply.coupon.common.exception.CampaignNotFoundException;
@@ -39,7 +38,7 @@ class CampaignQueryServiceTest {
 
     @Mock private CampaignStockRepository campaignStockRepository;
 
-    @Mock private CampaignCacheRepository campaignCacheRepository;
+    @Mock private RemainingStockReader remainingStockReader;
 
     @Mock private Campaign campaign;
 
@@ -73,9 +72,9 @@ class CampaignQueryServiceTest {
         assertThat(response.campaigns()).isEmpty();
     }
 
-    // 기본 정보 조회 시 재고 풀의 totalStock은 MySQL, remainingStock은 Redis에서 채워지는지 검증한다.
+    // 기본 정보 조회 시 재고 풀의 totalStock은 MySQL, remainingStock은 RemainingStockReader가 준 값을 그대로 담는지 검증
     @Test
-    void getCampaign_returnsDetailWithStocksFromRedis() {
+    void getCampaign_returnsDetailWithRemainingStockFromReader() {
         given(campaignRepository.findById(1L)).willReturn(Optional.of(campaign));
         given(campaignRepository.currentDatabaseTime()).willReturn(NOW);
         given(campaign.getId()).willReturn(1L);
@@ -89,7 +88,7 @@ class CampaignQueryServiceTest {
         given(stock.getTotalStock()).willReturn(8000);
         given(campaignStockRepository.findAllByCampaignIdOrderByRouteIdAscFareClassAsc(1L))
                 .willReturn(List.of(stock));
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(1548);
+        given(remainingStockReader.read(1L, 10L)).willReturn(1548);
 
         CampaignDetailResponse response = campaignQueryService.getCampaign(1L);
 
@@ -120,7 +119,7 @@ class CampaignQueryServiceTest {
         given(stock.getId()).willReturn(10L);
         given(campaignStockRepository.findAllByCampaignIdOrderByRouteIdAscFareClassAsc(1L))
                 .willReturn(List.of(stock));
-        given(campaignCacheRepository.getRemainingStock(10L))
+        given(remainingStockReader.read(1L, 10L))
                 .willThrow(new CampaignStockCacheMissException(10L));
 
         assertThatThrownBy(() -> campaignQueryService.getCampaign(1L))
@@ -134,14 +133,14 @@ class CampaignQueryServiceTest {
                         });
     }
 
-    // 발급 현황 조회가 totalStock은 MySQL, remainingStock은 Redis 값을 그대로 사용하는지 검증한다.
+    // 발급 현황 조회가 totalStock은 MySQL, remainingStock은 RemainingStockReader가 준 값을 그대로 사용하는지 검증
     @Test
-    void getCampaignStatus_returnsRemainingStockFromRedis() {
+    void getCampaignStatus_returnsRemainingStockFromReader() {
         given(campaignStockRepository.findByCampaignIdAndRouteIdAndFareClass(1L, "JEJU", "ECONOMY"))
                 .willReturn(Optional.of(stock));
         given(stock.getId()).willReturn(10L);
         given(stock.getTotalStock()).willReturn(8000);
-        given(campaignCacheRepository.getRemainingStock(10L)).willReturn(1548);
+        given(remainingStockReader.read(1L, 10L)).willReturn(1548);
 
         CampaignStatusResponse response =
                 campaignQueryService.getCampaignStatus(1L, "JEJU", "ECONOMY");
@@ -158,7 +157,7 @@ class CampaignQueryServiceTest {
         given(campaignStockRepository.findByCampaignIdAndRouteIdAndFareClass(1L, "JEJU", "ECONOMY"))
                 .willReturn(Optional.of(stock));
         given(stock.getId()).willReturn(10L);
-        given(campaignCacheRepository.getRemainingStock(10L))
+        given(remainingStockReader.read(1L, 10L))
                 .willThrow(new CampaignStockCacheMissException(10L));
 
         assertThatThrownBy(() -> campaignQueryService.getCampaignStatus(1L, "JEJU", "ECONOMY"))

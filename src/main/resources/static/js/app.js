@@ -90,6 +90,7 @@
     monitorStockTimer: null,
     idempotencyKeys: Object.create(null),
     renderToken: 0,
+    lastRoute: null,
   };
 
   userSelect.value = String(state.userId);
@@ -262,6 +263,13 @@
 
   function currentRoute() {
     return window.location.hash.replace(/^#\/?/, "") || "home";
+  }
+
+  // 성공/실패 시스템 모니터링은 admin/monitoring/{success|failure} 두 라우트지만 같은
+  // 대시보드의 두 뷰다. 라우트 판정과 화면 이탈 판정에서 둘을 한 묶음으로 다룬다.
+  function isMonitoringRoute(route) {
+    const value = String(route || "");
+    return value === "admin/monitoring" || value.startsWith("admin/monitoring/");
   }
 
   function clearPoller() {
@@ -972,10 +980,10 @@
   }
 
   function adminLayout(active, content) {
-    return `<section class="admin-shell"><aside class="admin-sidebar"><h2>U-Ply Admin</h2><p>서비스 운영 관리</p><nav class="admin-menu"><button class="${active === "dashboard" ? "active" : ""}" data-route="admin">대시보드</button><button class="${active === "stocks" ? "active" : ""}" data-route="admin/stocks">캠페인·재고</button><button class="${active === "cache" ? "active" : ""}" data-route="admin/cache">캠페인 데이터 준비</button><button class="${active === "revoke" ? "active" : ""}" data-route="admin/revoke">미사용 쿠폰 회수</button><button class="${active === "batches" ? "active" : ""}" data-route="admin/batches">일괄 작업 실행</button><button class="${active === "verification" ? "active" : ""}" data-route="admin/verification">데이터 검증 결과</button><button class="${active === "monitoring" ? "active" : ""}" data-route="admin/monitoring">시스템 모니터링</button></nav></aside><div class="admin-content">${content}</div></section>`;
+    return `<section class="admin-shell"><aside class="admin-sidebar"><h2>U-Ply Admin</h2><p>서비스 운영 관리</p><nav class="admin-menu"><button class="${active === "dashboard" ? "active" : ""}" data-route="admin">대시보드</button><button class="${active === "stocks" ? "active" : ""}" data-route="admin/stocks">캠페인·재고</button><button class="${active === "cache" ? "active" : ""}" data-route="admin/cache">캠페인 데이터 준비</button><button class="${active === "revoke" ? "active" : ""}" data-route="admin/revoke">미사용 쿠폰 회수</button><button class="${active === "batches" ? "active" : ""}" data-route="admin/batches">일괄 작업 실행</button><button class="${active === "verification" ? "active" : ""}" data-route="admin/verification">데이터 검증 결과</button><button class="${active === "monitoring-success" ? "active" : ""}" data-route="admin/monitoring/success">성공 시스템 모니터링</button><button class="${active === "monitoring-failure" ? "active" : ""}" data-route="admin/monitoring/failure">실패 시스템 모니터링</button></nav></aside><div class="admin-content">${content}</div></section>`;
   }
 
-  async function renderAdmin(route, token) {
+  async function renderAdmin(route, token, prevRoute) {
     const page = route.split("/")[1] || "dashboard";
     try {
       if (page === "dashboard") return await renderAdminDashboard(token);
@@ -985,7 +993,12 @@
       if (page === "batches") return await renderAdminBatches();
       if (page === "verification") return await renderAdminVerification(token);
       if (page === "verification-run") return await renderVerificationRun(route.split("/")[2], token);
-      if (page === "monitoring") return await renderMonitoring(token);
+      if (page === "monitoring")
+        return await renderMonitoring(
+          token,
+          route.split("/")[2] === "failure" ? "failure" : "success",
+          isMonitoringRoute(prevRoute),
+        );
       setRoute("admin");
     } catch (error) {
       if (token === state.renderToken) app.innerHTML = adminLayout(page, errorView("관리자 데이터를 불러오지 못했습니다", error, route));
@@ -1005,7 +1018,7 @@
     const open = campaigns.filter((campaign) => campaign.status === "OPEN").length;
     const attention = runs.filter((run) => !["PASSED", "BASELINE"].includes(run.verdict)).length;
     const latestVerdict = runs[0]?.verdict || "-";
-    app.innerHTML = adminLayout("dashboard", `<header class="page-header"><div><p class="page-kicker">Operations</p><h1 class="page-title">관리자 대시보드</h1><p class="page-description">캠페인 운영과 데이터 검증 현황을 한곳에서 확인합니다.</p></div></header><div class="metric-grid"><article class="metric-card"><span>전체 캠페인</span><strong>${campaigns.length}</strong></article><article class="metric-card"><span>진행 중 캠페인</span><strong>${open}</strong></article><article class="metric-card"><span>확인 필요 회차</span><strong>${attention}</strong></article><article class="metric-card"><span>최근 검증 결과</span><strong style="font-size:18px">${escapeHtml(verdictLabel(latestVerdict))}</strong></article></div><div class="admin-action-grid"><button class="admin-action-card" data-route="admin/stocks"><strong>캠페인·재고 현황</strong><span>노선과 좌석 등급별 남은 쿠폰 수량을 확인합니다.</span></button><button class="admin-action-card" data-route="admin/cache"><strong>캠페인 데이터 준비</strong><span>이벤트 오픈 전 데이터를 준비하거나 누락된 정보를 복구합니다.</span></button><button class="admin-action-card" data-route="admin/revoke"><strong>미사용 쿠폰 일괄 회수</strong><span>특정 캠페인에서 아직 사용하지 않은 쿠폰을 회수합니다.</span></button><button class="admin-action-card" data-route="admin/batches"><strong>일괄 작업 실행</strong><span>쿠폰 만료, 데이터 검증, 재고 일치 확인을 실행합니다.</span></button><button class="admin-action-card" data-route="admin/verification"><strong>데이터 검증 결과</strong><span>회차별 검사 결과와 문제가 발견된 데이터를 확인합니다.</span></button><button class="admin-action-card" data-route="admin/monitoring"><strong>시스템 모니터링</strong><span>응답 속도와 서버 상태를 대시보드에서 확인합니다.</span></button></div>`);
+    app.innerHTML = adminLayout("dashboard", `<header class="page-header"><div><p class="page-kicker">Operations</p><h1 class="page-title">관리자 대시보드</h1><p class="page-description">캠페인 운영과 데이터 검증 현황을 한곳에서 확인합니다.</p></div></header><div class="metric-grid"><article class="metric-card"><span>전체 캠페인</span><strong>${campaigns.length}</strong></article><article class="metric-card"><span>진행 중 캠페인</span><strong>${open}</strong></article><article class="metric-card"><span>확인 필요 회차</span><strong>${attention}</strong></article><article class="metric-card"><span>최근 검증 결과</span><strong style="font-size:18px">${escapeHtml(verdictLabel(latestVerdict))}</strong></article></div><div class="admin-action-grid"><button class="admin-action-card" data-route="admin/stocks"><strong>캠페인·재고 현황</strong><span>노선과 좌석 등급별 남은 쿠폰 수량을 확인합니다.</span></button><button class="admin-action-card" data-route="admin/cache"><strong>캠페인 데이터 준비</strong><span>이벤트 오픈 전 데이터를 준비하거나 누락된 정보를 복구합니다.</span></button><button class="admin-action-card" data-route="admin/revoke"><strong>미사용 쿠폰 일괄 회수</strong><span>특정 캠페인에서 아직 사용하지 않은 쿠폰을 회수합니다.</span></button><button class="admin-action-card" data-route="admin/batches"><strong>일괄 작업 실행</strong><span>쿠폰 만료, 데이터 검증, 재고 일치 확인을 실행합니다.</span></button><button class="admin-action-card" data-route="admin/verification"><strong>데이터 검증 결과</strong><span>회차별 검사 결과와 문제가 발견된 데이터를 확인합니다.</span></button><button class="admin-action-card" data-route="admin/monitoring/success"><strong>시스템 모니터링</strong><span>성공·실패 기준으로 나눠 발급 속도와 서버 상태를 확인합니다.</span></button></div>`);
   }
 
   async function renderAdminStocks(token) {
@@ -1257,13 +1270,13 @@
 
   const monitor = {
     prev: null,
-    history: { successTps: [], failTps: [], p95: [], p99: [] },
+    history: { successTps: [], failTps: [], p95: [], p99: [], successCum: [], inflowTps: [], gatePassedTps: [], gateRejectedTps: [] },
     totals: { success: 0, compensation: 0 },
     reasons: new Map(),
     gauges: {},
     pools: [],
     pool: null,
-    stock: { total: 0, remaining: null, series: [], live: false },
+    stock: { total: 0, remaining: null, series: [], live: false, startedAt: null, drainedAt: null },
     metricsError: null,
     stockError: null,
     source: null,
@@ -1274,11 +1287,11 @@
 
   function resetMonitorState() {
     monitor.prev = null;
-    monitor.history = { successTps: [], failTps: [], p95: [], p99: [] };
+    monitor.history = { successTps: [], failTps: [], p95: [], p99: [], successCum: [], inflowTps: [], gatePassedTps: [], gateRejectedTps: [] };
     monitor.totals = { success: 0, compensation: 0 };
     monitor.reasons = new Map();
     monitor.gauges = {};
-    monitor.stock = { total: 0, remaining: null, series: [], live: false };
+    monitor.stock = { total: 0, remaining: null, series: [], live: false, startedAt: null, drainedAt: null };
     monitor.metricsError = null;
     monitor.stockError = null;
     monitor.source = null;
@@ -1388,6 +1401,18 @@
 
   function clockText(at) {
     return new Date(at).toLocaleTimeString("ko-KR", { hour12: false });
+  }
+
+  function windowLabel(seconds) {
+    if (!Number.isFinite(seconds)) return "-";
+    if (seconds >= 60) return `${Math.round(seconds / 60)}분`;
+    return `${Math.round(seconds)}초`;
+  }
+
+  function durationText(seconds) {
+    if (!Number.isFinite(seconds)) return "-";
+    if (seconds >= 60) return `${Math.floor(seconds / 60)}분 ${Math.round(seconds % 60)}초`;
+    return `${seconds.toFixed(1)}초`;
   }
 
   // --- 선형 차트 -------------------------------------------------------------
@@ -1556,10 +1581,18 @@
     });
   }
 
-  function chartCard(chartId, title, description, legend) {
+  // 스냅샷: 각 시점의 값을 그대로 찍는다(재고 잔량, 구간 속도). 누적: 페이지 로드 이후
+  // 계속 더해지는 값(카운터 총합). 시간축 해석이 정반대라 그래프마다 명시한다.
+  function chartKindBadge(kind) {
+    if (kind === "snapshot") return ' <span class="chart-kind snapshot">스냅샷 · 2초 간격</span>';
+    if (kind === "cumulative") return ' <span class="chart-kind cumulative">누적 · 페이지 로드 이후</span>';
+    return "";
+  }
+
+  function chartCard(chartId, title, description, legend, kind) {
     return `<figure class="chart-card" data-chart="${chartId}">
       <figcaption>
-        <h3>${escapeHtml(title)}</h3>
+        <h3>${escapeHtml(title)}${chartKindBadge(kind)}</h3>
         <p>${escapeHtml(description)}</p>
       </figcaption>
       ${legend || ""}
@@ -1584,7 +1617,7 @@
       .sort((left, right) => right[1] - left[1]);
 
     if (!rows.length) {
-      return '<p class="chart-empty">아직 실패로 집계된 요청이 없습니다.</p>';
+      return '<p class="chart-empty ok">시스템 실패 0건 — 최근 집계된 실패가 없습니다.</p>';
     }
 
     const max = rows[0][1];
@@ -1602,17 +1635,270 @@
   }
 
   function statTile(label, value, note, tone) {
+    const flag =
+      tone === "alert"
+        ? '<em class="tile-flag alert">주의</em>'
+        : tone === "ok"
+          ? '<em class="tile-flag ok">정상</em>'
+          : "";
     return `<article class="metric-card stat-tile${tone ? ` ${tone}` : ""}">
-      <span>${escapeHtml(label)}</span>
+      <span>${escapeHtml(label)}${flag}</span>
       <strong>${escapeHtml(value)}</strong>
       <small>${escapeHtml(note || "")}</small>
     </article>`;
   }
 
+  // 최근 창(windowSize) 안에서 실제로 발급된 건수와 그 구간 길이. successCum은 누적
+  // 카운터 표본이라 첫 점과 끝 점을 빼면 그 사이 발급량이 된다. 앱이 재기동해 카운터가
+  // 0으로 돌아가면 음수가 나오므로 그 회차는 버린다(perSecond와 같은 이유).
+  function recentIssuedWindow() {
+    const series = monitor.history.successCum;
+    if (!series || series.length < 2) return null;
+    const first = series[0];
+    const last = series[series.length - 1];
+    const count = last.value - first.value;
+    const seconds = (last.at - first.at) / 1000;
+    if (count < 0 || seconds <= 0) return null;
+    return { count, seconds };
+  }
+
+  // 재고 소진 진행 상황. startedAt/drainedAt은 applyStockSample이 배열과 무관하게 한 번만
+  // 찍는다(series는 windowSize로 잘려 시작점이 사라질 수 있다). 모니터 화면을 소진 도중에
+  // 열었으면 startedAt이 실제보다 늦게 잡혀 소요시간이 과소평가될 수 있다.
+  function stockDrainProgress() {
+    const { total, remaining, startedAt, drainedAt } = monitor.stock;
+    if (startedAt == null || total <= 0 || typeof remaining !== "number") return null;
+    const done = drainedAt != null;
+    const seconds = ((done ? drainedAt : Date.now()) - startedAt) / 1000;
+    const issued = done ? total : total - remaining;
+    return { done, seconds, issued };
+  }
+
+  // 정상 거절(재고 소진·중복 등)이 아닌 시스템 실패만 합산한다. 이게 0이면 "잘 돌고 있다"는 뜻.
+  function systemFailureCount() {
+    let total = 0;
+    for (const [reason, value] of monitor.reasons) {
+      if (!BUSINESS_REASONS.has(reason) && value > 0) total += value;
+    }
+    return total;
+  }
+
+  // 화면 전체의 "이상 없음 / 조치 필요"를 한 줄로 요약한다. 값이 정상 범위면 그것도
+  // 명시적으로 보여야 "조용히 멈춘 것"과 "정상이라 조용한 것"이 구분된다.
+  function monitorHealth() {
+    const ready = monitor.source != null;
+    const issues = [];
+    const sysFail = systemFailureCount();
+    if (sysFail > 0) issues.push(`시스템 실패 ${compactNumber(sysFail)}건`);
+    if (monitor.gauges.hikariPending > 0)
+      issues.push(`커넥션 대기 ${compactNumber(monitor.gauges.hikariPending)}`);
+    if (monitor.totals.compensation > 0)
+      issues.push(`Redis 보상 ${compactNumber(monitor.totals.compensation)}건`);
+    if (monitor.gauges.reconcileMismatch > 0)
+      issues.push(`재고 불일치 ${compactNumber(monitor.gauges.reconcileMismatch)}`);
+    const ok = issues.length === 0;
+    return {
+      ready,
+      ok,
+      issues,
+      text: ok ? "정상 — 실패 신호 없이 동작 중입니다." : `주의 — ${issues.join(" · ")}`,
+    };
+  }
+
+  // 성공 기준: 부하테스트가 목표에 도달했는가. 선택한 재고풀의 총 재고를 목표 발급량으로
+  // 본다(시나리오 1 = 재고 전량 소진). 재고풀 미선택이면 목표 없이 시스템 실패 유무만 본다.
+  function monitorSuccessSummary() {
+    const ready = monitor.source != null;
+    const issued = monitor.totals.success || 0;
+    const target = monitor.stock.total || 0;
+    const sysFail = systemFailureCount();
+    const mismatch = monitor.gauges.reconcileMismatch || 0;
+    const parts = [
+      target > 0
+        ? `발급 ${compactNumber(issued)}/${compactNumber(target)}`
+        : `발급 ${compactNumber(issued)}건`,
+      `시스템 실패 ${compactNumber(sysFail)}`,
+      `REC-01 ${compactNumber(mismatch)}`,
+    ];
+    const clean = sysFail === 0 && mismatch === 0;
+    const ok = clean && (target > 0 ? issued >= target : issued > 0);
+    const head = !ready ? "" : ok ? (target > 0 ? "성공 기준 충족 — " : "정상 — ") : "미충족 — ";
+    return { ready, ok, text: head + parts.join(" · ") };
+  }
+
+  // 성공 시스템 모니터링 타일: 발급이 목표 속도로 나가고 있는지를 보여준다.
+  function successTiles(metricsReady) {
+    const tps = monitor.history.successTps.at(-1);
+    const recent = recentIssuedWindow();
+    const drain = stockDrainProgress();
+    const target = monitor.stock.total || 0;
+    const issued = monitor.totals.success || 0;
+    return [
+      statTile(
+        "발급 성공 누계",
+        compactNumber(issued),
+        target > 0
+          ? `목표 ${compactNumber(target)} 대비 ${Math.round((issued / target) * 100)}%`
+          : monitor.source || "지표 수집 준비 중",
+        !metricsReady || target === 0 ? "" : issued >= target ? "ok" : "",
+      ),
+      statTile("초당 발급", rateText(tps ? tps.value : null), "최근 2초 구간"),
+      statTile(
+        "최근 발급량",
+        recent ? `${compactNumber(recent.count)}건` : "-",
+        recent
+          ? `최근 ${windowLabel(recent.seconds)}간 · 평균 ${rateText(recent.count / recent.seconds)}`
+          : "표본을 모으는 중입니다",
+      ),
+      statTile(
+        "재고 소진 소요시간",
+        drain ? durationText(drain.seconds) : "-",
+        drain
+          ? drain.done
+            ? `${compactNumber(drain.issued)}건 소진 · 평균 ${rateText(drain.issued / drain.seconds)}`
+            : `진행 중 · ${compactNumber(drain.issued)}건 · ${rateText(drain.issued / drain.seconds)}`
+          : "재고풀을 선택하면 표시됩니다",
+      ),
+    ];
+  }
+
+  // 실패 시스템 모니터링 타일: 조치가 필요한 신호만 모은다. 0이면 정상, 벗어나면 주의.
+  function failureTiles(metricsReady) {
+    const pending = monitor.gauges.hikariPending;
+    const mismatch = monitor.gauges.reconcileMismatch;
+    const sysFail = systemFailureCount();
+    return [
+      statTile(
+        "커넥션 대기",
+        pending == null ? "-" : compactNumber(pending),
+        "HikariCP pending — 0을 벗어나면 풀 포화",
+        pending == null || !metricsReady ? "" : pending > 0 ? "alert" : "ok",
+      ),
+      statTile(
+        "Redis 보상 발생",
+        compactNumber(monitor.totals.compensation),
+        "DB 저장 실패 후 재고 되돌림",
+        !metricsReady ? "" : monitor.totals.compensation > 0 ? "alert" : "ok",
+      ),
+      statTile(
+        "재고 불일치 (REC-01)",
+        mismatch == null ? "-" : compactNumber(mismatch),
+        "0이 아니면 회차를 자료로 쓸 수 없음",
+        mismatch == null || !metricsReady ? "" : mismatch > 0 ? "alert" : "ok",
+      ),
+      statTile(
+        "시스템 실패 누계",
+        compactNumber(sysFail),
+        "정상 거절(재고 소진·중복) 제외 · 조치가 필요한 실패만",
+        !metricsReady ? "" : sysFail > 0 ? "alert" : "ok",
+      ),
+    ];
+  }
+
+  // 쿠폰 첫 유입부터 정합성 검증까지 전 구간을 한 줄로 세운다. 각 단계는 상태 점
+  // (ok / alert / wait)과 핵심 수치 하나를 든다. 아직 수집 전인 지표는 "미수집"으로 둔다.
+  function pipelineStages() {
+    const g = monitor.gauges;
+    const latest = (series) => {
+      const point = series.at(-1);
+      return point && Number.isFinite(point.value) ? point.value : null;
+    };
+    const inflowRate = latest(monitor.history.inflowTps);
+    const issueRate = latest(monitor.history.successTps);
+    const rejectRate =
+      inflowRate != null && issueRate != null ? Math.max(0, inflowRate - issueRate) : null;
+
+    // 게이트 지표가 있으면(= GateMetrics 배포됨) 유입 단계를 "게이트 통과율 / 429 거부율"로
+    // 보여준다. 없으면 http 요청 유입율 대비 성립율(거절)로 대체한다.
+    const gatePassRate = latest(monitor.history.gatePassedTps);
+    const gateRejectRate = latest(monitor.history.gateRejectedTps);
+    const gateOn = g.gatePassed != null || g.gateRejected != null;
+
+    // view: 이 단계가 어느 뷰에 뜨는지. "success"=발급이 정상 경로로 흐르는지 보는 단계,
+    // "failure"=부하가 만드는 문제 지점, "both"=파이프라인 진입점이라 양쪽에 필요.
+    return [
+      gateOn
+        ? {
+            key: "유입",
+            value: gatePassRate == null ? "-" : rateText(gatePassRate),
+            sub: `게이트 429 ${gateRejectRate == null ? "-" : rateText(gateRejectRate)}`,
+            state: "ok",
+            view: "both",
+          }
+        : {
+            key: "유입",
+            value: inflowRate == null ? "미수집" : rateText(inflowRate),
+            sub: rejectRate == null ? "요청 유입" : `거절 ${rateText(rejectRate)}`,
+            state: inflowRate == null ? "wait" : "ok",
+            view: "both",
+          },
+      {
+        key: "접속",
+        value: g.sseActive == null ? "미수집" : compactNumber(g.sseActive),
+        sub: "SSE 구독",
+        state: g.sseActive == null ? "wait" : "ok",
+        view: "success",
+      },
+      {
+        key: "오픈 준비",
+        value: g.cacheReady == null ? "대기" : g.cacheReady >= 1 ? "완료" : "미완료",
+        sub:
+          g.cacheReadyLead == null
+            ? "캐시 워밍업"
+            : g.cacheReadyLead >= 0
+              ? `오픈 ${durationText(g.cacheReadyLead)} 전`
+              : `오픈 ${durationText(-g.cacheReadyLead)} 후`,
+        state: g.cacheReady == null ? "wait" : g.cacheReady >= 1 ? "ok" : "alert",
+        view: "success",
+      },
+      {
+        key: "발급",
+        value: issueRate == null ? "미수집" : rateText(issueRate),
+        sub: "성립 속도",
+        state: issueRate == null ? "wait" : "ok",
+        view: "success",
+      },
+      {
+        key: "후처리",
+        value: `stale ${compactNumber(g.pendingStale || 0)}`,
+        sub: `보상 ${compactNumber(monitor.totals.compensation || 0)}`,
+        state:
+          (g.pendingStale || 0) > 0 || (monitor.totals.compensation || 0) > 0 ? "alert" : "ok",
+        view: "failure",
+      },
+      {
+        key: "정합성",
+        value: g.reconcileMismatch == null ? "미수집" : compactNumber(g.reconcileMismatch),
+        sub: "REC-01 불일치",
+        state:
+          g.reconcileMismatch == null ? "wait" : g.reconcileMismatch > 0 ? "alert" : "ok",
+        view: "failure",
+      },
+    ];
+  }
+
+  function pipelineStrip(view) {
+    if (monitor.source == null) {
+      return '<p class="pipeline-empty">지표 수집을 시작하는 중입니다…</p>';
+    }
+    return `<ol class="pipeline-strip">${pipelineStages()
+      .filter((stage) => stage.view === "both" || stage.view === view)
+      .map(
+        (stage, index) => `<li class="pipeline-stage ${stage.state}">
+          <span class="pipeline-step">${index + 1}</span>
+          <span class="pipeline-key">${escapeHtml(stage.key)}</span>
+          <strong class="pipeline-value">${escapeHtml(stage.value)}</strong>
+          <small class="pipeline-sub">${escapeHtml(stage.sub || "")}</small>
+        </li>`,
+      )
+      .join("")}</ol>`;
+  }
+
   // --- 화면 갱신 -------------------------------------------------------------
 
   function updateMonitoringView() {
-    if (currentRoute() !== "admin/monitoring") return;
+    if (!isMonitoringRoute(currentRoute())) return;
+    const view = currentRoute().split("/")[2] === "failure" ? "failure" : "success";
 
     const notice = document.querySelector("#monitor-notice");
     if (notice) {
@@ -1621,37 +1907,28 @@
       notice.textContent = messages.join(" ");
     }
 
+    const health = document.querySelector("#monitor-health");
+    if (health) {
+      const summary = view === "failure" ? monitorHealth() : monitorSuccessSummary();
+      if (!summary.ready) {
+        health.className = "monitor-health";
+        health.textContent = "지표 수집을 시작하는 중입니다…";
+      } else {
+        health.className = `monitor-health ${summary.ok ? "ok" : "alert"}`;
+        health.textContent = summary.text;
+      }
+    }
+
+    const pipeline = document.querySelector("#monitor-pipeline");
+    if (pipeline) pipeline.innerHTML = pipelineStrip(view);
+
     const tiles = document.querySelector("#monitor-tiles");
     if (tiles) {
-      const tps = monitor.history.successTps.at(-1);
-      const pending = monitor.gauges.hikariPending;
-      const mismatch = monitor.gauges.reconcileMismatch;
-      tiles.innerHTML = [
-        statTile(
-          "발급 성공 누계",
-          compactNumber(monitor.totals.success),
-          monitor.source || "지표 수집 준비 중",
-        ),
-        statTile("초당 발급", rateText(tps ? tps.value : null), "최근 2초 구간"),
-        statTile(
-          "커넥션 대기",
-          pending == null ? "-" : compactNumber(pending),
-          "HikariCP pending — 0을 벗어나면 풀 포화",
-          pending > 0 ? "alert" : "",
-        ),
-        statTile(
-          "Redis 보상 발생",
-          compactNumber(monitor.totals.compensation),
-          "DB 저장 실패 후 재고 되돌림",
-          monitor.totals.compensation > 0 ? "alert" : "",
-        ),
-        statTile(
-          "재고 불일치 (REC-01)",
-          mismatch == null ? "-" : compactNumber(mismatch),
-          "0이 아니면 회차를 자료로 쓸 수 없음",
-          mismatch > 0 ? "alert" : "",
-        ),
-      ].join("");
+      const metricsReady = monitor.source != null;
+      tiles.innerHTML = (view === "failure"
+        ? failureTiles(metricsReady)
+        : successTiles(metricsReady)
+      ).join("");
     }
 
     const bars = document.querySelector("#monitor-failures");
@@ -1722,7 +1999,27 @@
 
   async function samplePrometheusMetrics() {
     const issueFilter = 'uri="/api/coupons/issue"';
-    const [up, success, failures, compensation, pending, mismatch, p95, p99] = await Promise.all([
+    // 전 구간 뷰: 선택한 재고풀의 캠페인만 캐시 준비 상태를 본다.
+    const campaignSelector = monitor.pool
+      ? `{campaign="${String(monitor.pool.campaignId)}"}`
+      : "";
+    const [
+      up,
+      success,
+      failures,
+      compensation,
+      pending,
+      mismatch,
+      p95,
+      p99,
+      sseActive,
+      pendingStale,
+      requestTotal,
+      cacheReady,
+      cacheReadyLead,
+      gatePassed,
+      gateRejected,
+    ] = await Promise.all([
       prometheusQuery('up{job="coupon-app"}'),
       prometheusQuery("sum(coupon_issue_success_total)"),
       prometheusQuery("sum by (reason) (coupon_issue_failure_total)"),
@@ -1735,6 +2032,13 @@
       prometheusQuery(
         `histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{${issueFilter}}[1m])))`,
       ),
+      prometheusQuery("sum(coupon_sse_active_connections)"),
+      prometheusQuery("sum(coupon_pending_stale_count)"),
+      prometheusQuery(`sum(http_server_requests_seconds_count{${issueFilter}})`),
+      prometheusQuery(`max(coupon_campaign_cache_ready${campaignSelector})`),
+      prometheusQuery(`max(coupon_campaign_cache_ready_lead_seconds${campaignSelector})`),
+      prometheusQuery("sum(coupon_gate_passed_total)"),
+      prometheusQuery("sum(coupon_gate_rejected_total)"),
     ]);
 
     // Prometheus가 응답하기만 하면 나머지 쿼리는 전부 "성공"이다 — coupon-app 타깃이
@@ -1757,6 +2061,13 @@
       mismatch: mismatch.length ? prometheusScalar(mismatch) : null,
       p95: p95.length ? prometheusScalar(p95) : null,
       p99: p99.length ? prometheusScalar(p99) : null,
+      sseActive: sseActive.length ? prometheusScalar(sseActive) : null,
+      pendingStale: pendingStale.length ? prometheusScalar(pendingStale) : null,
+      requestTotal: requestTotal.length ? prometheusScalar(requestTotal) : null,
+      cacheReady: cacheReady.length ? prometheusScalar(cacheReady) : null,
+      cacheReadyLead: cacheReadyLead.length ? prometheusScalar(cacheReadyLead) : null,
+      gatePassed: gatePassed.length ? prometheusScalar(gatePassed) : null,
+      gateRejected: gateRejected.length ? prometheusScalar(gateRejected) : null,
       source: `Prometheus · 앱 인스턴스 ${upCount}대`,
     };
   }
@@ -1775,6 +2086,10 @@
         "http_server_requests_seconds",
         (labels) => isIssue(labels) && labels.quantile === value,
       );
+    // 전 구간 뷰: 선택한 재고풀의 캠페인만 캐시 준비 상태를 본다. 게이지가 아직 없으면
+    // (백엔드 미배포) null로 두어 "미수집"으로 표시한다.
+    const campaignTag = monitor.pool ? String(monitor.pool.campaignId) : null;
+    const readyFilter = (labels) => labels.campaign === campaignTag;
     return {
       success: sumMetric(parsed, "coupon_issue_success_total"),
       failure: sumMetric(parsed, "coupon_issue_failure_total"),
@@ -1786,12 +2101,35 @@
         : null,
       p95: quantile("0.95"),
       p99: quantile("0.99"),
+      sseActive: parsed.has("coupon_sse_active_connections")
+        ? sumMetric(parsed, "coupon_sse_active_connections")
+        : null,
+      pendingStale: parsed.has("coupon_pending_stale_count")
+        ? sumMetric(parsed, "coupon_pending_stale_count")
+        : null,
+      requestTotal: parsed.has("http_server_requests_seconds_count")
+        ? sumMetric(parsed, "http_server_requests_seconds_count", isIssue)
+        : null,
+      cacheReady:
+        campaignTag && parsed.has("coupon_campaign_cache_ready")
+          ? sumMetric(parsed, "coupon_campaign_cache_ready", readyFilter)
+          : null,
+      cacheReadyLead:
+        campaignTag && parsed.has("coupon_campaign_cache_ready_lead_seconds")
+          ? sumMetric(parsed, "coupon_campaign_cache_ready_lead_seconds", readyFilter)
+          : null,
+      gatePassed: parsed.has("coupon_gate_passed_total")
+        ? sumMetric(parsed, "coupon_gate_passed_total")
+        : null,
+      gateRejected: parsed.has("coupon_gate_rejected_total")
+        ? sumMetric(parsed, "coupon_gate_rejected_total")
+        : null,
       source: "현재 앱 인스턴스",
     };
   }
 
   async function sampleMetrics() {
-    if (currentRoute() !== "admin/monitoring") return;
+    if (!isMonitoringRoute(currentRoute())) return;
 
     let sample;
     try {
@@ -1817,6 +2155,12 @@
     monitor.reasons = sample.reasons;
     monitor.gauges.hikariPending = sample.pending;
     monitor.gauges.reconcileMismatch = sample.mismatch;
+    monitor.gauges.sseActive = sample.sseActive;
+    monitor.gauges.pendingStale = sample.pendingStale;
+    monitor.gauges.cacheReady = sample.cacheReady;
+    monitor.gauges.cacheReadyLead = sample.cacheReadyLead;
+    monitor.gauges.gatePassed = sample.gatePassed;
+    monitor.gauges.gateRejected = sample.gateRejected;
 
     if (monitor.prev) {
       const seconds = (at - monitor.prev.at) / 1000;
@@ -1826,9 +2170,39 @@
       pushPoint(monitor.history.failTps, at, failTps);
       pushPoint(monitor.history.p95, at, sample.p95);
       pushPoint(monitor.history.p99, at, sample.p99);
+      if (sample.requestTotal != null) {
+        pushPoint(
+          monitor.history.inflowTps,
+          at,
+          perSecond(sample.requestTotal, monitor.prev.requestTotal, seconds),
+        );
+      }
+      if (sample.gatePassed != null) {
+        pushPoint(
+          monitor.history.gatePassedTps,
+          at,
+          perSecond(sample.gatePassed, monitor.prev.gatePassed, seconds),
+        );
+      }
+      if (sample.gateRejected != null) {
+        pushPoint(
+          monitor.history.gateRejectedTps,
+          at,
+          perSecond(sample.gateRejected, monitor.prev.gateRejected, seconds),
+        );
+      }
     }
 
-    monitor.prev = { at, success: sample.success, failure: sample.failure };
+    // 누적 발급 건수 표본. 첫 표본부터 쌓아 "최근 N분 발급량"을 빨리 채운다.
+    pushPoint(monitor.history.successCum, at, sample.success);
+    monitor.prev = {
+      at,
+      success: sample.success,
+      failure: sample.failure,
+      requestTotal: sample.requestTotal,
+      gatePassed: sample.gatePassed,
+      gateRejected: sample.gateRejected,
+    };
     updateMonitoringView();
   }
 
@@ -1845,12 +2219,21 @@
     monitor.stock.total = status.totalStock ?? monitor.stock.total;
     monitor.stock.remaining = status.remainingStock;
     pushPoint(monitor.stock.series, Date.now(), status.remainingStock);
+
+    // 재고 소진 소요시간 타일용 시작·완료 시각. 한 번 잡으면 덮어쓰지 않는다.
+    const { total, remaining } = monitor.stock;
+    if (typeof remaining === "number" && total > 0) {
+      const now = Date.now();
+      if (monitor.stock.startedAt == null && remaining < total) monitor.stock.startedAt = now;
+      if (monitor.stock.drainedAt == null && remaining <= 0) monitor.stock.drainedAt = now;
+    }
+
     updateMonitoringView();
   }
 
   function startMonitorStock() {
     stopMonitorStock();
-    monitor.stock = { total: 0, remaining: null, series: [], live: false };
+    monitor.stock = { total: 0, remaining: null, series: [], live: false, startedAt: null, drainedAt: null };
     const pool = monitor.pool;
     if (!pool || previewMode) return;
 
@@ -1877,7 +2260,7 @@
     // SSE가 정상일 때는 시간 축을 흐르게 하고, 연결이 끊긴 뒤에는 실제 상태 API를
     // 호출한다. 마지막 값을 복사하는 것만으로는 끊긴 연결을 정상처럼 보이게 만들 수 있다.
     state.monitorStockTimer = window.setInterval(async () => {
-      if (currentRoute() !== "admin/monitoring") return stopMonitorStock();
+      if (!isMonitoringRoute(currentRoute())) return stopMonitorStock();
       if (monitor.stock.live && monitor.stock.remaining != null) {
         pushPoint(monitor.stock.series, Date.now(), monitor.stock.remaining);
         updateMonitoringView();
@@ -1950,10 +2333,15 @@
       monitor.pools.find((pool) => pool.campaignStatus === "OPEN") || monitor.pools[0] || null;
   }
 
-  async function renderMonitoring(token) {
-    resetMonitorState();
-    monitor.prometheusUrl = prometheusBaseUrl();
-    await loadMonitorPools();
+  async function renderMonitoring(token, variant, keepState) {
+    const view = variant === "failure" ? "failure" : "success";
+    // keepState = 성공↔실패 뷰 사이 이동. 이때는 수집 타이머·SSE와 누적 상태(실패 사유,
+    // 재고 소진 타이머)를 그대로 두고 DOM만 다시 그린다. 그 외에는 처음부터 수집한다.
+    if (!keepState) {
+      resetMonitorState();
+      monitor.prometheusUrl = prometheusBaseUrl();
+      await loadMonitorPools();
+    }
     // 같은 페이지를 다시 열었을 때(예: 새로고침 클릭) 이전 호출이 이 시점에 막 await를 끝내고
     // 돌아와 방금 시작한 새 렌더를 덮어쓰는 경합을 막는다. 다른 admin 하위 페이지들과 같은 패턴이다.
     if (token !== state.renderToken) return;
@@ -1971,13 +2359,35 @@
       { name: "p99", color: MONITOR.accent },
     ]);
 
+    const headTitle = view === "failure" ? "실패 시스템 모니터링" : "성공 시스템 모니터링";
+    const headDesc =
+      view === "failure"
+        ? "부하테스트에서 무엇이 실패를 만드는지 — 커넥션 포화, 보상, 정합성 위반, 시스템 실패 사유를 2초마다 갱신해 보여줍니다."
+        : "부하테스트가 목표대로 나가고 있는지 — 발급 속도와 재고 소진 진행을 2초마다 갱신해 보여줍니다.";
+    const successCharts = `
+      <div class="chart-grid">
+        ${chartCard("stock", "쿠폰 재고 소진 현황", "선택한 재고풀의 잔여 재고입니다. 선이 가파를수록 빠르게 나가고 있습니다.", `<p class="chart-note" id="monitor-stock-note">재고풀을 선택하면 실시간으로 표시됩니다.</p>`, "snapshot")}
+        ${chartCard("throughput", "쿠폰 발급 현황", "초당 실제 발급 성립 건수입니다(구간 속도, 누적 아님). 구간 누계는 위 '최근 발급량' 타일에 있습니다.", "", "snapshot")}
+      </div>`;
+    const failureCharts = `
+      <div class="chart-grid">
+        ${chartCard("latency", "발급 API 응답 지연", "p95와 p99입니다. 두 선이 벌어지면 일부 요청만 오래 걸리고 있다는 뜻입니다.", legendLatency, "snapshot")}
+        <figure class="chart-card">
+          <figcaption>
+            <h3>실패 사유별 누계 <span class="chart-kind cumulative">누적 · 페이지 로드 이후</span></h3>
+            <p>재고 소진과 중복 발급은 정상 거절입니다. '시스템 실패'로 표시된 항목만 조치가 필요합니다.</p>
+          </figcaption>
+          <div id="monitor-failures"></div>
+        </figure>
+      </div>`;
+
     app.innerHTML = adminLayout(
-      "monitoring",
+      `monitoring-${view}`,
       `<header class="page-header">
         <div>
           <p class="page-kicker">Observability</p>
-          <h1 class="page-title">시스템 모니터링</h1>
-          <p class="page-description">발급이 지금 어떤 속도로 나가고 있는지, 무엇 때문에 막히는지를 2초마다 갱신해 보여줍니다.</p>
+          <h1 class="page-title">${headTitle}</h1>
+          <p class="page-description">${headDesc}</p>
         </div>
         <div class="monitor-control">
           <div class="monitor-field">
@@ -1991,25 +2401,19 @@
         </div>
       </header>
 
+      <nav class="monitor-switch">
+        <button class="${view === "success" ? "active" : ""}" data-route="admin/monitoring/success">성공 기준</button>
+        <button class="${view === "failure" ? "active" : ""}" data-route="admin/monitoring/failure">실패 기준</button>
+      </nav>
+
       <p class="notice" id="monitor-notice" hidden></p>
+      <p class="monitor-health" id="monitor-health"></p>
 
-      <div class="metric-grid five" id="monitor-tiles"></div>
+      <div id="monitor-pipeline"></div>
 
-      <div class="chart-grid">
-        ${chartCard("stock", "재고 소진 곡선", "선택한 재고풀의 잔여 재고입니다. 선이 가파를수록 빠르게 나가고 있습니다.", `<p class="chart-note" id="monitor-stock-note">재고풀을 선택하면 실시간으로 표시됩니다.</p>`)}
-        ${chartCard("throughput", "발급 처리량", "초당 실제 발급 성립 건수입니다. 누적값이 아니라 구간 속도입니다.")}
-      </div>
+      <div class="metric-grid seven" id="monitor-tiles"></div>
 
-      <div class="chart-grid">
-        ${chartCard("latency", "발급 API 응답 지연", "p95와 p99입니다. 두 선이 벌어지면 일부 요청만 오래 걸리고 있다는 뜻입니다.", legendLatency)}
-        <figure class="chart-card">
-          <figcaption>
-            <h3>실패 사유별 누계</h3>
-            <p>재고 소진과 중복 발급은 정상 거절입니다. '시스템 실패'로 표시된 항목만 조치가 필요합니다.</p>
-          </figcaption>
-          <div id="monitor-failures"></div>
-        </figure>
-      </div>
+      ${view === "failure" ? failureCharts : successCharts}
 
       <div class="monitor-grid">
         <article class="monitor-card">
@@ -2059,7 +2463,7 @@
           monitor.prometheusUrl = value;
           window.localStorage.setItem(PROMETHEUS_URL_KEY, value);
           monitor.prev = null;
-          monitor.history = { successTps: [], failTps: [], p95: [], p99: [] };
+          monitor.history = { successTps: [], failTps: [], p95: [], p99: [], successCum: [], inflowTps: [], gatePassedTps: [], gateRejectedTps: [] };
           monitor.metricsError = null;
           const prometheusLink = document.querySelector("#monitor-prometheus-link");
           const grafanaLink = document.querySelector("#monitor-grafana-link");
@@ -2082,18 +2486,27 @@
       return;
     }
 
-    startMonitorStock();
-    sampleMetrics();
-    state.monitorTimer = window.setInterval(sampleMetrics, MONITOR.pollMs);
+    // keepState면 이전 뷰에서 띄운 수집 타이머·재고 SSE가 그대로 살아 있다(renderRoute가
+    // 형제 라우트 이동에서는 clearPoller를 건너뛴다). 새로 시작하면 중복으로 돈다.
+    if (!keepState) {
+      startMonitorStock();
+      sampleMetrics();
+      state.monitorTimer = window.setInterval(sampleMetrics, MONITOR.pollMs);
+    }
   }
 
   async function renderRoute() {
-    clearPoller();
-    const token = ++state.renderToken;
     const route = currentRoute();
+    const prevRoute = state.lastRoute;
+    // 성공↔실패 시스템 모니터링은 같은 대시보드의 두 뷰다. 그 사이 이동일 때는 수집
+    // 타이머·재고 SSE와 누적 상태를 유지하고 DOM만 다시 그린다(로딩 화면도 생략).
+    const stayInMonitor = isMonitoringRoute(route) && isMonitoringRoute(prevRoute);
+    state.lastRoute = route;
+    if (!stayInMonitor) clearPoller();
+    const token = ++state.renderToken;
     setActiveNav(route);
     window.scrollTo({ top: 0, behavior: "auto" });
-    showLoading();
+    if (!stayInMonitor) showLoading();
 
     if (route === "home") return renderHome(token);
     if (route === "campaigns") return renderCampaigns(token);
@@ -2107,7 +2520,7 @@
     if (route.startsWith("booking/")) return renderBookingDetail(route.split("/")[1]);
     if (route === "coupons") return renderCoupons(token);
     if (route.startsWith("coupon/")) return renderCouponDetail(route.split("/")[1], token);
-    if (route.startsWith("admin")) return renderAdmin(route, token);
+    if (route.startsWith("admin")) return renderAdmin(route, token, prevRoute);
     setRoute("home");
   }
 

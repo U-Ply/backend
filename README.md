@@ -179,11 +179,27 @@ COUPON_KAFKA_CONSUMER_ENABLED=true \
 
 일반 실행에서는 Redis 멱등성 처리가 기본 활성화됩니다. `COUPON_IDEMPOTENCY_ENABLED=false`는 순수 전략 비교를 위한 Level 2 회차에서만 사용합니다.
 
-### 7. Redis 캠페인 캐시 준비·복구
+선택 기능인 Redis 토큰 버킷 진입 제어는 기본적으로 비활성화됩니다. 활성화하면 순간적으로 몰린 요청 중 처리 한도를 넘은 요청을 `429`로 거부하며, 용량과 충전 속도는 부하 테스트 결과에 맞춰 조정합니다.
+
+```bash
+COUPON_GATE_ENABLED=true \
+COUPON_GATE_CAPACITY=4000 \
+COUPON_GATE_REFILL_PER_SEC=2000 \
+./gradlew bootRun
+```
+
+### 7. 캠페인 재고 조회와 Redis 캐시 준비·복구
+
+캠페인 상세·발급 현황·SSE가 반환하는 `remainingStock`의 기준 저장소는 발급 전략에 따라 달라집니다.
+
+| 전략 | `remainingStock` 기준 | 사전 준비 |
+| --- | --- | --- |
+| V0 NoLock·V1 비관적 락 | MySQL `campaign_stocks.remaining_stock` | DB 시드 |
+| V2·V3 Redis Lua | Redis `stock:{stockId}` | Redis 캐시 웜업 |
 
 Redis Lua 전략(V2·V3)을 사용하기 전, 캠페인 오픈 전에 DB 기준 캐시를 전체 구성합니다.
 
-`GET /api/campaigns/{campaignId}`와 `GET /api/campaigns/{campaignId}/status`는 잔여 재고를 Redis에서 읽습니다. `stock:{stockId}` 키가 없으면 재고를 0으로 표시하지 않고 `503 CAMPAIGN_NOT_CACHED`를 반환합니다. 자동 캐시 복구가 활성화된 경우 조회 API의 캐시 미스도 복구 트리거에 포함됩니다.
+V2·V3에서 `stock:{stockId}` 키가 없으면 재고를 0으로 표시하지 않고 `503 CAMPAIGN_NOT_CACHED`를 반환합니다. 자동 캐시 복구가 활성화된 경우 조회 API의 캐시 미스도 복구 트리거에 포함됩니다.
 
 ```bash
 curl -X POST http://localhost:8081/api/admin/campaigns/1/cache/warmup
@@ -200,7 +216,7 @@ curl -X POST http://localhost:8081/api/admin/campaigns/1/cache/recover
 - V3에서는 Kafka lag·DLT가 정착되지 않으면 두 작업 모두 503으로 거부
 - 캐시가 준비되지 않은 발급·재고 조회 요청은 `503 CAMPAIGN_NOT_CACHED`로 응답
 
-V0·V1은 MySQL 재고만 차감하고 Redis를 갱신하지 않습니다. 따라서 전략 비교 회차 중에는 Redis 기반 실시간 재고 화면을 정합성 판정 근거로 사용하지 않습니다.
+V0·V1은 Redis 재고를 갱신하지 않으므로 `RemainingStockReader`가 MySQL 재고를 직접 조회합니다. 이에 따라 V0·V1 회차에서도 캠페인 상세·발급 현황·SSE가 해당 전략의 실제 잔여 재고를 표시합니다. Redis–DB 대사 규칙 `REC-01`은 Redis 재고를 사용하는 V2·V3에만 적용됩니다.
 
 두 엔드포인트의 차이와 장애 대응 절차는 [Redis 캐시 미스 대응 문서](docs/redis-cache-miss-response.md)를 참고하세요.
 
@@ -309,7 +325,7 @@ Bulk     사용자 100만 명·쿠폰 300만 건 전체 정합성 검증
 
 ### 문제
 
-애플리케이션 JVM은 KST, MySQL은 UTC를 사용하고 있었습니다.  
+애플리케이션 JVM은 KST, MySQL은 UTC를 사용하고 있었습니다.
 이로 인해 애플리케이션이 기록한 `created_at`이 검증 기준 시각보다 미래로 해석되면서, 실제 발급 데이터가 검증 대상에서 제외됐습니다.
 
 검증 결과는 모든 규칙이 0건으로 표시됐지만, 실제로는 정상 통과가 아니라 **검사 대상 행 자체가 누락된 거짓 통과(false pass)**였습니다.

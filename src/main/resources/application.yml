@@ -112,3 +112,10 @@ coupon:
     heartbeat-interval-ms: ${STATUS_STREAM_HEARTBEAT_INTERVAL_MS:15000}
     timeout-ms: ${STATUS_STREAM_TIMEOUT_MS:1800000}
     reconnect-time-ms: ${STATUS_STREAM_RECONNECT_TIME_MS:3000}
+  gate:
+    # 발급 API 앞단 레이트 리미터(Redis 토큰 버킷). 기본 꺼짐 — 켜면 순간 스파이크를 눌러
+    # 코어(락/Lua)가 감당 가능한 속도로만 요청을 통과시키고 초과분은 429로 거부한다.
+    # refill-per-sec 는 코어가 5xx 없이 지속하는 발급 속도에 맞춰 부하테스트로 튜닝한다.
+    enabled: ${COUPON_GATE_ENABLED:false}
+    capacity: ${COUPON_GATE_CAPACITY:4000}
+    refill-per-sec: ${COUPON_GATE_REFILL_PER_SEC:2000}

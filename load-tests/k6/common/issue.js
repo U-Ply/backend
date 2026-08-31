@@ -1,5 +1,5 @@
 import http from 'k6/http';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 import { Counter } from 'k6/metrics';
 
 export const issued = new Counter('coupon_issued');
@@ -14,11 +14,21 @@ export const connectionUnavailable = new Counter('coupon_connection_unavailable'
 export const serverErrors = new Counter('coupon_5xx');
 export const unexpectedResponses = new Counter('coupon_unexpected_response');
 
+// 게이트(레이트 리미터)가 켜졌을 때(coupon.gate.enabled=true) 429는 "아직 처리 안 됨"이다.
+// 컨트롤러에 닿지 않았으므로 같은 Idempotency-Key로 백오프 후 재시도하고, 최종 응답만 분류한다.
+export const gateRejected = new Counter('coupon_gate_rejected');
+export const gateRetryExhausted = new Counter('coupon_gate_retry_exhausted');
+
+// positiveIntEnv 는 함수 선언이라 호이스팅되어 여기서 호출해도 된다.
+const MAX_GATE_RETRIES = positiveIntEnv('MAX_GATE_RETRIES', 50);
+const GATE_BACKOFF_MS = positiveIntEnv('GATE_BACKOFF_MS', 200);
+
 // 재고 소진과 중복 발급은 선착순 테스트에서 예상 가능한 비즈니스 응답이다.
-http.setResponseCallback(http.expectedStatuses(200, 409));
+// 429는 게이트가 되돌린 재시도 대상이므로 http_req_failed 에서 제외한다.
+http.setResponseCallback(http.expectedStatuses(200, 409, 429));
 
 export function issueCoupon(baseUrl, request, idempotencyKey, tags = {}) {
-  return http.post(`${baseUrl}/api/coupons/issue`, JSON.stringify(request), {
+  const params = {
     headers: {
       'Content-Type': 'application/json',
       'Idempotency-Key': idempotencyKey,
@@ -29,7 +39,27 @@ export function issueCoupon(baseUrl, request, idempotencyKey, tags = {}) {
       fareClass: request.fareClass,
       ...tags,
     },
-  });
+  };
+  const payload = JSON.stringify(request);
+
+  let response;
+  let attempts = 0;
+  do {
+    response = http.post(`${baseUrl}/api/coupons/issue`, payload, params);
+    if (response.status !== 429) {
+      break;
+    }
+    // 게이트가 되돌린 429 — 같은 키로 백오프 후 재시도한다.
+    gateRejected.add(1);
+    attempts += 1;
+    // 지터를 섞은 백오프. 모든 VU가 같은 간격으로 재시도해 다음 틱에 또 뭉치는 것을 막는다.
+    sleep((GATE_BACKOFF_MS + Math.random() * GATE_BACKOFF_MS) / 1000);
+  } while (attempts < MAX_GATE_RETRIES);
+
+  if (response.status === 429) {
+    gateRetryExhausted.add(1);
+  }
+  return response;
 }
 
 export function recordIssueResponse(response, testStrategy = 'V3') {
@@ -67,6 +97,9 @@ export function recordIssueResponse(response, testStrategy = 'V3') {
     case 'CLIENT_ERROR':
       clientErrors.add(1);
       break;
+    case 'GATE_REJECTED':
+      // 재시도 예산 소진 후에도 429. gateRetryExhausted 가 이미 셌으므로 여기서는 세지 않는다.
+      break;
     default:
       unexpectedResponses.add(1);
   }
@@ -98,6 +131,10 @@ export function classifyIssueResponse(response, body = parseJson(response.body))
   if (response.status === 503 && operationalErrors.includes(body?.errorCode)) {
     return body.errorCode;
   }
+  if (response.status === 429) {
+    // 재시도 예산을 소진하고도 429 — 기타 4xx로 중복 집계하지 않는다.
+    return 'GATE_REJECTED';
+  }
   if (response.status >= 500) {
     return 'SERVER_ERROR';
   }
@@ -115,6 +152,8 @@ export function baseThresholds(testStrategy = 'V3') {
     coupon_5xx: ['count==0'],
     coupon_other_4xx: ['count==0'],
     coupon_unexpected_response: ['count==0'],
+    // 게이트를 켜도 재시도로 최종 성공/409에 도달해야 한다. 소진이 생기면 게이트 튜닝 실패.
+    coupon_gate_retry_exhausted: ['count==0'],
   };
 
   if (testStrategy !== 'V0') {

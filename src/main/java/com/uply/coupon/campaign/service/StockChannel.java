@@ -83,4 +83,8 @@ public class StockChannel {
     public Map<String, SseEmitter> getEmitters() {
         return emitters;
     }
+
+    public int emitterCount() {
+        return emitters.size();
+    }
 }

@@ -2,9 +2,15 @@ package com.uply.coupon.campaign.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import com.uply.coupon.campaign.domain.Campaign;
 import com.uply.coupon.campaign.domain.CampaignStock;
@@ -14,6 +20,8 @@ import com.uply.coupon.common.exception.CampaignNotFoundException;
 import com.uply.coupon.coupon.repository.CouponRepository;
 import com.uply.coupon.operation.reconciliation.domain.KafkaSettlement;
 import com.uply.coupon.operation.reconciliation.service.KafkaSettlementChecker;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Collections;
@@ -23,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.SetOperations;
@@ -39,7 +48,6 @@ class CampaignCacheWarmupServiceTest {
 
     @Mock private CampaignStockRepository campaignStockRepository;
 
-    // 기발급 유저 Set 재구축에 쓰인다. 주입되지 않으면 warmupCampaign이 NPE로 죽는다.
     @Mock private CouponRepository couponRepository;
 
     @Mock private StringRedisTemplate redisTemplate;
@@ -48,7 +56,6 @@ class CampaignCacheWarmupServiceTest {
 
     @Mock private SetOperations<String, String> setOperations;
 
-    // V3에서만 빈이 존재하므로 ObjectProvider로 주입된다.
     @Mock private ObjectProvider<KafkaSettlementChecker> kafkaSettlementCheckerProvider;
 
     @Mock private KafkaSettlementChecker kafkaSettlementChecker;
@@ -58,6 +65,8 @@ class CampaignCacheWarmupServiceTest {
     @Mock private CampaignStock stock2;
 
     @Mock private Campaign campaign;
+
+    @Spy private MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @Test
     @DisplayName("캠페인 재고 목록이 정상 조회되면 재고·stockId·캠페인 시각이 TTL 없이 적재된다.")
@@ -184,9 +193,6 @@ class CampaignCacheWarmupServiceTest {
         verifyNoInteractions(redisTemplate);
     }
 
-    // 이전에는 존재하지 않는 campaignId로 호출해도 재고 풀이 비어있는 것과 구분하지
-    // 못해 조용히 성공 처리됐다(docs/round-results.md 2026-08-21 미해소 항목).
-    // 관리자 API 호출자가 "복구 성공"으로 오인하지 않도록 404로 구분한다.
     @Test
     @DisplayName("존재하지 않는 캠페인이면 CampaignNotFoundException을 던진다.")
     void warmupCampaign_CampaignDoesNotExist_ThrowsException() {
@@ -295,12 +301,6 @@ class CampaignCacheWarmupServiceTest {
         verifyNoInteractions(campaignStockRepository);
     }
 
-    // 복구 직후 자체 점검: REC-01(시스템 전체 배치)을 트리거하지 않고, 지금 복구한
-    // 캠페인의 재고풀만 Redis-DB로 비교한다. 코드 리뷰에서 REC-01을 그대로 호출하면
-    // (1) campaign_id 조건 없이 전체 스캔이라 무관한 캠페인 불일치까지 섞이고
-    // (2) VerificationResultWriter 기록·MISMATCH 실패 처리를 우회한다는 지적을 받아
-    // 이 스코프 한정 자체 점검으로 대체했다.
-
     @Test
     @DisplayName("자체 점검: 복구한 재고풀의 Redis 값이 DB와 정확히 일치하면 빈 리스트를 반환한다")
     void recoverMissingCache_ScopedCheck_PassesWhenValuesMatch() {
@@ -386,6 +386,44 @@ class CampaignCacheWarmupServiceTest {
         // campaignStockRepository(JPA)만 쓰였는지로 간접 확인한다.
         verify(campaignStockRepository).findAllByCampaignId(campaignId);
         verifyNoMoreInteractions(campaignStockRepository);
+    }
+
+    // 전 구간 모니터링용 지표: 워밍업이 끝나면 캠페인별 준비 완료 게이지가 뜨고,
+    // openAt보다 먼저 끝났으면 lead.seconds가 양수여야 한다.
+    @Test
+    @DisplayName("워밍업 완료 후 캐시 준비 Gauge=1, 오픈 전 완료면 lead.seconds가 양수다")
+    void warmupCampaign_registersCacheReadyGauge() {
+        // given — openAt을 미래로 두어 "오픈 전 준비 완료" 상황을 만든다
+        Long campaignId = 1L;
+        LocalDateTime openAt = LocalDateTime.now(ZoneOffset.UTC).plusMinutes(30);
+        given(stock1.getCampaign()).willReturn(campaign);
+        given(campaign.getOpenAt()).willReturn(openAt);
+        given(campaign.getExpireAt()).willReturn(openAt.plusDays(7));
+        given(stock1.getId()).willReturn(100L);
+        given(stock1.getRemainingStock()).willReturn(500);
+        given(stock1.getRouteId()).willReturn("ICN-NRT");
+        given(stock1.getFareClass()).willReturn("Y");
+        given(campaignStockRepository.findAllByCampaignId(campaignId)).willReturn(List.of(stock1));
+        given(redisTemplate.opsForValue()).willReturn(valueOperations);
+
+        // when
+        campaignCacheWarmupService.warmupCampaign(campaignId);
+
+        // then
+        assertThat(
+                        meterRegistry
+                                .get("coupon.campaign.cache.ready")
+                                .tag("campaign", "1")
+                                .gauge()
+                                .value())
+                .isEqualTo(1.0);
+        assertThat(
+                        meterRegistry
+                                .get("coupon.campaign.cache.ready.lead.seconds")
+                                .tag("campaign", "1")
+                                .gauge()
+                                .value())
+                .isPositive();
     }
 
     /** 재고 풀 하나짜리 정상 캠페인 스텁 (오픈·만료 시각 포함) */
