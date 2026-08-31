@@ -2,6 +2,8 @@
 
 # 항공사 특가 이벤트, 대규모 트래픽 선착순 쿠폰 발급 시스템
 
+**U-Ply** — 한정 재고 발급부터 최종 정합성 검증까지 수행하는 백엔드 시스템
+
 </div>
 
 ## 📌 프로젝트 개요
@@ -18,21 +20,85 @@
 
 ## 💡 프로젝트 소개
 
-**U-Ply**는 항공권 특가 이벤트를 소재로, 수만 건의 요청이 동시에 몰리는 환경에서 재고를 초과하지 않고 정확하게 쿠폰을 발급하고, 그렇게 처리된 데이터가 실제로 정합한지 시스템이 스스로 검증하는 백엔드 시스템입니다.
+**U-Ply**는 항공권 특가 이벤트를 소재로, 수만 건의 요청이 동시에 몰리는 환경에서도 재고를 초과하지 않고 쿠폰을 발급하며, 처리된 쿠폰·이력·재고의 정합성을 시스템이 스스로 검증하는 프로젝트입니다.
+
+동일한 코드·데이터·인프라 조건에서 발급 전략만 교체해 다음 네 가지 방식을 비교했습니다.
+
+| 버전 | 발급 판정 | 영속화 방식 |
+| --- | --- | --- |
+| **V0** | 동시성 제어 없음(NoLock) | MySQL 동기 저장 |
+| **V1** | DB 비관적 락 | MySQL 동기 저장 |
+| **V2** | Redis Lua 원자 연산 | MySQL 동기 저장 |
+| **V3** | Redis Lua 원자 연산 | Kafka 비동기 저장 |
+
+최종 구조인 V3의 처리 흐름은 다음과 같습니다.
 
 ```text
-캠페인 오픈 (노선·좌석등급별 재고 풀)
+캠페인 오픈 (노선·좌석 등급별 독립 재고 풀)
     ↓
-선착순 발급 요청
+선착순 발급 요청 · Redis 멱등성 검사
     ↓
-Redis 원자 연산으로 재고 선점
+Redis Lua로 오픈 시각·중복·재고를 원자적으로 판정
     ↓
-Kafka 이벤트 발행 · 쿠폰과 이력 적재
+Kafka 이벤트 발행 후 API 응답
     ↓
-쿠폰 생애주기 관리 (발급 → 사용 / 취소 / 만료)
+Consumer가 쿠폰·이력·DB 재고를 하나의 트랜잭션으로 저장
     ↓
-정합성 검증 배치
+쿠폰 상태 관리 (발급 → 사용 / 예약 취소 / 만료 / 항공사 회수)
+    ↓
+INV·CLOCK·REC 규칙을 이용한 정합성 검증
 ```
+
+<br>
+
+## ✨ 주요 기능
+
+- 캠페인 목록·상세 및 노선·좌석 등급별 재고 조회
+- SSE 기반 실시간 발급 현황 조회
+- 선착순 쿠폰 발급과 1인 1매 보장
+- Redis 기반 API 멱등성 처리와 DB UNIQUE 제약을 이용한 이중 방어
+- 쿠폰 사용, 사용자 예약 취소, 항공사 미사용 쿠폰 일괄 회수
+- 미사용 쿠폰 만료 배치
+- Redis 캐시 사전 웜업·운영 중 부분 복구·선택적 자동 복구
+- Kafka 재시도·DLT·pending 발급 상태 관리
+- INV-01~12, CLOCK-01~02, REC-01 기반 정합성 검증 및 리포트
+- 관리자 대시보드와 Prometheus·Grafana 기반 관측
+
+<br>
+
+## 🏆 핵심 결과
+
+### Level 2 — 발급 전략 비교
+
+동일한 AWS 환경에서 **재고 10,000장, 요청 20,000건, VU 500** 조건으로 측정했습니다. 처리량과 응답 시간은 k6가 관측한 전체 HTTP 요청 기준입니다.
+
+| 전략 | 발급 성공 | 정상 재고 소진 | 주요 실패 | 처리량 | 평균 응답 | p95 |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| **V0 NoLock** | 5,713 | 0 | 동시성 충돌 14,278, 커넥션 실패 9 | 314.90 req/s | 1.56s | 2.50s |
+| **V1 비관적 락** | 10,000 | 7,152 | 커넥션 획득 실패 2,848 | 93.95 req/s | 5.28s | 8.34s |
+| **V2 Redis + MySQL** | 10,000 | 10,000 | 0 | 189.95 req/s | 2.61s | 5.31s |
+| **V3 Redis + Kafka** | 10,000 | 10,000 | 0 | **2,406.92 req/s** | **197.61ms** | **389.74ms** |
+
+- V0는 동시성 제어가 없을 때 발생하는 오류를 확인하기 위한 기준선입니다.
+- V1은 초과 발급을 막았지만 DB 락·커넥션 대기로 처리량과 지연에 한계가 있었습니다.
+- V2는 Redis에서 발급 판정을 원자적으로 처리했지만 MySQL 동기 저장이 요청 경로에 남았습니다.
+- V3는 발급 판정과 영속화를 분리해 V2 대비 처리량을 약 **12.7배** 높이고 p95를 약 **13.6배** 낮췄습니다.
+- V3 최종 정착 후 DB 쿠폰 10,000건, Redis·DB 잔여 재고 0, Kafka lag 0, DLT 0건, 정합성 위반 0건을 확인했습니다.
+
+### 추가 부하 시나리오
+
+- **핫키 편중:** 제주 90% · 후쿠오카 7% · 방콕 3% 요청에서도 재고 풀별 한도 준수
+- **다중 재고 풀:** Economy 8,000장 · Business 2,000장을 독립적으로 차감해 총 10,000건 발급
+- **멱등성 재시도:** 동일 키의 반복 요청이 한 번만 반영되는지 검증
+
+### 대용량 정합성 검증
+
+- 사용자 **1,000,000명**, 쿠폰 **3,000,000건**, 이력 **3,898,982건** 생성·적재
+- 정상 데이터에서 15개 규칙 중 적용 대상 13개 규칙 모두 통과, 총 위반 0건
+- 같은 데이터로 재실행했을 때 규칙 상태·위반 수·검사 행 수가 모두 일치
+- 오염 데이터 5건을 주입했을 때 `INV-04`가 해당 5건만 정확히 검출
+
+상세 결과는 [300만 건 정합성 검증 결과](docs/round-results/bulk-verification.md)에서 확인할 수 있습니다.
 
 <br>
 
@@ -40,19 +106,16 @@ Kafka 이벤트 발행 · 쿠폰과 이력 적재
 
 ### 1. 사전 준비
 
-* Git
-* **JDK 17 또는 21**
-* Docker Desktop
+- Git
+- **JDK 17 또는 21**
+- Docker Desktop
 
-```text
-java -version     # 17 또는 21 인지 확인
+```bash
+java -version
 docker --version
 ```
 
-> **주의:** JDK 25는 사용할 수 없습니다. Gradle 8이 아직 지원하지 않습니다.
-> STS/Eclipse는 번들 JRE로 25를 포함할 수 있으므로, `Preferences → Gradle → Java home`을 JDK 17/21로 지정해 주세요. (`Java → Installed JREs`가 아니라 **Gradle 페이지**입니다)
->
-> Gradle과 컴파일용 JDK는 따로 설치하지 않으셔도 됩니다. Gradle Wrapper와 toolchain 자동 프로비저닝이 처리합니다.
+> JDK 25는 현재 Gradle 실행 JVM으로 사용할 수 없습니다. STS/Eclipse가 번들 JRE로 25를 사용하는 경우 `Preferences → Gradle → Java home`을 JDK 17 또는 21로 지정해 주세요. Gradle은 Wrapper를 사용하며, 컴파일 toolchain은 Java 17입니다.
 
 ### 2. 프로젝트 내려받기
 
@@ -68,53 +131,124 @@ docker compose up -d
 docker compose ps
 ```
 
+MySQL, Redis, Kafka와 Prometheus, Grafana, exporter, cAdvisor가 함께 실행됩니다.
+
 ### 4. 스키마 적재
 
 ```bash
 docker exec -i coupon-mysql mysql -uroot -proot1234 < docs/schema.sql
 ```
 
-마지막에 테이블 7개와 CHECK 제약 10개 목록이 출력되면 성공입니다.
+마지막에 테이블 7개와 CHECK 제약 11개 목록이 출력되면 성공입니다.
 
-### 5. 빌드 및 실행
+> 이 명령은 `coupon_db`의 기존 테이블을 다시 생성합니다. 보존해야 하는 데이터가 있다면 실행하지 마세요.
+
+### 5. 시연용 데이터 준비
+
+아래 스크립트는 사용자 20,000명, 캠페인 1개, 재고 10,000장을 MySQL과 Redis에 준비합니다.
 
 ```bash
-./gradlew build
+./scripts/load-test/seed-level2.sh
+# 확인 문구가 나오면 SEED 입력
+```
+
+> 이 스크립트는 기존 `coupon_db`와 Redis 데이터를 Level 2 시드로 교체합니다.
+
+### 6. 테스트 및 애플리케이션 실행
+
+```bash
+./gradlew clean test spotlessCheck
+```
+
+통합 테스트는 Testcontainers로 격리된 MySQL·Redis·Kafka를 실행하므로 Docker가 실행 중이어야 합니다.
+
+일반 실행의 기본값은 `Redis Lua + MySQL 동기 저장(V2)`입니다.
+
+```bash
 ./gradlew bootRun
 ```
 
-### 6. 캠페인 조회 API 사용 전 준비 (Redis 웜업)
+V3로 실행하려면 다음 환경변수를 지정합니다.
 
-`GET /api/campaigns/{campaignId}`와 `GET /api/campaigns/{campaignId}/status`는 잔여 재고(`remainingStock`)를 DB 집계가 아니라 **Redis에서만** 읽습니다. 아래 순서를 지키지 않으면 `stock:{stockId}` 키가 없어 두 API가 503 `CAMPAIGN_NOT_CACHED`를 반환합니다 — 재고 0으로 보이는 게 아니라 API 자체가 실패합니다. 이 503은 쿠폰 발급 API와 동일한 캐시 미스 판정을 공유하므로, 자동 캐시 복구가 켜져 있다면(`coupon.cache-recovery.auto-trigger-enabled`) 조회 API 실패도 그 트리거 대상에 포함됩니다.
-
-1. DB 시드 (캠페인·재고 데이터 적재)
-2. `CampaignCacheWarmupService.warmupCampaign(campaignId)` 실행 — 캠페인의 `openAt`/`expireAt`과 재고 풀별 `remainingStock`을 Redis에 적재
-3. Redis에 `stock:{stockId}` 키가 채워졌는지 확인 (예: `redis-cli GET stock:1`)
-4. 확인 후에만 API·화면 공개
-
-관리자 API로도 웜업/복구를 실행할 수 있습니다.
-
-```text
-POST /api/admin/campaigns/{campaignId}/cache/warmup   # 트래픽 차단 후 전체 재구축(살아있는 키도 덮어씀)
-POST /api/admin/campaigns/{campaignId}/cache/recover  # 운영 중 부분 복구(SETNX만 사용, 살아있는 키는 안 건드림)
+```bash
+COUPON_STRATEGY=LUA_SCRIPT \
+COUPON_SAVE_STRATEGY=kafka \
+COUPON_KAFKA_CONSUMER_ENABLED=true \
+./gradlew bootRun
 ```
 
-두 엔드포인트의 차이와 상세 대응 절차는 [`docs/redis-cache-miss-response.md`](docs/redis-cache-miss-response.md)를 참고하세요.
+일반 실행에서는 Redis 멱등성 처리가 기본 활성화됩니다. `COUPON_IDEMPOTENCY_ENABLED=false`는 순수 전략 비교를 위한 Level 2 회차에서만 사용합니다.
 
-**V0(NoLock)·V1(비관적 락) 회차에서는 웜업을 해도 얼마 못 갑니다.** `docs/test-plan.md`의 V0~V3 비교표대로 V0·V1은 발급 판정과 재고 차감을 MySQL(`campaign_stocks.remaining_stock`)로만 처리하고 Redis는 전혀 건드리지 않습니다(`NoLockIssueStrategy`/`PessimisticLockIssueStrategy` 어디에도 Redis 호출이 없음). 반면 이 API들의 `remainingStock`은 스펙상 Redis 값을 그대로 반환하므로, 웜업 직후에는 맞다가 V0·V1 발급이 몇 건만 들어가도 **Redis 값이 실제 MySQL 재고보다 계속 커진 채로 고정**됩니다. 500 오류가 나는 게 아니라 **잘못된 숫자를 정상 응답으로 돌려주는** 문제라 더 위험합니다. Redis-DB 대사 배치(REC-01)도 "Redis Lua(V2·V3) 전략 회차에만 적용, 비관적 락 회차는 N/A"로 문서화돼 있어 자동으로 잡아주지 않습니다.
+### 7. Redis 캠페인 캐시 준비·복구
 
-그러니 V0·V1 회차 중에는 캠페인 상세·발급 현황 API를 호출하지 말고, 호출이 필요하면(화면 시연 등) 그 시점 직전에 다시 웜업해서 Redis를 MySQL 기준으로 맞춘 뒤 사용하세요. remainingStock이 Redis와 항상 정확히 맞는 건 V2·V3(Redis Lua 발급) 회차뿐입니다.
+Redis Lua 전략(V2·V3)을 사용하기 전, 캠페인 오픈 전에 DB 기준 캐시를 전체 구성합니다.
+
+`GET /api/campaigns/{campaignId}`와 `GET /api/campaigns/{campaignId}/status`는 잔여 재고를 Redis에서 읽습니다. `stock:{stockId}` 키가 없으면 재고를 0으로 표시하지 않고 `503 CAMPAIGN_NOT_CACHED`를 반환합니다. 자동 캐시 복구가 활성화된 경우 조회 API의 캐시 미스도 복구 트리거에 포함됩니다.
+
+```bash
+curl -X POST http://localhost:8081/api/admin/campaigns/1/cache/warmup
+```
+
+운영 중 일부 캐시 키가 유실됐다면 기존 재고를 덮어쓰지 않고 누락된 키만 복구합니다.
+
+```bash
+curl -X POST http://localhost:8081/api/admin/campaigns/1/cache/recover
+```
+
+- `warmup`: 오픈 전 또는 발급 트래픽을 차단한 상태에서만 사용
+- `recover`: 운영 중 누락된 키를 `SETNX` 방식으로 복구
+- V3에서는 Kafka lag·DLT가 정착되지 않으면 두 작업 모두 503으로 거부
+- 캐시가 준비되지 않은 발급·재고 조회 요청은 `503 CAMPAIGN_NOT_CACHED`로 응답
+
+V0·V1은 MySQL 재고만 차감하고 Redis를 갱신하지 않습니다. 따라서 전략 비교 회차 중에는 Redis 기반 실시간 재고 화면을 정합성 판정 근거로 사용하지 않습니다.
+
+두 엔드포인트의 차이와 장애 대응 절차는 [Redis 캐시 미스 대응 문서](docs/redis-cache-miss-response.md)를 참고하세요.
+
+### 8. 접속 주소
+
+| 서비스 | 주소 | 비고 |
+| --- | --- | --- |
+| U-Ply 사용자·관리자 화면 | http://localhost:8081 | Spring Boot 정적 화면 |
+| Actuator Health | http://localhost:8081/actuator/health | 애플리케이션 상태 |
+| Prometheus | http://localhost:9090 | 메트릭 수집·조회 |
+| Grafana | http://localhost:3000 | `admin / admin1234` |
+| cAdvisor | http://localhost:8085 | 컨테이너 CPU·메모리 |
+
+> Grafana의 익명 조회와 기본 비밀번호는 부하 테스트 환경 전용 설정입니다. 공개 환경에서는 반드시 인증과 접근 제어를 적용해야 합니다.
 
 <details>
 <summary><b>문제 해결</b></summary>
 <br>
 
-* `Unsupported class file major version 69`가 나오면 Gradle을 실행하는 JVM이 Java 25입니다. JDK 25를 직접 설치하지 않으셨더라도 STS/Eclipse가 번들 JRE로 25를 포함하고 있습니다. `Window → Preferences → Gradle → Java home`을 JDK 17/21 경로로 지정한 뒤 `Gradle → Refresh Gradle Project`를 실행하세요.
-* `java.lang.Object cannot be resolved`가 나오거나 프로젝트에 빨간 X가 표시되면 IDE 설정 파일이 없어서입니다. `.classpath`, `.settings/`는 개인 환경 파일이라 저장소에서 관리하지 않습니다. `Gradle → Refresh Gradle Project`로 재생성하세요.
-* `ports are not available (3306)`이 나오면 로컬 MySQL이 실행 중입니다. Windows 기본 서비스 이름은 보통 `MySQL80`이며, 관리자 권한 PowerShell에서 `Stop-Service -Name MySQL80`으로 중지할 수 있습니다.
-* macOS / Linux에서 `./gradlew: Permission denied`가 발생하면 `chmod +x gradlew`를 한 번 실행한 뒤 다시 시도하세요.
+- `Unsupported class file major version 69`: Gradle 실행 JVM을 JDK 17 또는 21로 변경합니다.
+- `java.lang.Object cannot be resolved`: IDE에서 `Gradle → Refresh Gradle Project`를 실행합니다.
+- `ports are not available (3306)`: 로컬 MySQL을 중지하거나 Compose 포트 설정을 변경합니다.
+- `./gradlew: Permission denied`: `chmod +x gradlew`를 실행한 뒤 다시 시도합니다.
 
 </details>
+
+<br>
+
+## 🔌 주요 API
+
+| 영역 | Method | Endpoint | 설명 |
+| --- | --- | --- | --- |
+| 캠페인 | GET | `/api/campaigns` | 캠페인 목록 조회 |
+| 캠페인 | GET | `/api/campaigns/{campaignId}` | 캠페인·재고 풀 상세 조회 |
+| 캠페인 | GET | `/api/campaigns/{campaignId}/status` | 재고 풀 발급 현황 조회 |
+| 캠페인 | GET(SSE) | `/api/campaigns/{campaignId}/status/stream` | 실시간 재고 현황 구독 |
+| 쿠폰 | POST | `/api/coupons/issue` | 쿠폰 발급 |
+| 쿠폰 | GET | `/api/coupons/{couponId}` | 쿠폰 단건 조회 |
+| 쿠폰 | GET | `/api/users/{userId}/coupons` | 사용자 보유 쿠폰 조회 |
+| 쿠폰 | POST | `/api/coupons/{couponId}/use` | 쿠폰 사용 |
+| 쿠폰 | POST | `/api/coupons/{couponId}/cancel` | 쿠폰을 사용한 예약 취소 |
+| 관리자 | POST | `/api/admin/campaigns/{campaignId}/coupons/revoke` | 미사용 쿠폰 일괄 회수 |
+| 관리자 | POST | `/api/admin/campaigns/{campaignId}/cache/warmup` | Redis 캐시 전체 준비 |
+| 관리자 | POST | `/api/admin/campaigns/{campaignId}/cache/recover` | Redis 누락 캐시 복구 |
+| 배치 | POST | `/api/admin/batch/{jobKey}` | 만료·검증·재고 대사 실행 |
+| 배치 | GET | `/api/admin/batch/executions/{executionId}` | 배치 실행 상태 조회 |
+
+발급·사용·취소·회수 요청의 `Idempotency-Key` 헤더에는 UUID v4를 사용합니다.
 
 <br>
 
@@ -124,46 +258,46 @@ POST /api/admin/campaigns/{campaignId}/cache/recover  # 운영 중 부분 복구
 
 | 구분 | 기술 |
 | --- | --- |
-| Language | ![Java](https://img.shields.io/badge/Java_17-007396?style=flat-square&logo=openjdk&logoColor=white) |
-| Framework | ![Spring Boot](https://img.shields.io/badge/Spring_Boot_3.3-6DB33F?style=flat-square&logo=springboot&logoColor=white) ![Spring Batch](https://img.shields.io/badge/Spring_Batch-6DB33F?style=flat-square&logo=spring&logoColor=white) |
-| Persistence | ![Spring Data JPA](https://img.shields.io/badge/Spring_Data_JPA-6DB33F?style=flat-square&logo=spring&logoColor=white) |
-| Database | ![MySQL](https://img.shields.io/badge/MySQL_8-4479A1?style=flat-square&logo=mysql&logoColor=white) |
-| Cache | ![Redis](https://img.shields.io/badge/Redis_Lua-FF4438?style=flat-square&logo=redis&logoColor=white) |
-| Messaging | ![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?style=flat-square&logo=apachekafka&logoColor=white) |
-| Build | ![Gradle](https://img.shields.io/badge/Gradle_8.14-02303A?style=flat-square&logo=gradle&logoColor=white) |
+| Language | Java 17 |
+| Framework | Spring Boot 3.3.2, Spring Batch |
+| Persistence | Spring Data JPA |
+| Database | MySQL 8.0.46 |
+| Cache | Redis 7.4.10, Lua Script |
+| Messaging | Apache Kafka 3.7.0 |
+| Observability | Spring Boot Actuator, Micrometer |
+| Build | Gradle 8.14 |
 
-### Infra · 성능 · 관측
+### Frontend · Infra · 성능 · 관측
 
 | 구분 | 기술 |
 | --- | --- |
-| Container | ![Docker](https://img.shields.io/badge/Docker_Compose-2496ED?style=flat-square&logo=docker&logoColor=white) |
-| Load Test | ![k6](https://img.shields.io/badge/k6-7D64FF?style=flat-square&logo=k6&logoColor=white) |
-| Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=flat-square&logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=flat-square&logo=grafana&logoColor=white) |
+| Frontend | HTML, CSS, JavaScript, Spring Boot Static Resources |
+| Cloud | AWS EC2, Application Load Balancer |
+| Container | Docker Compose |
+| Load Test | k6 |
+| Monitoring | Prometheus 2.53, Grafana 13.1.3 |
+| Exporter | MySQL Exporter, Redis Exporter, Kafka Exporter, cAdvisor |
 
 ### Test · Quality · CI
 
 | 구분 | 기술 |
 | --- | --- |
-| Test | ![JUnit5](https://img.shields.io/badge/JUnit_5-25A162?style=flat-square&logo=junit5&logoColor=white) |
-| Code Style | ![Spotless](https://img.shields.io/badge/Spotless-Code_Formatting-4285F4?style=flat-square) |
-| CI | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white) |
-
-### Collaboration
-
-| 구분 | 도구 |
-| --- | --- |
-| Version Control | ![Git](https://img.shields.io/badge/Git-F05032?style=flat-square&logo=git&logoColor=white) ![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat-square&logo=github&logoColor=white) |
-| Documentation | ![Notion](https://img.shields.io/badge/Notion-000000?style=flat-square&logo=notion&logoColor=white) |
+| Test | JUnit 5, Testcontainers 1.21.4, Awaitility 4.2.2 |
+| Code Style | Spotless, Google Java Format AOSP |
+| CI | GitHub Actions (`clean test spotlessCheck`) |
 
 <br>
 
-## 📊 개발 일정
+## 🧪 테스트 구성
 
-**1주차 — 설계 확정 및 개발 환경 구축**
+```text
+Level 1  소규모 동시성·상태 전이·실패 보상 검증
+Level 2  동일한 AWS 환경에서 V0~V3 전략 비교
+Level 3  애플리케이션 2대와 ALB를 이용한 최종 인수 테스트
+Bulk     사용자 100만 명·쿠폰 300만 건 전체 정합성 검증
+```
 
-**2주차 — 역할별 심화 구현 및 벤치마크**
-
-**3주차 — 통합, 튜닝, 검증 배치 완성, 발표 준비**
+부하테스트 실행법과 판정 기준은 [k6 실행 가이드](load-tests/k6/README.md)와 [공통 테스트 설계서](docs/test-plan.md)를 따릅니다.
 
 <br>
 
@@ -171,11 +305,11 @@ POST /api/admin/campaigns/{campaignId}/cache/recover  # 운영 중 부분 복구
 
 | 팀원 | 주요 역할 |
 | --- | --- |
-| **정윤희(팀장)** | 인프라 구성 및 Kafka 심화<br>k6 부하 테스트 및 락 전략 벤치마크<br>Prometheus·Grafana 관측 체계 |
-| **김윤기** | 비관적 락 기반 발급 로직<br>쿠폰 발급 API<br>재고 복구 로직 |
-| **이승지** | Redis Lua Script 기반 발급 로직<br>다중 재고 풀 설계<br>Kafka Producer<br>캠페인·발급 현황 조회 |
-| **임재민** | 쿠폰 도메인 및 상태 머신<br>Kafka Consumer<br>사용·취소·조회 API |
-| **장지원** | 대용량 데이터 생성 및 적재<br>정합성 검증 배치<br>DB 스키마 설계 및 빌드 환경·CI 구축 |
+| **정윤희(팀장)** | 인프라·Kafka 신뢰성 설정<br>k6 부하테스트와 전략 벤치마크<br>Prometheus·Grafana 관측 및 프론트엔드 연동 |
+| **김윤기** | NoLock·비관적 락 발급 전략<br>쿠폰 발급 API<br>캠페인·재고 조회와 다중 재고 풀 검증 |
+| **이승지** | Redis Lua 발급 전략<br>Kafka Producer와 실패 보상<br>Redis 캠페인 캐시 복구·실시간 발급 현황 |
+| **임재민** | 쿠폰 도메인·상태 머신<br>Kafka Consumer<br>쿠폰 사용·취소·조회 및 항공사 회수 API |
+| **장지원** | 대용량 데이터 생성·적재<br>정합성 검증·만료·재고 대사 배치<br>DB 스키마와 Testcontainers·CI |
 
 <br>
 
@@ -186,8 +320,13 @@ POST /api/admin/campaigns/{campaignId}/cache/recover  # 운영 중 부분 복구
 | [팀 Notion](https://app.notion.com/p/3b36a058256c80b4bbb2db67664ccd57) | 프로젝트 일정, 회의 내용, 업무 분담 및 팀 협업 문서 |
 | [요구사항 분석서](docs/requirements-analysis.md) | 프로젝트 목표, 정책, 기능·비기능 요구사항 및 검증 규칙 |
 | [공통 테스트 설계서](docs/test-plan.md) | 테스트 단계, 공통 데이터, 비교 조건, 측정 지표 및 판정 기준을 정의한 SSOT |
-| [부하 테스트 환경 고정표](docs/load-test-environment.md) | V0~V3 공통 AWS 사양, 애플리케이션 설정, 부하 조건과 회차 무효 기준 |
+| [V0~V3 통합 테스트 결과](docs/round-results.md) | 전략별 격리 통합 테스트와 회차별 결과 |
+| [300만 건 정합성 검증 결과](docs/round-results/bulk-verification.md) | 전수 검증, 재실행 동일성 및 오염 주입 검출력 |
+| [부하 테스트 환경 고정표](docs/load-test-environment.md) | V0~V3 공통 AWS 사양, 애플리케이션 설정과 회차 무효 기준 |
 | [AWS 부하 테스트 구성 가이드](docs/aws-load-test-setup.md) | Level 2·3 네트워크, 배포, 초기화, 실행 및 결과 회수 절차 |
+| [k6 실행 가이드](load-tests/k6/README.md) | 기본·핫키·다중 재고 풀·멱등성 시나리오 실행법 |
+| [Testcontainers 이전 내역](docs/testcontainers-migration.md) | MySQL·Redis·Kafka 통합 테스트 격리 구성 |
+| [Kafka DLT 운영 대응](docs/kafka-dlt-manual-response.md) | DLT 확인, 판정 및 수동 재처리 절차 |
 | [데이터베이스 스키마](docs/schema.sql) | 테이블, 제약 조건, 인덱스 및 검증 결과 저장 구조 |
 
 <br>
@@ -203,17 +342,11 @@ main
       └── docs/*
 ```
 
-* `main`: 배포 가능한 안정 버전
-* `develop`: 개발 기능 통합
-* `feat/*`: 기능 개발
-* `fix/*`: 버그 수정
-* `chore/*`: 빌드·설정·도구
-* `docs/*`: 문서 작업
+- `main`: 배포 가능한 안정 버전
+- `develop`: 개발 기능 통합
+- `feat/*`: 기능 개발
+- `fix/*`: 버그 수정
+- `chore/*`: 빌드·설정·도구
+- `docs/*`: 문서 작업
 
 모든 작업은 브랜치에서 개발한 뒤 Pull Request와 CI 검사를 거쳐 `develop`에 병합합니다.
-
-<br>
-
-<div align="center">
-
-</div>
