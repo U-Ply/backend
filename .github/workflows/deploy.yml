@@ -1,0 +1,47 @@
+name: CI/CD to EC2
+on:
+  push:
+    branches:
+      - develop  # main은 보호 브랜치라 push는 PR 머지를 통해서만 발생한다
+jobs:
+  # main으로 향하는 모든 PR은 ci.yml(빌드+테스트+spotlessCheck)을 필수 체크로 통과해야
+  # 머지될 수 있다(직접 push 불허). 그래서 여기서 같은 검증을 다시 하지 않고 배포만 한다 —
+  # 반복하면 같은 커밋을 CI 시간만 두 배로 써서 검증하는 셈이 된다.
+  deploy:
+    name: Build and Deploy Spring Boot App to EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'liberica'
+          java-version: '17'
+          cache: 'gradle'
+      - name: Grant execute permission for Gradle Wrapper
+        run: chmod +x ./gradlew
+      - name: Build Spring Boot App
+        # ci.yml에서 이미 검증됐으므로 배포용 아티팩트만 빌드한다
+        run: ./gradlew clean build -x test
+      - name: Check built JARs
+        run: ls -lh build/libs/  # 생성된 JAR 파일 목록 확인
+      - name: Save EC2 SSH key
+        # EC2 접속을 위한 SSH 키 생성 및 권한 설정
+        run: |
+          echo "${{ secrets.EC2_KEY }}" > key.pem
+          chmod 400 key.pem
+      - name: Ensure remote app directory exists
+        # 원격 서버 내 배포 디렉토리 생성 확인
+        run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "mkdir -p ${{ secrets.EC2_APP_DIR }}"
+      - name: Deploy JAR to EC2
+        # 빌드된 JAR 파일을 EC2 원격 서버로 전송
+        run: |
+          scp -o StrictHostKeyChecking=no -i key.pem \
+            build/libs/${{ secrets.APP_NAME }} \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.EC2_APP_DIR }}/${{ secrets.APP_NAME }}
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f key.pem
